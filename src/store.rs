@@ -43,6 +43,8 @@ pub struct RunRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_allowlist: Option<McpAllowSummary>,
     pub config_hash_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_fingerprint: Option<ConfigFingerprintV1>,
     #[serde(default)]
     pub tool_schema_hash_hex_map: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,6 +61,8 @@ pub struct RunRecord {
     pub tool_catalog: Vec<ToolCatalogEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub taint: Option<crate::agent::AgentTaintRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repro: Option<crate::repro::RunReproRecord>,
     pub final_output: String,
     pub error: Option<String>,
 }
@@ -153,6 +157,10 @@ pub struct RunCliConfig {
     pub taint: String,
     pub taint_mode: String,
     pub taint_digest_bytes: usize,
+    pub repro: String,
+    pub repro_env: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repro_out: Option<String>,
     pub use_session_settings: bool,
     #[serde(default)]
     pub resolved_settings_source: BTreeMap<String, String>,
@@ -235,6 +243,9 @@ pub struct ConfigFingerprintV1 {
     pub taint: String,
     pub taint_mode: String,
     pub taint_digest_bytes: usize,
+    pub repro: String,
+    pub repro_env: String,
+    pub repro_out: String,
     pub use_session_settings: bool,
     pub resolved_settings_source: BTreeMap<String, String>,
     pub tui_enabled: bool,
@@ -324,6 +335,8 @@ pub fn write_run_record(
     worker: Option<WorkerRunRecord>,
     tool_schema_hash_hex_map: BTreeMap<String, String>,
     hooks_config_hash_hex: Option<String>,
+    config_fingerprint: Option<ConfigFingerprintV1>,
+    repro: Option<crate::repro::RunReproRecord>,
 ) -> anyhow::Result<PathBuf> {
     ensure_dir(&paths.runs_dir)?;
     let run_path = paths.runs_dir.join(format!("{}.json", outcome.run_id));
@@ -351,6 +364,7 @@ pub fn write_run_record(
         includes_resolved: policy.includes_resolved,
         mcp_allowlist: policy.mcp_allowlist,
         config_hash_hex,
+        config_fingerprint,
         tool_schema_hash_hex_map,
         hooks_config_hash_hex,
         transcript: outcome.messages.clone(),
@@ -364,6 +378,7 @@ pub fn write_run_record(
         hook_report: outcome.hook_invocations.clone(),
         tool_catalog,
         taint: outcome.taint.clone(),
+        repro,
         final_output: outcome.final_output.clone(),
         error: outcome.error.clone(),
     };
@@ -746,6 +761,9 @@ mod tests {
                 taint: "off".to_string(),
                 taint_mode: "propagate".to_string(),
                 taint_digest_bytes: 4096,
+                repro: "off".to_string(),
+                repro_env: "safe".to_string(),
+                repro_out: None,
                 use_session_settings: false,
                 resolved_settings_source: BTreeMap::new(),
                 tui_enabled: false,
@@ -778,6 +796,8 @@ mod tests {
                 injected_planner_hash_hex: None,
             }),
             BTreeMap::new(),
+            None,
+            None,
             None,
         )
         .expect("write run");
@@ -882,6 +902,9 @@ mod tests {
                 taint: "off".to_string(),
                 taint_mode: "propagate".to_string(),
                 taint_digest_bytes: 4096,
+                repro: "off".to_string(),
+                repro_env: "safe".to_string(),
+                repro_out: None,
                 use_session_settings: false,
                 resolved_settings_source: BTreeMap::new(),
                 tui_enabled: false,
@@ -910,6 +933,7 @@ mod tests {
             includes_resolved: Vec::new(),
             mcp_allowlist: None,
             config_hash_hex: "cfg".to_string(),
+            config_fingerprint: None,
             tool_schema_hash_hex_map: BTreeMap::new(),
             hooks_config_hash_hex: None,
             transcript: vec![Message {
@@ -925,6 +949,7 @@ mod tests {
             hook_report: Vec::new(),
             tool_catalog: Vec::new(),
             taint: None,
+            repro: None,
             final_output: String::new(),
             error: None,
         };
@@ -996,6 +1021,9 @@ mod tests {
             taint: "off".to_string(),
             taint_mode: "propagate".to_string(),
             taint_digest_bytes: 4096,
+            repro: "off".to_string(),
+            repro_env: "safe".to_string(),
+            repro_out: String::new(),
             use_session_settings: false,
             resolved_settings_source: BTreeMap::new(),
             tui_enabled: false,

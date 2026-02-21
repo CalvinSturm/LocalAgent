@@ -7,6 +7,7 @@ pub mod hooks;
 pub mod mcp;
 pub mod planner;
 pub mod providers;
+pub mod repro;
 pub mod session;
 pub mod store;
 pub mod taint;

@@ -7,6 +7,7 @@ mod hooks;
 mod mcp;
 mod planner;
 mod providers;
+mod repro;
 mod session;
 mod store;
 mod taint;
@@ -49,6 +50,7 @@ use providers::http::HttpConfig;
 use providers::ollama::OllamaProvider;
 use providers::openai_compat::OpenAiCompatProvider;
 use providers::ModelProvider;
+use repro::{render_verify_report, verify_run_record, ReproEnvMode, ReproMode};
 use reqwest::Client;
 use session::{
     settings_from_run, task_memory_message, CapsMode, ExplicitFlags, RunSettingInputs, SessionStore,
@@ -339,9 +341,22 @@ struct DenyArgs {
     id: String,
 }
 
+#[derive(Debug, Subcommand)]
+enum ReplaySubcommand {
+    Verify {
+        run_id: String,
+        #[arg(long, default_value_t = false)]
+        strict: bool,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+}
+
 #[derive(Debug, Parser)]
 struct ReplayArgs {
-    run_id: String,
+    run_id: Option<String>,
+    #[command(subcommand)]
+    command: Option<ReplaySubcommand>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -447,6 +462,12 @@ struct EvalArgs {
     taint_mode: TaintMode,
     #[arg(long, default_value_t = 4096)]
     taint_digest_bytes: usize,
+    #[arg(long, value_enum, default_value_t = ReproMode::Off)]
+    repro: ReproMode,
+    #[arg(long)]
+    repro_out: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = ReproEnvMode::Safe)]
+    repro_env: ReproEnvMode,
     #[arg(long, value_enum, default_value_t = CapsMode::Off)]
     caps: CapsMode,
     #[arg(long)]
@@ -605,6 +626,12 @@ struct RunArgs {
     taint_mode: TaintMode,
     #[arg(long, default_value_t = 4096)]
     taint_digest_bytes: usize,
+    #[arg(long, value_enum, default_value_t = ReproMode::Off)]
+    repro: ReproMode,
+    #[arg(long)]
+    repro_out: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = ReproEnvMode::Safe)]
+    repro_env: ReproEnvMode,
     #[arg(long, value_enum, default_value_t = CapsMode::Off)]
     caps: CapsMode,
     #[arg(long, default_value_t = false)]
@@ -808,22 +835,52 @@ async fn main() -> anyhow::Result<()> {
             println!("denied {}", args.id);
             return Ok(());
         }
-        Some(Commands::Replay(args)) => {
-            match store::load_run_record(&paths.state_dir, &args.run_id) {
-                Ok(record) => {
-                    print!("{}", store::render_replay(&record));
-                    return Ok(());
-                }
-                Err(e) => {
-                    return Err(anyhow!(
+        Some(Commands::Replay(args)) => match &args.command {
+            Some(ReplaySubcommand::Verify {
+                run_id,
+                strict,
+                json,
+            }) => {
+                let record = store::load_run_record(&paths.state_dir, run_id).map_err(|e| {
+                    anyhow!(
                         "failed to load run '{}': {}. runs dir: {}",
-                        args.run_id,
+                        run_id,
                         e,
                         paths.runs_dir.display()
-                    ));
+                    )
+                })?;
+                let report = verify_run_record(&record, *strict)?;
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print!("{}", render_verify_report(&report));
+                }
+                if report.status == "fail" {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+            None => {
+                let run_id = args
+                    .run_id
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing run_id. use `openagent replay <run_id>`"))?;
+                match store::load_run_record(&paths.state_dir, run_id) {
+                    Ok(record) => {
+                        print!("{}", store::render_replay(&record));
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        return Err(anyhow!(
+                            "failed to load run '{}': {}. runs dir: {}",
+                            run_id,
+                            e,
+                            paths.runs_dir.display()
+                        ));
+                    }
                 }
             }
-        }
+        },
         Some(Commands::Session(args)) => {
             if cli.run.no_session {
                 return Err(anyhow!(
@@ -1616,6 +1673,8 @@ async fn run_agent<P: ModelProvider>(
                         worker_record,
                         tool_schema_hash_hex_map.clone(),
                         hooks_config_hash_hex.clone(),
+                        Some(config_fingerprint.clone()),
+                        None,
                     ) {
                         Ok(p) => Some(p),
                         Err(write_err) => {
@@ -1758,6 +1817,8 @@ async fn run_agent<P: ModelProvider>(
                     worker_record,
                     tool_schema_hash_hex_map.clone(),
                     hooks_config_hash_hex.clone(),
+                    Some(config_fingerprint.clone()),
+                    None,
                 ) {
                     Ok(p) => Some(p),
                     Err(write_err) => {
@@ -1890,7 +1951,6 @@ async fn run_agent<P: ModelProvider>(
             }
         }
     }
-    agent.event_sink = None;
     if let Some(h) = ui_join {
         if let Err(_e) = h.join() {
             eprintln!("WARN: tui thread ended unexpectedly");
@@ -1930,6 +1990,66 @@ async fn run_agent<P: ModelProvider>(
     );
     let config_fingerprint = build_config_fingerprint(&cli_config, args, &worker_model, paths);
     let config_hash_hex = config_hash_hex(&config_fingerprint)?;
+    let repro_record = repro::build_repro_record(
+        args.repro,
+        args.repro_env,
+        repro::ReproBuildInput {
+            run_id: outcome.run_id.clone(),
+            created_at: crate::trust::now_rfc3339(),
+            provider: provider_to_string(provider_kind),
+            base_url: base_url.to_string(),
+            model: worker_model.clone(),
+            caps_source: format!("{:?}", resolved_settings.caps_mode).to_lowercase(),
+            trust_mode: store::cli_trust_mode(args.trust),
+            approval_mode: format!("{:?}", args.approval_mode).to_lowercase(),
+            approval_key: args.approval_key.as_str().to_string(),
+            policy_hash_hex: policy_hash_hex.clone(),
+            includes_resolved: includes_resolved.clone(),
+            hooks_mode: format!("{:?}", resolved_settings.hooks_mode).to_lowercase(),
+            hooks_config_hash_hex: hooks_config_hash_hex.clone(),
+            taint_mode: format!("{:?}", args.taint_mode).to_lowercase(),
+            taint_policy_globs_hash_hex: policy_hash_hex.clone(),
+            tool_schema_hash_hex_map: tool_schema_hash_hex_map.clone(),
+            tool_catalog: tool_catalog.clone(),
+            exec_target: format!("{:?}", args.exec_target).to_lowercase(),
+            docker: if matches!(args.exec_target, ExecTargetKind::Docker) {
+                Some(repro::ReproDocker {
+                    image: args.docker_image.clone(),
+                    workdir: args.docker_workdir.clone(),
+                    network: format!("{:?}", args.docker_network).to_lowercase(),
+                    user: args.docker_user.clone(),
+                })
+            } else {
+                None
+            },
+            workdir: repro::stable_workdir_string(&args.workdir),
+            config_hash_hex: config_hash_hex.clone(),
+        },
+    )?;
+    if let Some(r) = &repro_record {
+        emit_event(
+            &mut agent.event_sink,
+            &outcome.run_id,
+            0,
+            EventKind::ReproSnapshot,
+            serde_json::json!({
+                "enabled": true,
+                "env_mode": r.env_mode,
+                "repro_hash_hex": r.repro_hash_hex
+            }),
+        );
+        if matches!(args.repro_env, ReproEnvMode::All) {
+            eprintln!(
+                "WARN: repro-env=all enabled; sensitive-like env vars are excluded from hash material."
+            );
+        }
+        if let Some(path) = &args.repro_out {
+            if let Err(e) = repro::write_repro_out(path, r) {
+                eprintln!("WARN: failed to write repro snapshot: {e}");
+            }
+        }
+    }
+    agent.event_sink = None;
     let run_artifact_path = match store::write_run_record(
         paths,
         cli_config,
@@ -1947,6 +2067,8 @@ async fn run_agent<P: ModelProvider>(
         worker_record,
         tool_schema_hash_hex_map,
         hooks_config_hash_hex,
+        Some(config_fingerprint.clone()),
+        repro_record,
     ) {
         Ok(p) => Some(p),
         Err(e) => {
@@ -2641,6 +2763,9 @@ fn build_run_cli_config(
         taint: format!("{:?}", args.taint).to_lowercase(),
         taint_mode: format!("{:?}", args.taint_mode).to_lowercase(),
         taint_digest_bytes: args.taint_digest_bytes,
+        repro: format!("{:?}", args.repro).to_lowercase(),
+        repro_env: format!("{:?}", args.repro_env).to_lowercase(),
+        repro_out: args.repro_out.as_ref().map(|p| stable_path_string(p)),
         use_session_settings: args.use_session_settings,
         resolved_settings_source: resolved_settings.sources.clone(),
         http_max_retries: args.http_max_retries,
@@ -2741,6 +2866,9 @@ fn build_config_fingerprint(
         taint: cli_config.taint.clone(),
         taint_mode: cli_config.taint_mode.clone(),
         taint_digest_bytes: cli_config.taint_digest_bytes,
+        repro: cli_config.repro.clone(),
+        repro_env: cli_config.repro_env.clone(),
+        repro_out: cli_config.repro_out.clone().unwrap_or_default(),
         use_session_settings: cli_config.use_session_settings,
         resolved_settings_source: cli_config.resolved_settings_source.clone(),
         tui_enabled: cli_config.tui_enabled,
@@ -3700,6 +3828,9 @@ rules:
             taint: crate::taint::TaintToggle::Off,
             taint_mode: crate::taint::TaintMode::Propagate,
             taint_digest_bytes: 4096,
+            repro: crate::repro::ReproMode::Off,
+            repro_out: None,
+            repro_env: crate::repro::ReproEnvMode::Safe,
             caps: crate::session::CapsMode::Off,
             stream: false,
             events: None,

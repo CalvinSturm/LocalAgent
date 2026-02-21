@@ -1199,6 +1199,9 @@ fn write_run_artifact_for_eval(
         taint: "off".to_string(),
         taint_mode: "propagate".to_string(),
         taint_digest_bytes: 4096,
+        repro: "off".to_string(),
+        repro_env: "safe".to_string(),
+        repro_out: None,
         use_session_settings: false,
         resolved_settings_source: std::collections::BTreeMap::new(),
         tui_enabled: config.tui_enabled,
@@ -1275,6 +1278,9 @@ fn write_run_artifact_for_eval(
         taint: "off".to_string(),
         taint_mode: "propagate".to_string(),
         taint_digest_bytes: 4096,
+        repro: "off".to_string(),
+        repro_env: "safe".to_string(),
+        repro_out: String::new(),
         use_session_settings: false,
         resolved_settings_source: std::collections::BTreeMap::new(),
         tui_enabled: config.tui_enabled,
@@ -1316,6 +1322,8 @@ fn write_run_artifact_for_eval(
         }),
         tool_schema_hash_hex_map,
         hooks_config_hash_hex,
+        Some(fingerprint.clone()),
+        None,
     )?;
     Ok(())
 }

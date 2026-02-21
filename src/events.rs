@@ -33,6 +33,7 @@ pub enum EventKind {
     HookError,
     ProviderRetry,
     ProviderError,
+    ReproSnapshot,
     McpServerStart,
     McpServerStop,
     Error,
@@ -200,5 +201,17 @@ mod tests {
         );
         let s = serde_json::to_string(&ev).expect("serialize");
         assert!(s.contains("\"taint_updated\""));
+    }
+
+    #[test]
+    fn repro_snapshot_kind_serializes() {
+        let ev = Event::new(
+            "r".to_string(),
+            1,
+            EventKind::ReproSnapshot,
+            serde_json::json!({"enabled":true}),
+        );
+        let s = serde_json::to_string(&ev).expect("serialize");
+        assert!(s.contains("\"repro_snapshot\""));
     }
 }
