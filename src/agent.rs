@@ -10,11 +10,12 @@ use crate::hooks::runner::{make_pre_model_input, make_tool_result_input, HookMan
 use crate::mcp::registry::McpRegistry;
 use crate::providers::http::{message_short, ProviderError};
 use crate::providers::{ModelProvider, StreamDelta};
+use crate::taint::{digest_prefix_hex, TaintMode, TaintSpan, TaintState, TaintToggle};
 use crate::tools::{
     envelope_to_message, execute_tool, to_tool_result_envelope, tool_side_effects,
     validate_builtin_tool_args, ToolResultMeta, ToolRuntime,
 };
-use crate::trust::policy::McpAllowSummary;
+use crate::trust::policy::{McpAllowSummary, Policy};
 use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
 
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +63,17 @@ pub struct AgentOutcome {
     pub provider_retry_count: u32,
     pub provider_error_count: u32,
     pub token_usage: Option<TokenUsage>,
+    pub taint: Option<AgentTaintRecord>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentTaintRecord {
+    pub enabled: bool,
+    pub mode: String,
+    pub digest_bytes: usize,
+    pub overall: String,
+    #[serde(default)]
+    pub spans_by_tool_call_id: std::collections::BTreeMap<String, Vec<TaintSpan>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -72,6 +84,14 @@ pub struct ToolDecisionRecord {
     pub decision: String,
     pub reason: Option<String>,
     pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub taint_overall: Option<String>,
+    #[serde(default)]
+    pub taint_enforced: bool,
+    #[serde(default)]
+    pub escalated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escalation_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -97,6 +117,10 @@ pub struct Agent<P: ModelProvider> {
     pub compaction_settings: CompactionSettings,
     pub hooks: HookManager,
     pub policy_loaded: Option<PolicyLoadedInfo>,
+    pub policy_for_taint: Option<Policy>,
+    pub taint_toggle: TaintToggle,
+    pub taint_mode: TaintMode,
+    pub taint_digest_bytes: usize,
     pub run_id_override: Option<String>,
     pub omit_tools_field_when_empty: bool,
 }
@@ -173,6 +197,7 @@ impl<P: ModelProvider> Agent<P> {
         let mut provider_error_count: u32 = 0;
         let mut total_token_usage = TokenUsage::default();
         let mut saw_token_usage = false;
+        let mut taint_state = TaintState::new();
         for step in 0..self.max_steps {
             let compacted = match maybe_compact(&messages, &self.compaction_settings) {
                 Ok(c) => c,
@@ -241,6 +266,12 @@ impl<P: ModelProvider> Agent<P> {
                         } else {
                             None
                         },
+                        taint: taint_record_from_state(
+                            self.taint_toggle,
+                            self.taint_mode,
+                            self.taint_digest_bytes,
+                            &taint_state,
+                        ),
                     };
                 }
             };
@@ -304,6 +335,12 @@ impl<P: ModelProvider> Agent<P> {
                                 } else {
                                     None
                                 },
+                                taint: taint_record_from_state(
+                                    self.taint_toggle,
+                                    self.taint_mode,
+                                    self.taint_digest_bytes,
+                                    &taint_state,
+                                ),
                             };
                         }
                     },
@@ -363,6 +400,12 @@ impl<P: ModelProvider> Agent<P> {
                                 } else {
                                     None
                                 },
+                                taint: taint_record_from_state(
+                                    self.taint_toggle,
+                                    self.taint_mode,
+                                    self.taint_digest_bytes,
+                                    &taint_state,
+                                ),
                             };
                         }
                         if !result.append_messages.is_empty() {
@@ -422,6 +465,12 @@ impl<P: ModelProvider> Agent<P> {
                                                 } else {
                                                     None
                                                 },
+                                                taint: taint_record_from_state(
+                                                    self.taint_toggle,
+                                                    self.taint_mode,
+                                                    self.taint_digest_bytes,
+                                                    &taint_state,
+                                                ),
                                             };
                                         }
                                     }
@@ -448,6 +497,12 @@ impl<P: ModelProvider> Agent<P> {
                                             } else {
                                                 None
                                             },
+                                            taint: taint_record_from_state(
+                                                self.taint_toggle,
+                                                self.taint_mode,
+                                                self.taint_digest_bytes,
+                                                &taint_state,
+                                            ),
                                         };
                                     }
                                 }
@@ -483,6 +538,12 @@ impl<P: ModelProvider> Agent<P> {
                             } else {
                                 None
                             },
+                            taint: taint_record_from_state(
+                                self.taint_toggle,
+                                self.taint_mode,
+                                self.taint_digest_bytes,
+                                &taint_state,
+                            ),
                         };
                     }
                 }
@@ -622,6 +683,12 @@ impl<P: ModelProvider> Agent<P> {
                         } else {
                             None
                         },
+                        taint: taint_record_from_state(
+                            self.taint_toggle,
+                            self.taint_mode,
+                            self.taint_digest_bytes,
+                            &taint_state,
+                        ),
                     };
                 }
             };
@@ -641,6 +708,10 @@ impl<P: ModelProvider> Agent<P> {
                 serde_json::json!({"tool_calls": resp.tool_calls.len()}),
             );
             messages.push(resp.assistant.clone());
+            if matches!(self.taint_toggle, TaintToggle::On) {
+                let idx = messages.len().saturating_sub(1);
+                taint_state.mark_assistant_context_tainted(idx);
+            }
 
             if resp.tool_calls.is_empty() {
                 self.emit_event(
@@ -670,6 +741,12 @@ impl<P: ModelProvider> Agent<P> {
                     } else {
                         None
                     },
+                    taint: taint_record_from_state(
+                        self.taint_toggle,
+                        self.taint_mode,
+                        self.taint_digest_bytes,
+                        &taint_state,
+                    ),
                 };
             }
 
@@ -722,6 +799,10 @@ impl<P: ModelProvider> Agent<P> {
                 let tool_schema_hash_hex = self.gate_ctx.tool_schema_hashes.get(&tc.name).cloned();
                 let hooks_config_hash_hex = self.gate_ctx.hooks_config_hash_hex.clone();
                 let planner_hash_hex = self.gate_ctx.planner_hash_hex.clone();
+                self.gate_ctx.taint_enabled = matches!(self.taint_toggle, TaintToggle::On);
+                self.gate_ctx.taint_mode = self.taint_mode;
+                self.gate_ctx.taint_overall = taint_state.overall;
+                self.gate_ctx.taint_sources = taint_state.last_sources.clone();
                 let decision_exec_target = Some(
                     match self.gate_ctx.exec_target {
                         crate::target::ExecTargetKind::Host => "host",
@@ -735,6 +816,9 @@ impl<P: ModelProvider> Agent<P> {
                         approval_key,
                         reason,
                         source,
+                        taint_enforced,
+                        escalated,
+                        escalation_reason,
                     } => {
                         self.emit_event(
                             &run_id,
@@ -753,6 +837,10 @@ impl<P: ModelProvider> Agent<P> {
                                 "hooks_config_hash_hex": hooks_config_hash_hex.clone(),
                                 "planner_hash_hex": planner_hash_hex.clone(),
                                 "exec_target": decision_exec_target.clone(),
+                                "taint_overall": taint_state.overall_str(),
+                                "taint_enforced": taint_enforced,
+                                "escalated": escalated,
+                                "escalation_reason": escalation_reason.clone(),
                                 "side_effects": tool_side_effects(&tc.name),
                                 "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
@@ -879,6 +967,12 @@ impl<P: ModelProvider> Agent<P> {
                                             } else {
                                                 None
                                             },
+                                            taint: taint_record_from_state(
+                                                self.taint_toggle,
+                                                self.taint_mode,
+                                                self.taint_digest_bytes,
+                                                &taint_state,
+                                            ),
                                         };
                                     }
                                 },
@@ -942,6 +1036,12 @@ impl<P: ModelProvider> Agent<P> {
                                             } else {
                                                 None
                                             },
+                                            taint: taint_record_from_state(
+                                                self.taint_toggle,
+                                                self.taint_mode,
+                                                self.taint_digest_bytes,
+                                                &taint_state,
+                                            ),
                                         };
                                     }
                                     tool_msg.content = Some(hook_out.content.clone());
@@ -979,12 +1079,44 @@ impl<P: ModelProvider> Agent<P> {
                                         } else {
                                             None
                                         },
+                                        taint: taint_record_from_state(
+                                            self.taint_toggle,
+                                            self.taint_mode,
+                                            self.taint_digest_bytes,
+                                            &taint_state,
+                                        ),
                                     };
                                 }
                             }
                         }
 
                         let content = tool_msg.content.clone().unwrap_or_default();
+                        if matches!(self.taint_toggle, TaintToggle::On) {
+                            let spans = compute_taint_spans_for_tool(
+                                tc,
+                                &content,
+                                self.policy_for_taint.as_ref(),
+                                self.taint_digest_bytes,
+                            );
+                            if !spans.is_empty() {
+                                let tool_message_index = messages.len();
+                                taint_state.add_tool_spans(
+                                    &tc.id,
+                                    tool_message_index,
+                                    spans.clone(),
+                                );
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::TaintUpdated,
+                                    serde_json::json!({
+                                        "overall": taint_state.overall_str(),
+                                        "new_spans": spans.len(),
+                                        "sources": taint_state.sources_count_for_last_update()
+                                    }),
+                                );
+                            }
+                        }
                         self.gate.record(GateEvent {
                             run_id: run_id.clone(),
                             step: step as u32,
@@ -1003,6 +1135,10 @@ impl<P: ModelProvider> Agent<P> {
                             hooks_config_hash_hex: hooks_config_hash_hex.clone(),
                             planner_hash_hex: planner_hash_hex.clone(),
                             exec_target: decision_exec_target.clone(),
+                            taint_overall: Some(taint_state.overall_str().to_string()),
+                            taint_enforced,
+                            escalated,
+                            escalation_reason: escalation_reason.clone(),
                             result_ok: !tool_result_has_error(&content),
                             result_content: content,
                             result_input_digest: Some(input_digest),
@@ -1017,6 +1153,10 @@ impl<P: ModelProvider> Agent<P> {
                             decision: "allow".to_string(),
                             reason: reason.clone(),
                             source: source.clone(),
+                            taint_overall: Some(taint_state.overall_str().to_string()),
+                            taint_enforced,
+                            escalated,
+                            escalation_reason: escalation_reason.clone(),
                         });
                         self.emit_event(
                             &run_id,
@@ -1035,6 +1175,9 @@ impl<P: ModelProvider> Agent<P> {
                         reason,
                         approval_key,
                         source,
+                        taint_enforced,
+                        escalated,
+                        escalation_reason,
                     } => {
                         self.emit_event(
                             &run_id,
@@ -1052,6 +1195,10 @@ impl<P: ModelProvider> Agent<P> {
                                 "hooks_config_hash_hex": hooks_config_hash_hex.clone(),
                                 "planner_hash_hex": planner_hash_hex.clone(),
                                 "exec_target": decision_exec_target.clone(),
+                                "taint_overall": taint_state.overall_str(),
+                                "taint_enforced": taint_enforced,
+                                "escalated": escalated,
+                                "escalation_reason": escalation_reason.clone(),
                                 "side_effects": tool_side_effects(&tc.name),
                                 "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
@@ -1074,6 +1221,10 @@ impl<P: ModelProvider> Agent<P> {
                             hooks_config_hash_hex: hooks_config_hash_hex.clone(),
                             planner_hash_hex: planner_hash_hex.clone(),
                             exec_target: decision_exec_target.clone(),
+                            taint_overall: Some(taint_state.overall_str().to_string()),
+                            taint_enforced,
+                            escalated,
+                            escalation_reason: escalation_reason.clone(),
                             result_ok: false,
                             result_content: reason.clone(),
                             result_input_digest: None,
@@ -1088,6 +1239,10 @@ impl<P: ModelProvider> Agent<P> {
                             decision: "deny".to_string(),
                             reason: Some(reason.clone()),
                             source: source.clone(),
+                            taint_overall: Some(taint_state.overall_str().to_string()),
+                            taint_enforced,
+                            escalated,
+                            escalation_reason: escalation_reason.clone(),
                         });
                         self.emit_event(
                             &run_id,
@@ -1124,6 +1279,12 @@ impl<P: ModelProvider> Agent<P> {
                             } else {
                                 None
                             },
+                            taint: taint_record_from_state(
+                                self.taint_toggle,
+                                self.taint_mode,
+                                self.taint_digest_bytes,
+                                &taint_state,
+                            ),
                         };
                     }
                     GateDecision::RequireApproval {
@@ -1131,6 +1292,9 @@ impl<P: ModelProvider> Agent<P> {
                         approval_id,
                         approval_key,
                         source,
+                        taint_enforced,
+                        escalated,
+                        escalation_reason,
                     } => {
                         if let Some(err) = &invalid_args_error {
                             self.emit_event(
@@ -1147,6 +1311,10 @@ impl<P: ModelProvider> Agent<P> {
                                 "hooks_config_hash_hex": hooks_config_hash_hex.clone(),
                                 "planner_hash_hex": planner_hash_hex.clone(),
                                 "exec_target": decision_exec_target.clone(),
+                                "taint_overall": taint_state.overall_str(),
+                                "taint_enforced": taint_enforced,
+                                "escalated": escalated,
+                                "escalation_reason": escalation_reason.clone(),
                                 "side_effects": tool_side_effects(&tc.name),
                                 "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
@@ -1198,6 +1366,10 @@ impl<P: ModelProvider> Agent<P> {
                                 hooks_config_hash_hex: hooks_config_hash_hex.clone(),
                                 planner_hash_hex: planner_hash_hex.clone(),
                                 exec_target: decision_exec_target.clone(),
+                                taint_overall: Some(taint_state.overall_str().to_string()),
+                                taint_enforced,
+                                escalated,
+                                escalation_reason: escalation_reason.clone(),
                                 result_ok: false,
                                 result_content: content.clone(),
                                 result_input_digest: None,
@@ -1212,6 +1384,10 @@ impl<P: ModelProvider> Agent<P> {
                                 decision: "allow".to_string(),
                                 reason: Some(format!("invalid args bypassed approval: {err}")),
                                 source: source.clone(),
+                                taint_overall: Some(taint_state.overall_str().to_string()),
+                                taint_enforced,
+                                escalated,
+                                escalation_reason: escalation_reason.clone(),
                             });
                             self.emit_event(
                                 &run_id,
@@ -1244,6 +1420,10 @@ impl<P: ModelProvider> Agent<P> {
                                 "hooks_config_hash_hex": hooks_config_hash_hex.clone(),
                                 "planner_hash_hex": planner_hash_hex.clone(),
                                 "exec_target": decision_exec_target.clone(),
+                                "taint_overall": taint_state.overall_str(),
+                                "taint_enforced": taint_enforced,
+                                "escalated": escalated,
+                                "escalation_reason": escalation_reason.clone(),
                                 "side_effects": tool_side_effects(&tc.name),
                                 "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
@@ -1266,6 +1446,10 @@ impl<P: ModelProvider> Agent<P> {
                             hooks_config_hash_hex,
                             planner_hash_hex,
                             exec_target: decision_exec_target,
+                            taint_overall: Some(taint_state.overall_str().to_string()),
+                            taint_enforced,
+                            escalated,
+                            escalation_reason: escalation_reason.clone(),
                             result_ok: false,
                             result_content: reason.clone(),
                             result_input_digest: None,
@@ -1280,6 +1464,10 @@ impl<P: ModelProvider> Agent<P> {
                             decision: "require_approval".to_string(),
                             reason: Some(reason.clone()),
                             source: source.clone(),
+                            taint_overall: Some(taint_state.overall_str().to_string()),
+                            taint_enforced,
+                            escalated,
+                            escalation_reason: escalation_reason.clone(),
                         });
                         self.emit_event(
                             &run_id,
@@ -1292,16 +1480,28 @@ impl<P: ModelProvider> Agent<P> {
                             started_at,
                             finished_at: crate::trust::now_rfc3339(),
                             exit_reason: AgentExitReason::ApprovalRequired,
-                            final_output: format!(
-                                "Approval required: {} ({}){}. Run: openagent approve {} (or deny) then re-run.",
-                                approval_id,
-                                reason,
-                                source
-                                    .as_ref()
-                                    .map(|s| format!(" [source: {}]", s))
-                                    .unwrap_or_default(),
-                                approval_id
-                            ),
+                            final_output: if escalated {
+                                let src = if taint_state.last_sources.is_empty() {
+                                    "other".to_string()
+                                } else {
+                                    taint_state.last_sources.join("/")
+                                };
+                                format!(
+                                    "Approval required due to tainted content (source: {}). Run: openagent approve {} (or deny) then re-run.",
+                                    src, approval_id
+                                )
+                            } else {
+                                format!(
+                                    "Approval required: {} ({}){}. Run: openagent approve {} (or deny) then re-run.",
+                                    approval_id,
+                                    reason,
+                                    source
+                                        .as_ref()
+                                        .map(|s| format!(" [source: {}]", s))
+                                        .unwrap_or_default(),
+                                    approval_id
+                                )
+                            },
                             error: None,
                             messages,
                             tool_calls: observed_tool_calls,
@@ -1317,6 +1517,12 @@ impl<P: ModelProvider> Agent<P> {
                             } else {
                                 None
                             },
+                            taint: taint_record_from_state(
+                                self.taint_toggle,
+                                self.taint_mode,
+                                self.taint_digest_bytes,
+                                &taint_state,
+                            ),
                         };
                     }
                 }
@@ -1351,6 +1557,12 @@ impl<P: ModelProvider> Agent<P> {
             } else {
                 None
             },
+            taint: taint_record_from_state(
+                self.taint_toggle,
+                self.taint_mode,
+                self.taint_digest_bytes,
+                &taint_state,
+            ),
         }
     }
 }
@@ -1434,6 +1646,77 @@ fn add_opt_u32(a: Option<u32>, b: Option<u32>) -> Option<u32> {
         (Some(x), None) => Some(x),
         (None, Some(y)) => Some(y),
         (None, None) => None,
+    }
+}
+
+fn taint_record_from_state(
+    toggle: TaintToggle,
+    mode: TaintMode,
+    digest_bytes: usize,
+    state: &TaintState,
+) -> Option<AgentTaintRecord> {
+    if !matches!(toggle, TaintToggle::On) {
+        return None;
+    }
+    Some(AgentTaintRecord {
+        enabled: true,
+        mode: match mode {
+            TaintMode::Propagate => "propagate".to_string(),
+            TaintMode::PropagateAndEnforce => "propagate_and_enforce".to_string(),
+        },
+        digest_bytes,
+        overall: state.overall_str().to_string(),
+        spans_by_tool_call_id: state.spans_by_tool_call_id.clone(),
+    })
+}
+
+fn compute_taint_spans_for_tool(
+    tc: &ToolCall,
+    tool_message_content: &str,
+    policy: Option<&Policy>,
+    digest_bytes: usize,
+) -> Vec<TaintSpan> {
+    let mut spans = Vec::new();
+    let side_effects = tool_side_effects(&tc.name);
+    let content_for_digest = extract_tool_envelope_content(tool_message_content);
+    let digest = digest_prefix_hex(&content_for_digest, digest_bytes);
+
+    match side_effects {
+        crate::types::SideEffects::Browser => spans.push(TaintSpan {
+            source: "browser".to_string(),
+            detail: tc.name.clone(),
+            digest,
+        }),
+        crate::types::SideEffects::Network => spans.push(TaintSpan {
+            source: "network".to_string(),
+            detail: tc.name.clone(),
+            digest,
+        }),
+        _ => {
+            if tc.name == "read_file" {
+                if let Some(path) = tc.arguments.get("path").and_then(|v| v.as_str()) {
+                    if let Some(p) = policy.and_then(|p| p.taint_file_match(path)) {
+                        spans.push(TaintSpan {
+                            source: "file".to_string(),
+                            detail: format!("matched taint glob: {p}"),
+                            digest,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    spans
+}
+
+fn extract_tool_envelope_content(raw: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(v) => v
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or(raw)
+            .to_string(),
+        Err(_) => raw.to_string(),
     }
 }
 
@@ -1538,6 +1821,10 @@ mod tests {
                 tool_schema_hashes: std::collections::BTreeMap::new(),
                 hooks_config_hash_hex: None,
                 planner_hash_hex: None,
+                taint_enabled: false,
+                taint_mode: crate::taint::TaintMode::Propagate,
+                taint_overall: crate::taint::TaintLevel::Clean,
+                taint_sources: Vec::new(),
             },
             mcp_registry: None,
             stream: false,
@@ -1557,6 +1844,10 @@ mod tests {
             })
             .expect("hooks"),
             policy_loaded: None,
+            policy_for_taint: None,
+            taint_toggle: crate::taint::TaintToggle::Off,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_digest_bytes: 4096,
             run_id_override: None,
             omit_tools_field_when_empty: false,
         };
@@ -1610,6 +1901,10 @@ mod tests {
                 tool_schema_hashes: std::collections::BTreeMap::new(),
                 hooks_config_hash_hex: None,
                 planner_hash_hex: None,
+                taint_enabled: false,
+                taint_mode: crate::taint::TaintMode::Propagate,
+                taint_overall: crate::taint::TaintLevel::Clean,
+                taint_sources: Vec::new(),
             },
             mcp_registry: None,
             stream: false,
@@ -1629,6 +1924,10 @@ mod tests {
             })
             .expect("hooks"),
             policy_loaded: None,
+            policy_for_taint: None,
+            taint_toggle: crate::taint::TaintToggle::Off,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_digest_bytes: 4096,
             run_id_override: None,
             omit_tools_field_when_empty: false,
         };
@@ -1764,6 +2063,10 @@ mod tests {
                 tool_schema_hashes: std::collections::BTreeMap::new(),
                 hooks_config_hash_hex: None,
                 planner_hash_hex: None,
+                taint_enabled: false,
+                taint_mode: crate::taint::TaintMode::Propagate,
+                taint_overall: crate::taint::TaintLevel::Clean,
+                taint_sources: Vec::new(),
             },
             mcp_registry: None,
             stream: false,
@@ -1785,6 +2088,10 @@ mod tests {
             })
             .expect("hooks"),
             policy_loaded: None,
+            policy_for_taint: None,
+            taint_toggle: crate::taint::TaintToggle::Off,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_digest_bytes: 4096,
             run_id_override: None,
             omit_tools_field_when_empty: false,
         };
@@ -1800,5 +2107,46 @@ mod tests {
             .position(|e| matches!(e.kind, crate::events::EventKind::ToolExecStart))
             .expect("start event");
         assert!(target_idx < start_idx);
+    }
+
+    #[test]
+    fn taint_spans_browser_deterministic() {
+        let tc = crate::types::ToolCall {
+            id: "tc1".to_string(),
+            name: "mcp.playwright.browser_snapshot".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let content = serde_json::json!({
+            "schema_version":"openagent.tool_result.v1",
+            "content":"OPENAGENT_FIXTURE_OK"
+        })
+        .to_string();
+        let a = super::compute_taint_spans_for_tool(&tc, &content, None, 8);
+        let b = super::compute_taint_spans_for_tool(&tc, &content, None, 8);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].source, "browser");
+        assert_eq!(a[0].digest, b[0].digest);
+    }
+
+    #[test]
+    fn taint_file_glob_matches_read_file() {
+        let policy = crate::trust::policy::Policy::from_yaml(
+            r#"
+version: 2
+default: deny
+taint:
+  file_path_globs: ["**/.env"]
+"#,
+        )
+        .expect("policy");
+        let tc = crate::types::ToolCall {
+            id: "tcf".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path":"repo/.env"}),
+        };
+        let spans = super::compute_taint_spans_for_tool(&tc, "secret", Some(&policy), 16);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].source, "file");
+        assert!(spans[0].detail.contains("matched taint glob"));
     }
 }

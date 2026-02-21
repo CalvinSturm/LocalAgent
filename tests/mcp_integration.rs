@@ -189,6 +189,7 @@ fn b5_negative_assertion_fails_when_shell_attempted() {
         provider_retry_count: 0,
         provider_error_count: 0,
         token_usage: None,
+        taint: None,
     };
     let failures = evaluate_assertions(
         &[Assertion::ToolNotUsedGlob {

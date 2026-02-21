@@ -6,6 +6,7 @@ use hex::encode as hex_encode;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::taint::{TaintLevel, TaintMode};
 use crate::target::ExecTargetKind;
 use crate::trust::approvals::{
     canonical_json, ApprovalDecisionMatch, ApprovalProvenance, ApprovalStatus, ApprovalsStore,
@@ -63,17 +64,26 @@ pub enum GateDecision {
         approval_key: Option<String>,
         reason: Option<String>,
         source: Option<String>,
+        taint_enforced: bool,
+        escalated: bool,
+        escalation_reason: Option<String>,
     },
     Deny {
         reason: String,
         approval_key: Option<String>,
         source: Option<String>,
+        taint_enforced: bool,
+        escalated: bool,
+        escalation_reason: Option<String>,
     },
     RequireApproval {
         reason: String,
         approval_id: String,
         approval_key: Option<String>,
         source: Option<String>,
+        taint_enforced: bool,
+        escalated: bool,
+        escalation_reason: Option<String>,
     },
 }
 
@@ -98,6 +108,10 @@ pub struct GateContext {
     pub tool_schema_hashes: BTreeMap<String, String>,
     pub hooks_config_hash_hex: Option<String>,
     pub planner_hash_hex: Option<String>,
+    pub taint_enabled: bool,
+    pub taint_mode: TaintMode,
+    pub taint_overall: TaintLevel,
+    pub taint_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +133,10 @@ pub struct GateEvent {
     pub hooks_config_hash_hex: Option<String>,
     pub planner_hash_hex: Option<String>,
     pub exec_target: Option<String>,
+    pub taint_overall: Option<String>,
+    pub taint_enforced: bool,
+    pub escalated: bool,
+    pub escalation_reason: Option<String>,
     pub result_ok: bool,
     pub result_content: String,
     pub result_input_digest: Option<String>,
@@ -154,6 +172,9 @@ impl ToolGate for NoGate {
             approval_key: None,
             reason: None,
             source: None,
+            taint_enforced: false,
+            escalated: false,
+            escalation_reason: None,
         }
     }
 
@@ -222,6 +243,9 @@ impl ToolGate for TrustGate {
                 reason: "shell requires --allow-shell".to_string(),
                 approval_key: Some(approval_key),
                 source: Some("hard_gate".to_string()),
+                taint_enforced: false,
+                escalated: false,
+                escalation_reason: None,
             };
         }
         if (call.name == "write_file" || call.name == "apply_patch")
@@ -232,6 +256,9 @@ impl ToolGate for TrustGate {
                 reason: "writes require --allow-write".to_string(),
                 approval_key: Some(approval_key),
                 source: Some("hard_gate".to_string()),
+                taint_enforced: false,
+                escalated: false,
+                escalation_reason: None,
             };
         }
 
@@ -240,16 +267,38 @@ impl ToolGate for TrustGate {
                 reason,
                 approval_key: Some(approval_key),
                 source: Some("mcp_allowlist".to_string()),
+                taint_enforced: false,
+                escalated: false,
+                escalation_reason: None,
             };
         }
 
         let eval = self.policy.evaluate(&call.name, &args_with_target);
-        match eval.decision {
+        let side_effects = crate::tools::tool_side_effects(&call.name);
+        let taint_enforced = ctx.taint_enabled
+            && matches!(ctx.taint_mode, TaintMode::PropagateAndEnforce)
+            && matches!(ctx.taint_overall, TaintLevel::Tainted);
+        let should_escalate = taint_enforced
+            && matches!(
+                side_effects,
+                crate::types::SideEffects::FilesystemWrite
+                    | crate::types::SideEffects::ShellExec
+                    | crate::types::SideEffects::Network
+            );
+        let escalation_reason = if should_escalate {
+            Some("taint_escalation".to_string())
+        } else {
+            None
+        };
+        let mut decision = match eval.decision {
             PolicyDecision::Allow => GateDecision::Allow {
                 approval_id: None,
                 approval_key: Some(approval_key),
                 reason: eval.reason,
                 source: eval.source,
+                taint_enforced,
+                escalated: false,
+                escalation_reason: None,
             },
             PolicyDecision::Deny => GateDecision::Deny {
                 reason: eval
@@ -257,6 +306,9 @@ impl ToolGate for TrustGate {
                     .unwrap_or_else(|| format!("policy denied tool '{}'", call.name)),
                 approval_key: Some(approval_key),
                 source: eval.source,
+                taint_enforced,
+                escalated: false,
+                escalation_reason: None,
             },
             PolicyDecision::RequireApproval => {
                 if matches!(ctx.approval_mode, ApprovalMode::Auto) {
@@ -270,6 +322,9 @@ impl ToolGate for TrustGate {
                             approval_key: Some(approval_key),
                             reason: eval.reason.clone(),
                             source: eval.source.clone(),
+                            taint_enforced,
+                            escalated: false,
+                            escalation_reason: None,
                         },
                         AutoApproveScope::Session => {
                             match self.approvals.ensure_approved_for_key(
@@ -283,11 +338,17 @@ impl ToolGate for TrustGate {
                                     approval_key: Some(approval_key),
                                     reason: eval.reason.clone(),
                                     source: eval.source.clone(),
+                                    taint_enforced,
+                                    escalated: false,
+                                    escalation_reason: None,
                                 },
                                 Err(e) => GateDecision::Deny {
                                     reason: format!("failed to auto-approve: {e}"),
                                     approval_key: Some(approval_key),
                                     source: eval.source.clone(),
+                                    taint_enforced,
+                                    escalated: false,
+                                    escalation_reason: None,
                                 },
                             }
                         }
@@ -303,6 +364,9 @@ impl ToolGate for TrustGate {
                         approval_key: Some(usage.approval_key),
                         reason: eval.reason.clone(),
                         source: eval.source.clone(),
+                        taint_enforced,
+                        escalated: false,
+                        escalation_reason: None,
                     },
                     Ok(None) => match self
                         .approvals
@@ -315,6 +379,9 @@ impl ToolGate for TrustGate {
                             reason: format!("approval denied: {id}"),
                             approval_key: Some(approval_key),
                             source: eval.source.clone(),
+                            taint_enforced,
+                            escalated: false,
+                            escalation_reason: None,
                         },
                         Ok(Some(ApprovalDecisionMatch {
                             id,
@@ -327,6 +394,9 @@ impl ToolGate for TrustGate {
                             approval_id: id,
                             approval_key: Some(approval_key),
                             source: eval.source.clone(),
+                            taint_enforced,
+                            escalated: false,
+                            escalation_reason: None,
                         },
                         Ok(None) => {
                             match self.approvals.create_pending(
@@ -346,11 +416,17 @@ impl ToolGate for TrustGate {
                                     approval_id: id,
                                     approval_key: Some(approval_key),
                                     source: eval.source.clone(),
+                                    taint_enforced,
+                                    escalated: false,
+                                    escalation_reason: None,
                                 },
                                 Err(e) => GateDecision::Deny {
                                     reason: format!("failed to create approval request: {e}"),
                                     approval_key: Some(approval_key),
                                     source: eval.source.clone(),
+                                    taint_enforced,
+                                    escalated: false,
+                                    escalation_reason: None,
                                 },
                             }
                         }
@@ -358,16 +434,113 @@ impl ToolGate for TrustGate {
                             reason: format!("failed to read approvals store: {e}"),
                             approval_key: Some(approval_key),
                             source: eval.source.clone(),
+                            taint_enforced,
+                            escalated: false,
+                            escalation_reason: None,
                         },
                     },
                     Err(e) => GateDecision::Deny {
                         reason: format!("failed to read approvals store: {e}"),
                         approval_key: Some(approval_key),
                         source: eval.source,
+                        taint_enforced,
+                        escalated: false,
+                        escalation_reason: None,
                     },
                 }
             }
+        };
+
+        if should_escalate {
+            decision = match decision {
+                GateDecision::Deny { .. } => decision,
+                GateDecision::RequireApproval {
+                    reason,
+                    approval_id,
+                    approval_key,
+                    source,
+                    taint_enforced,
+                    ..
+                } => GateDecision::RequireApproval {
+                    reason: if reason.is_empty() {
+                        "approval required due to tainted content".to_string()
+                    } else {
+                        reason
+                    },
+                    approval_id,
+                    approval_key,
+                    source,
+                    taint_enforced,
+                    escalated: true,
+                    escalation_reason: escalation_reason.clone(),
+                },
+                GateDecision::Allow {
+                    approval_id: _,
+                    approval_key,
+                    reason: _,
+                    source,
+                    taint_enforced,
+                    ..
+                } => {
+                    if matches!(ctx.approval_mode, ApprovalMode::Auto) {
+                        let auto_id = match ctx.auto_approve_scope {
+                            AutoApproveScope::Run => format!(
+                                "auto:{}:{}",
+                                ctx.run_id.clone().unwrap_or_else(|| "run".to_string()),
+                                call.id
+                            ),
+                            AutoApproveScope::Session => {
+                                let key_for_session = approval_key.clone().unwrap_or_default();
+                                self.approvals
+                                    .ensure_approved_for_key(
+                                        &call.name,
+                                        &call.arguments,
+                                        &key_for_session,
+                                        Some(approval_provenance.clone()),
+                                    )
+                                    .unwrap_or_else(|_| {
+                                        format!(
+                                            "auto:{}:{}",
+                                            ctx.run_id.clone().unwrap_or_else(|| "run".to_string()),
+                                            call.id
+                                        )
+                                    })
+                            }
+                        };
+                        GateDecision::Allow {
+                            approval_id: Some(auto_id),
+                            approval_key,
+                            reason: Some("taint_escalation".to_string()),
+                            source,
+                            taint_enforced,
+                            escalated: true,
+                            escalation_reason: escalation_reason.clone(),
+                        }
+                    } else {
+                        let id = self
+                            .approvals
+                            .create_pending(
+                                &call.name,
+                                &call.arguments,
+                                approval_key.clone(),
+                                Some(approval_provenance.clone()),
+                            )
+                            .unwrap_or_else(|_| format!("pending:{}:{}", call.name, call.id));
+                        GateDecision::RequireApproval {
+                            reason: "approval required due to tainted content".to_string(),
+                            approval_id: id,
+                            approval_key,
+                            source,
+                            taint_enforced,
+                            escalated: true,
+                            escalation_reason: escalation_reason.clone(),
+                        }
+                    }
+                }
+            };
         }
+
+        decision
     }
 
     fn record(&mut self, event: GateEvent) {
@@ -390,6 +563,10 @@ impl ToolGate for TrustGate {
             hooks_config_hash_hex: event.hooks_config_hash_hex,
             planner_hash_hex: event.planner_hash_hex,
             exec_target: event.exec_target,
+            taint_overall: event.taint_overall,
+            taint_enforced: event.taint_enforced,
+            escalated: event.escalated,
+            escalation_reason: event.escalation_reason,
             result: AuditResult {
                 ok: event.result_ok,
                 content: event.result_content,
@@ -531,6 +708,10 @@ mod tests {
             tool_schema_hashes: BTreeMap::new(),
             hooks_config_hash_hex: None,
             planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         let call = ToolCall {
             id: "tc_0".to_string(),
@@ -568,6 +749,10 @@ mod tests {
             tool_schema_hashes: BTreeMap::new(),
             hooks_config_hash_hex: None,
             planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         let call = ToolCall {
             id: "tc_1".to_string(),
@@ -617,6 +802,10 @@ mod tests {
             tool_schema_hashes: BTreeMap::new(),
             hooks_config_hash_hex: None,
             planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         let call = ToolCall {
             id: "tc_1".to_string(),
@@ -666,6 +855,10 @@ mod tests {
             tool_schema_hashes: BTreeMap::new(),
             hooks_config_hash_hex: None,
             planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         let call = ToolCall {
             id: "tc_1".to_string(),
@@ -721,6 +914,10 @@ mod tests {
             tool_schema_hashes: BTreeMap::new(),
             hooks_config_hash_hex: None,
             planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         let call = ToolCall {
             id: "tc_1".to_string(),
@@ -767,6 +964,10 @@ mod tests {
             tool_schema_hashes: BTreeMap::new(),
             hooks_config_hash_hex: None,
             planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         let call = ToolCall {
             id: "tc_abc".to_string(),
@@ -842,6 +1043,10 @@ rules:
             tool_schema_hashes: BTreeMap::new(),
             hooks_config_hash_hex: None,
             planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         assert!(matches!(
             gate.decide(&ctx, &call),
@@ -939,6 +1144,10 @@ rules:
             tool_schema_hashes: BTreeMap::new(),
             hooks_config_hash_hex: None,
             planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         assert!(matches!(
             gate.decide(&ctx, &call),
@@ -949,5 +1158,130 @@ rules:
             gate.decide(&ctx, &call),
             GateDecision::Allow { .. }
         ));
+    }
+
+    #[test]
+    fn taint_enforcement_escalates_shell_to_require_approval() {
+        let tmp = tempdir().expect("tmp");
+        let approvals = tmp.path().join("approvals.json");
+        let audit = tmp.path().join("audit.jsonl");
+        let store = ApprovalsStore::new(approvals);
+        let policy = Policy::from_yaml(
+            r#"
+version: 2
+default: deny
+rules:
+  - tool: "shell"
+    decision: allow
+"#,
+        )
+        .expect("policy");
+        let policy_hash = compute_policy_hash_hex(b"custom");
+        let mut gate = TrustGate::new(
+            policy,
+            store,
+            AuditLog::new(audit),
+            TrustMode::On,
+            policy_hash,
+        );
+        let ctx = GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: true,
+            allow_write: false,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: Some("r".to_string()),
+            enable_write_tools: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Lmstudio,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: ApprovalKeyVersion::V1,
+            tool_schema_hashes: BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: true,
+            taint_mode: crate::taint::TaintMode::PropagateAndEnforce,
+            taint_overall: crate::taint::TaintLevel::Tainted,
+            taint_sources: vec!["browser".to_string()],
+        };
+        let call = ToolCall {
+            id: "tc_taint".to_string(),
+            name: "shell".to_string(),
+            arguments: json!({"cmd":"echo","args":["hi"]}),
+        };
+        match gate.decide(&ctx, &call) {
+            GateDecision::RequireApproval {
+                escalated,
+                escalation_reason,
+                ..
+            } => {
+                assert!(escalated);
+                assert_eq!(escalation_reason.as_deref(), Some("taint_escalation"));
+            }
+            _ => panic!("expected require_approval"),
+        }
+    }
+
+    #[test]
+    fn taint_propagate_mode_does_not_escalate() {
+        let tmp = tempdir().expect("tmp");
+        let approvals = tmp.path().join("approvals.json");
+        let audit = tmp.path().join("audit.jsonl");
+        let store = ApprovalsStore::new(approvals);
+        let policy = Policy::from_yaml(
+            r#"
+version: 2
+default: deny
+rules:
+  - tool: "shell"
+    decision: allow
+"#,
+        )
+        .expect("policy");
+        let policy_hash = compute_policy_hash_hex(b"custom");
+        let mut gate = TrustGate::new(
+            policy,
+            store,
+            AuditLog::new(audit),
+            TrustMode::On,
+            policy_hash,
+        );
+        let ctx = GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: true,
+            allow_write: false,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: Some("r".to_string()),
+            enable_write_tools: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Lmstudio,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: ApprovalKeyVersion::V1,
+            tool_schema_hashes: BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: true,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Tainted,
+            taint_sources: vec!["browser".to_string()],
+        };
+        let call = ToolCall {
+            id: "tc_taint".to_string(),
+            name: "shell".to_string(),
+            arguments: json!({"cmd":"echo","args":["hi"]}),
+        };
+        match gate.decide(&ctx, &call) {
+            GateDecision::Allow { escalated, .. } => assert!(!escalated),
+            _ => panic!("expected allow"),
+        }
     }
 }

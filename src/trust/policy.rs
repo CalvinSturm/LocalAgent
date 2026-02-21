@@ -28,6 +28,7 @@ pub struct Policy {
     version: u32,
     includes_resolved: Vec<String>,
     mcp_allow: Option<McpAllowlist>,
+    taint: Option<TaintConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +90,7 @@ struct PolicyFile {
     #[serde(default)]
     includes: Vec<String>,
     mcp: Option<RawMcpAllowlist>,
+    taint: Option<RawTaintConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -106,6 +108,18 @@ struct RawMcpAllowlist {
     allow_servers: Vec<String>,
     #[serde(default)]
     allow_tools: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTaintConfig {
+    #[serde(default)]
+    file_path_globs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TaintConfig {
+    file_path_globs: Vec<String>,
+    file_path_matchers: Vec<GlobMatcher>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -153,6 +167,7 @@ impl Policy {
             map_decision(raw.default),
             compile_rules(raw.rules, "<inline>")?,
             raw.mcp.map(compile_mcp_allowlist).transpose()?,
+            raw.taint.map(compile_taint_config).transpose()?,
             Vec::new(),
         )
     }
@@ -172,6 +187,7 @@ impl Policy {
             default,
             ctx.rules,
             ctx.mcp_allow,
+            ctx.taint,
             ctx.includes_resolved,
         )
     }
@@ -182,6 +198,7 @@ impl Policy {
             version: 1,
             includes_resolved: Vec::new(),
             mcp_allow: None,
+            taint: None,
             rules: vec![
                 CompiledRule {
                     tool_pattern: "list_dir".to_string(),
@@ -235,6 +252,18 @@ impl Policy {
                 },
             ],
         }
+    }
+
+    pub fn taint_file_match(&self, path: &str) -> Option<String> {
+        let Some(taint) = &self.taint else {
+            return None;
+        };
+        for (idx, matcher) in taint.file_path_matchers.iter().enumerate() {
+            if matcher.is_match(path) {
+                return taint.file_path_globs.get(idx).cloned();
+            }
+        }
+        None
     }
 
     pub fn evaluate(&self, tool: &str, args: &Value) -> PolicyEvaluation {
@@ -327,6 +356,7 @@ struct PolicyLoadContext {
     default: Option<PolicyDecision>,
     rules: Vec<CompiledRule>,
     mcp_allow: Option<McpAllowlist>,
+    taint: Option<TaintConfig>,
     includes_resolved: Vec<String>,
 }
 
@@ -394,6 +424,9 @@ fn load_policy_recursive(
     if ctx.mcp_allow.is_none() && raw.mcp.is_some() {
         ctx.mcp_allow = raw.mcp.map(compile_mcp_allowlist).transpose()?;
     }
+    if ctx.taint.is_none() && raw.taint.is_some() {
+        ctx.taint = raw.taint.map(compile_taint_config).transpose()?;
+    }
 
     if !visited.contains(&canonical) {
         ctx.rules.extend(compile_rules(
@@ -450,6 +483,17 @@ fn compile_mcp_allowlist(raw: RawMcpAllowlist) -> anyhow::Result<McpAllowlist> {
     })
 }
 
+fn compile_taint_config(raw: RawTaintConfig) -> anyhow::Result<TaintConfig> {
+    let mut matchers = Vec::new();
+    for pat in &raw.file_path_globs {
+        matchers.push(Glob::new(pat)?.compile_matcher());
+    }
+    Ok(TaintConfig {
+        file_path_globs: raw.file_path_globs,
+        file_path_matchers: matchers,
+    })
+}
+
 impl McpAllowlist {
     fn summary(&self) -> McpAllowSummary {
         McpAllowSummary {
@@ -464,6 +508,7 @@ fn compile_policy(
     default: PolicyDecision,
     rules: Vec<CompiledRule>,
     mcp_allow: Option<McpAllowlist>,
+    taint: Option<TaintConfig>,
     includes_resolved: Vec<String>,
 ) -> anyhow::Result<Policy> {
     Ok(Policy {
@@ -472,6 +517,7 @@ fn compile_policy(
         version,
         includes_resolved,
         mcp_allow,
+        taint,
     })
 }
 
@@ -714,5 +760,23 @@ mcp:
             .mcp_tool_allowed("mcp.github.search_repos")
             .expect_err("blocked");
         assert!(err.contains("server not allowlisted"));
+    }
+
+    #[test]
+    fn taint_file_glob_match_works() {
+        let policy = Policy::from_yaml(
+            r#"
+version: 2
+default: deny
+taint:
+  file_path_globs: ["**/.env", "**/secrets/**"]
+"#,
+        )
+        .expect("parse");
+        assert_eq!(
+            policy.taint_file_match("project/.env").as_deref(),
+            Some("**/.env")
+        );
+        assert_eq!(policy.taint_file_match("project/src/lib.rs"), None);
     }
 }

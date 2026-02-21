@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, HashMap};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TaintLevel {
+    #[default]
     Clean,
     Tainted,
 }
@@ -49,7 +50,12 @@ impl TaintState {
         }
     }
 
-    pub fn add_tool_spans(&mut self, tool_call_id: &str, message_id: MessageId, spans: Vec<TaintSpan>) {
+    pub fn add_tool_spans(
+        &mut self,
+        tool_call_id: &str,
+        message_id: MessageId,
+        spans: Vec<TaintSpan>,
+    ) {
         if spans.is_empty() {
             return;
         }
@@ -69,11 +75,29 @@ impl TaintState {
         if !matches!(self.overall, TaintLevel::Tainted) {
             return;
         }
-        self.message_taints.entry(message_id).or_default().push(TaintSpan {
-            source: "other".to_string(),
-            detail: "tainted_context".to_string(),
-            digest: String::new(),
-        });
+        self.message_taints
+            .entry(message_id)
+            .or_default()
+            .push(TaintSpan {
+                source: "other".to_string(),
+                detail: "tainted_context".to_string(),
+                digest: String::new(),
+            });
+    }
+
+    pub fn sources_count_for_last_update(&self) -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        for src in &self.last_sources {
+            *out.entry(src.clone()).or_insert(0) += 1;
+        }
+        out
+    }
+
+    pub fn overall_str(&self) -> &'static str {
+        match self.overall {
+            TaintLevel::Clean => "clean",
+            TaintLevel::Tainted => "tainted",
+        }
     }
 }
 

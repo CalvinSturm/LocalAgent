@@ -172,6 +172,7 @@ mod tests {
             provider_retry_count: 0,
             provider_error_count: 0,
             token_usage: None,
+            taint: None,
         };
         let failures = evaluate_assertions(
             &[
@@ -217,6 +218,7 @@ mod tests {
             provider_retry_count: 0,
             provider_error_count: 0,
             token_usage: None,
+            taint: None,
         };
         let ok = evaluate_assertions(
             &[Assertion::ToolNotUsedGlob {

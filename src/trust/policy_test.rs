@@ -121,6 +121,10 @@ pub fn run_policy_tests(policy_path: &Path, cases_path: &Path) -> anyhow::Result
             } else {
                 ExecTargetKind::Host
             },
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
         };
         let call = ToolCall {
             id: format!("tc_{idx}"),

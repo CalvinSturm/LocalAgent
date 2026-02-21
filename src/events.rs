@@ -18,6 +18,7 @@ pub enum EventKind {
     ToolExecTarget,
     ToolExecStart,
     ToolExecEnd,
+    TaintUpdated,
     CompactionPerformed,
     PolicyLoaded,
     PlannerStart,
@@ -187,5 +188,17 @@ mod tests {
         .expect("emit2");
         let content = std::fs::read_to_string(path).expect("read");
         assert_eq!(content.lines().count(), 2);
+    }
+
+    #[test]
+    fn taint_updated_kind_serializes() {
+        let ev = Event::new(
+            "r".to_string(),
+            1,
+            EventKind::TaintUpdated,
+            serde_json::json!({"overall":"tainted"}),
+        );
+        let s = serde_json::to_string(&ev).expect("serialize");
+        assert!(s.contains("\"taint_updated\""));
     }
 }

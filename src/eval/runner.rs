@@ -658,6 +658,7 @@ fn write_synthetic_error_artifact(
         provider_retry_count: 0,
         provider_error_count: 0,
         token_usage: None,
+        taint: None,
     };
     let _ = write_run_artifact_for_eval(
         config,
@@ -930,6 +931,10 @@ async fn run_single(
         provider: config.provider,
         model: model.to_string(),
         exec_target: ExecTargetKind::Host,
+        taint_enabled: false,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_overall: crate::taint::TaintLevel::Clean,
+        taint_sources: Vec::new(),
     };
     let gate_build = build_gate(config.trust, state_paths)?;
     let policy_hash_hex = gate_build.policy_hash_hex.clone();
@@ -1031,6 +1036,10 @@ async fn run_single(
             max_stdout_bytes: config.hooks_max_stdout_bytes,
         })?,
         policy_loaded: policy_loaded_info,
+        policy_for_taint: gate_build.policy_for_exposure.clone(),
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
         run_id_override: None,
         omit_tools_field_when_empty: false,
     };
@@ -1187,6 +1196,9 @@ fn write_run_artifact_for_eval(
         hooks_timeout_ms: config.hooks_timeout_ms,
         hooks_max_stdout_bytes: config.hooks_max_stdout_bytes,
         tool_args_strict: format!("{:?}", config.tool_args_strict).to_lowercase(),
+        taint: "off".to_string(),
+        taint_mode: "propagate".to_string(),
+        taint_digest_bytes: 4096,
         use_session_settings: false,
         resolved_settings_source: std::collections::BTreeMap::new(),
         tui_enabled: config.tui_enabled,
@@ -1260,6 +1272,9 @@ fn write_run_artifact_for_eval(
         hooks_timeout_ms: config.hooks_timeout_ms,
         hooks_max_stdout_bytes: config.hooks_max_stdout_bytes,
         tool_args_strict: format!("{:?}", config.tool_args_strict).to_lowercase(),
+        taint: "off".to_string(),
+        taint_mode: "propagate".to_string(),
+        taint_digest_bytes: 4096,
         use_session_settings: false,
         resolved_settings_source: std::collections::BTreeMap::new(),
         tui_enabled: config.tui_enabled,
@@ -1691,7 +1706,9 @@ mod tests {
     };
     use crate::compaction::{CompactionMode, ToolResultPersist};
     use crate::eval::tasks::{EvalTask, Fixture, RequiredCapabilities, VerifierSpec};
-    use crate::gate::{ApprovalKeyVersion, ApprovalMode, AutoApproveScope, ProviderKind, TrustMode};
+    use crate::gate::{
+        ApprovalKeyVersion, ApprovalMode, AutoApproveScope, ProviderKind, TrustMode,
+    };
     use crate::hooks::config::HooksMode;
     use crate::planner::RunMode;
     use crate::providers::http::HttpConfig;

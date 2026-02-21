@@ -9,6 +9,7 @@ mod planner;
 mod providers;
 mod session;
 mod store;
+mod taint;
 mod target;
 mod taskgraph;
 mod tools;
@@ -56,6 +57,7 @@ use store::{
     config_hash_hex, extract_session_messages, provider_to_string, resolve_state_paths,
     stable_path_string, ConfigFingerprintV1, PlannerRunRecord, RunCliConfig, WorkerRunRecord,
 };
+use taint::{TaintMode, TaintToggle};
 use target::{DockerTarget, ExecTarget, ExecTargetKind, HostTarget};
 use taskgraph::{PropagateSummaries, TaskDefaults, TaskFile, TaskNodeSettings};
 use tokio::sync::watch;
@@ -439,6 +441,12 @@ struct EvalArgs {
     hooks_max_stdout_bytes: usize,
     #[arg(long, value_enum, default_value_t = ToolArgsStrict::On)]
     tool_args_strict: ToolArgsStrict,
+    #[arg(long, value_enum, default_value_t = TaintToggle::Off)]
+    taint: TaintToggle,
+    #[arg(long, value_enum, default_value_t = TaintMode::Propagate)]
+    taint_mode: TaintMode,
+    #[arg(long, default_value_t = 4096)]
+    taint_digest_bytes: usize,
     #[arg(long, value_enum, default_value_t = CapsMode::Off)]
     caps: CapsMode,
     #[arg(long)]
@@ -591,6 +599,12 @@ struct RunArgs {
     hooks_max_stdout_bytes: usize,
     #[arg(long, value_enum, default_value_t = ToolArgsStrict::On)]
     tool_args_strict: ToolArgsStrict,
+    #[arg(long, value_enum, default_value_t = TaintToggle::Off)]
+    taint: TaintToggle,
+    #[arg(long, value_enum, default_value_t = TaintMode::Propagate)]
+    taint_mode: TaintMode,
+    #[arg(long, default_value_t = 4096)]
+    taint_digest_bytes: usize,
     #[arg(long, value_enum, default_value_t = CapsMode::Off)]
     caps: CapsMode,
     #[arg(long, default_value_t = false)]
@@ -1335,6 +1349,10 @@ async fn run_agent<P: ModelProvider>(
         tool_schema_hashes: std::collections::BTreeMap::new(),
         hooks_config_hash_hex: None,
         planner_hash_hex: None,
+        taint_enabled: matches!(args.taint, TaintToggle::On),
+        taint_mode: args.taint_mode,
+        taint_overall: taint::TaintLevel::Clean,
+        taint_sources: Vec::new(),
     };
     let gate_build = build_gate(args, paths)?;
     let policy_hash_hex = gate_build.policy_hash_hex.clone();
@@ -1543,6 +1561,7 @@ async fn run_agent<P: ModelProvider>(
                         provider_retry_count: 0,
                         provider_error_count: 0,
                         token_usage: None,
+                        taint: None,
                     };
                     planner_record = Some(PlannerRunRecord {
                         model: planner_model.clone(),
@@ -1699,6 +1718,7 @@ async fn run_agent<P: ModelProvider>(
                     provider_retry_count: 0,
                     provider_error_count: 0,
                     token_usage: None,
+                    taint: None,
                 };
                 let cli_config = build_run_cli_config(
                     provider_kind,
@@ -1793,6 +1813,10 @@ async fn run_agent<P: ModelProvider>(
         },
         hooks: hook_manager,
         policy_loaded: policy_loaded_info,
+        policy_for_taint: gate_build.policy_for_exposure.clone(),
+        taint_toggle: args.taint,
+        taint_mode: args.taint_mode,
+        taint_digest_bytes: args.taint_digest_bytes,
         run_id_override: Some(run_id.clone()),
         omit_tools_field_when_empty: false,
     };
@@ -1822,6 +1846,7 @@ async fn run_agent<P: ModelProvider>(
                 provider_retry_count: 0,
                 provider_error_count: 0,
                 token_usage: None,
+                taint: None,
             }
         },
         _ = async {
@@ -1849,6 +1874,7 @@ async fn run_agent<P: ModelProvider>(
                 provider_retry_count: 0,
                 provider_error_count: 0,
                 token_usage: None,
+                taint: None,
             }
         }
     };
@@ -2612,6 +2638,9 @@ fn build_run_cli_config(
         hooks_timeout_ms: args.hooks_timeout_ms,
         hooks_max_stdout_bytes: args.hooks_max_stdout_bytes,
         tool_args_strict: format!("{:?}", resolved_settings.tool_args_strict).to_lowercase(),
+        taint: format!("{:?}", args.taint).to_lowercase(),
+        taint_mode: format!("{:?}", args.taint_mode).to_lowercase(),
+        taint_digest_bytes: args.taint_digest_bytes,
         use_session_settings: args.use_session_settings,
         resolved_settings_source: resolved_settings.sources.clone(),
         http_max_retries: args.http_max_retries,
@@ -2709,6 +2738,9 @@ fn build_config_fingerprint(
         hooks_timeout_ms: cli_config.hooks_timeout_ms,
         hooks_max_stdout_bytes: cli_config.hooks_max_stdout_bytes,
         tool_args_strict: cli_config.tool_args_strict.clone(),
+        taint: cli_config.taint.clone(),
+        taint_mode: cli_config.taint_mode.clone(),
+        taint_digest_bytes: cli_config.taint_digest_bytes,
         use_session_settings: cli_config.use_session_settings,
         resolved_settings_source: cli_config.resolved_settings_source.clone(),
         tui_enabled: cli_config.tui_enabled,
@@ -3665,6 +3697,9 @@ rules:
             hooks_timeout_ms: 2000,
             hooks_max_stdout_bytes: 200_000,
             tool_args_strict: crate::tools::ToolArgsStrict::On,
+            taint: crate::taint::TaintToggle::Off,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_digest_bytes: 4096,
             caps: crate::session::CapsMode::Off,
             stream: false,
             events: None,

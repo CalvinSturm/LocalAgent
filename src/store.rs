@@ -57,6 +57,8 @@ pub struct RunRecord {
     pub hook_report: Vec<crate::hooks::protocol::HookInvocationReport>,
     #[serde(default)]
     pub tool_catalog: Vec<ToolCatalogEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub taint: Option<crate::agent::AgentTaintRecord>,
     pub final_output: String,
     pub error: Option<String>,
 }
@@ -148,6 +150,9 @@ pub struct RunCliConfig {
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
     pub tool_args_strict: String,
+    pub taint: String,
+    pub taint_mode: String,
+    pub taint_digest_bytes: usize,
     pub use_session_settings: bool,
     #[serde(default)]
     pub resolved_settings_source: BTreeMap<String, String>,
@@ -227,6 +232,9 @@ pub struct ConfigFingerprintV1 {
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
     pub tool_args_strict: String,
+    pub taint: String,
+    pub taint_mode: String,
+    pub taint_digest_bytes: usize,
     pub use_session_settings: bool,
     pub resolved_settings_source: BTreeMap<String, String>,
     pub tui_enabled: bool,
@@ -355,6 +363,7 @@ pub fn write_run_record(
         }),
         hook_report: outcome.hook_invocations.clone(),
         tool_catalog,
+        taint: outcome.taint.clone(),
         final_output: outcome.final_output.clone(),
         error: outcome.error.clone(),
     };
@@ -388,6 +397,10 @@ pub fn render_replay(record: &RunRecord) -> String {
     ));
     out.push_str(&format!("exec_target: {}\n", record.cli.exec_target));
     out.push_str(&format!("tui_enabled: {}\n", record.cli.tui_enabled));
+    out.push_str(&format!(
+        "taint: {} mode={} digest_bytes={}\n",
+        record.cli.taint, record.cli.taint_mode, record.cli.taint_digest_bytes
+    ));
     if let Some(planner) = &record.planner {
         let steps_count = planner
             .plan_json
@@ -680,6 +693,13 @@ mod tests {
             provider_retry_count: 0,
             provider_error_count: 0,
             token_usage: None,
+            taint: Some(crate::agent::AgentTaintRecord {
+                enabled: true,
+                mode: "propagate".to_string(),
+                digest_bytes: 4096,
+                overall: "tainted".to_string(),
+                spans_by_tool_call_id: BTreeMap::new(),
+            }),
         };
         write_run_record(
             &paths,
@@ -723,6 +743,9 @@ mod tests {
                 hooks_timeout_ms: 2000,
                 hooks_max_stdout_bytes: 200_000,
                 tool_args_strict: "on".to_string(),
+                taint: "off".to_string(),
+                taint_mode: "propagate".to_string(),
+                taint_digest_bytes: 4096,
                 use_session_settings: false,
                 resolved_settings_source: BTreeMap::new(),
                 tui_enabled: false,
@@ -764,6 +787,14 @@ mod tests {
         assert_eq!(loaded.mode, "single");
         assert_eq!(loaded.config_hash_hex, "cfg_hash");
         assert_eq!(loaded.cli.exec_target, "host");
+        assert_eq!(
+            loaded
+                .taint
+                .as_ref()
+                .map(|t| t.overall.as_str())
+                .unwrap_or(""),
+            "tainted"
+        );
         let compaction = loaded.compaction.expect("compaction");
         assert_eq!(compaction.final_prompt_size_chars, 321);
         assert_eq!(
@@ -848,6 +879,9 @@ mod tests {
                 hooks_timeout_ms: 2000,
                 hooks_max_stdout_bytes: 200_000,
                 tool_args_strict: "on".to_string(),
+                taint: "off".to_string(),
+                taint_mode: "propagate".to_string(),
+                taint_digest_bytes: 4096,
                 use_session_settings: false,
                 resolved_settings_source: BTreeMap::new(),
                 tui_enabled: false,
@@ -890,6 +924,7 @@ mod tests {
             compaction: None,
             hook_report: Vec::new(),
             tool_catalog: Vec::new(),
+            taint: None,
             final_output: String::new(),
             error: None,
         };
@@ -958,6 +993,9 @@ mod tests {
             hooks_timeout_ms: 2000,
             hooks_max_stdout_bytes: 200_000,
             tool_args_strict: "on".to_string(),
+            taint: "off".to_string(),
+            taint_mode: "propagate".to_string(),
+            taint_digest_bytes: 4096,
             use_session_settings: false,
             resolved_settings_source: BTreeMap::new(),
             tui_enabled: false,

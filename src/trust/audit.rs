@@ -34,6 +34,10 @@ pub struct AuditEvent {
     pub hooks_config_hash_hex: Option<String>,
     pub planner_hash_hex: Option<String>,
     pub exec_target: Option<String>,
+    pub taint_overall: Option<String>,
+    pub taint_enforced: bool,
+    pub escalated: bool,
+    pub escalation_reason: Option<String>,
     pub result: AuditResult,
 }
 
