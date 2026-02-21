@@ -10,7 +10,7 @@ use crate::providers::http::{
     ProviderErrorKind, RetryRecord,
 };
 use crate::providers::{ModelProvider, StreamDelta, ToolCallFragment};
-use crate::types::{GenerateRequest, GenerateResponse, Message, Role, ToolCall};
+use crate::types::{GenerateRequest, GenerateResponse, Message, Role, TokenUsage, ToolCall};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatProvider {
@@ -68,6 +68,8 @@ struct OpenAiRequest {
 struct OpenAiResponse {
     #[serde(default)]
     choices: Vec<OpenAiChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +80,16 @@ struct OpenAiChoice {
     delta: OpenAiMessage,
     #[serde(default)]
     finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -475,6 +487,7 @@ impl ModelProvider for OpenAiCompatProvider {
                     tool_calls: None,
                 },
                 tool_calls,
+                usage: None,
             });
         }
 
@@ -523,6 +536,11 @@ fn to_request(req: GenerateRequest, stream: bool) -> OpenAiRequest {
 }
 
 fn map_openai_response(resp: OpenAiResponse) -> anyhow::Result<GenerateResponse> {
+    let usage = resp.usage.as_ref().map(|u| TokenUsage {
+        prompt_tokens: to_u32_opt(u.prompt_tokens),
+        completion_tokens: to_u32_opt(u.completion_tokens),
+        total_tokens: to_u32_opt(u.total_tokens),
+    });
     let first = resp
         .choices
         .into_iter()
@@ -554,7 +572,12 @@ fn map_openai_response(resp: OpenAiResponse) -> anyhow::Result<GenerateResponse>
             tool_calls: None,
         },
         tool_calls,
+        usage,
     })
+}
+
+fn to_u32_opt(v: Option<u64>) -> Option<u32> {
+    v.and_then(|x| u32::try_from(x).ok())
 }
 
 #[derive(Debug, Default, Clone)]
@@ -675,8 +698,8 @@ fn truncate_for_error(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_sse_events, finalize_tool_calls, handle_openai_stream_json, parse_sse_event_payload,
-        PartialToolCall,
+        drain_sse_events, finalize_tool_calls, handle_openai_stream_json, map_openai_response,
+        parse_sse_event_payload, OpenAiResponse, PartialToolCall,
     };
     use crate::providers::StreamDelta;
 
@@ -746,5 +769,21 @@ mod tests {
         assert!(err
             .to_string()
             .contains("failed parsing OpenAI-compatible stream event"));
+    }
+
+    #[test]
+    fn maps_usage_tokens_when_present() {
+        let resp: OpenAiResponse = serde_json::from_str(
+            r#"{
+                "choices":[{"message":{"content":"ok"}}],
+                "usage":{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17}
+            }"#,
+        )
+        .expect("parse");
+        let mapped = map_openai_response(resp).expect("map");
+        let usage = mapped.usage.expect("usage");
+        assert_eq!(usage.prompt_tokens, Some(12));
+        assert_eq!(usage.completion_tokens, Some(5));
+        assert_eq!(usage.total_tokens, Some(17));
     }
 }

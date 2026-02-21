@@ -10,7 +10,7 @@ use crate::providers::http::{
     ProviderErrorKind, RetryRecord,
 };
 use crate::providers::{ModelProvider, StreamDelta, ToolCallFragment};
-use crate::types::{GenerateRequest, GenerateResponse, Message, Role, ToolCall};
+use crate::types::{GenerateRequest, GenerateResponse, Message, Role, TokenUsage, ToolCall};
 
 #[derive(Debug, Clone)]
 pub struct OllamaProvider {
@@ -70,6 +70,10 @@ struct OllamaResponse {
     message: OllamaMessageIn,
     #[serde(default)]
     done: bool,
+    #[serde(default)]
+    prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    eval_count: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,6 +402,7 @@ impl ModelProvider for OllamaProvider {
                     tool_calls: None,
                 },
                 tool_calls,
+                usage: None,
             });
         }
 
@@ -484,6 +489,14 @@ fn map_ollama_response(resp: OllamaResponse) -> GenerateResponse {
             tool_calls: None,
         },
         tool_calls,
+        usage: Some(TokenUsage {
+            prompt_tokens: to_u32_opt(resp.prompt_eval_count),
+            completion_tokens: to_u32_opt(resp.eval_count),
+            total_tokens: to_u32_opt(match (resp.prompt_eval_count, resp.eval_count) {
+                (Some(a), Some(b)) => Some(a.saturating_add(b)),
+                _ => None,
+            }),
+        }),
     }
 }
 
@@ -522,6 +535,10 @@ fn handle_ollama_stream_json(
     Ok(())
 }
 
+fn to_u32_opt(v: Option<u64>) -> Option<u32> {
+    v.and_then(|x| u32::try_from(x).ok())
+}
+
 fn truncate_for_error(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -531,7 +548,7 @@ fn truncate_for_error(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_json_lines, handle_ollama_stream_json};
+    use super::{drain_json_lines, handle_ollama_stream_json, map_ollama_response, OllamaResponse};
     use crate::providers::StreamDelta;
 
     #[test]
@@ -580,5 +597,23 @@ mod tests {
         assert!(err
             .to_string()
             .contains("failed parsing Ollama stream event"));
+    }
+
+    #[test]
+    fn maps_ollama_token_usage_when_present() {
+        let resp: OllamaResponse = serde_json::from_str(
+            r#"{
+                "message":{"content":"ok"},
+                "done":true,
+                "prompt_eval_count":11,
+                "eval_count":7
+            }"#,
+        )
+        .expect("parse");
+        let mapped = map_ollama_response(resp);
+        let usage = mapped.usage.expect("usage");
+        assert_eq!(usage.prompt_tokens, Some(11));
+        assert_eq!(usage.completion_tokens, Some(7));
+        assert_eq!(usage.total_tokens, Some(18));
     }
 }

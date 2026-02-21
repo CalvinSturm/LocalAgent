@@ -280,6 +280,9 @@ mod tests {
                         steps: 10,
                         tool_calls: 1,
                     },
+                    metrics: None,
+                    tokens: None,
+                    estimated_cost_usd: None,
                     verifier: None,
                 },
                 EvalRunRow {
@@ -298,9 +301,13 @@ mod tests {
                         steps: 20,
                         tool_calls: 1,
                     },
+                    metrics: None,
+                    tokens: None,
+                    estimated_cost_usd: None,
                     verifier: None,
                 },
             ],
+            metrics: None,
             baseline: None,
             regression: None,
         }

@@ -531,6 +531,9 @@ mod tests {
                 summary_text: "COMPACTED SUMMARY (v1)".to_string(),
             }),
             hook_invocations: Vec::new(),
+            provider_retry_count: 0,
+            provider_error_count: 0,
+            token_usage: None,
         };
         write_run_record(
             &paths,

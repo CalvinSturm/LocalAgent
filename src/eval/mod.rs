@@ -1,8 +1,10 @@
 pub mod assert;
 pub mod baseline;
 pub mod bundle;
+pub mod cost;
 pub mod fixtures;
 pub mod fixtures_repo;
 pub mod profile;
+pub mod report_compare;
 pub mod runner;
 pub mod tasks;

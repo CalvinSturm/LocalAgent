@@ -15,7 +15,7 @@ use crate::tools::{
     validate_builtin_tool_args, ToolResultMeta, ToolRuntime,
 };
 use crate::trust::policy::McpAllowSummary;
-use crate::types::{GenerateRequest, Message, Role, ToolCall, ToolDef};
+use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
 
 #[derive(Debug, Clone, Copy)]
 pub enum AgentExitReason {
@@ -57,6 +57,9 @@ pub struct AgentOutcome {
     pub final_prompt_size_chars: usize,
     pub compaction_report: Option<CompactionReport>,
     pub hook_invocations: Vec<HookInvocationReport>,
+    pub provider_retry_count: u32,
+    pub provider_error_count: u32,
+    pub token_usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -159,12 +162,17 @@ impl<P: ModelProvider> Agent<P> {
         let mut observed_tool_decisions: Vec<ToolDecisionRecord> = Vec::new();
         let mut last_compaction_report: Option<CompactionReport> = None;
         let mut hook_invocations: Vec<HookInvocationReport> = Vec::new();
+        let mut provider_retry_count: u32 = 0;
+        let mut provider_error_count: u32 = 0;
+        let mut total_token_usage = TokenUsage::default();
+        let mut saw_token_usage = false;
         for step in 0..self.max_steps {
             let compacted = match maybe_compact(&messages, &self.compaction_settings) {
                 Ok(c) => c,
                 Err(e) => {
                     if let Some(pe) = e.downcast_ref::<ProviderError>() {
                         for r in &pe.retries {
+                            provider_retry_count = provider_retry_count.saturating_add(1);
                             self.emit_event(
                                 &run_id,
                                 step as u32,
@@ -178,6 +186,7 @@ impl<P: ModelProvider> Agent<P> {
                                 }),
                             );
                         }
+                        provider_error_count = provider_error_count.saturating_add(1);
                         self.emit_event(
                             &run_id,
                             step as u32,
@@ -218,6 +227,13 @@ impl<P: ModelProvider> Agent<P> {
                         final_prompt_size_chars: 0,
                         compaction_report: last_compaction_report,
                         hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                        token_usage: if saw_token_usage {
+                            Some(total_token_usage.clone())
+                        } else {
+                            None
+                        },
                     };
                 }
             };
@@ -274,6 +290,13 @@ impl<P: ModelProvider> Agent<P> {
                                 final_prompt_size_chars: 0,
                                 compaction_report: last_compaction_report,
                                 hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                                token_usage: if saw_token_usage {
+                                    Some(total_token_usage.clone())
+                                } else {
+                                    None
+                                },
                             };
                         }
                     },
@@ -326,6 +349,13 @@ impl<P: ModelProvider> Agent<P> {
                                 final_prompt_size_chars: prompt_chars,
                                 compaction_report: last_compaction_report,
                                 hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                                token_usage: if saw_token_usage {
+                                    Some(total_token_usage.clone())
+                                } else {
+                                    None
+                                },
                             };
                         }
                         if !result.append_messages.is_empty() {
@@ -378,6 +408,13 @@ impl<P: ModelProvider> Agent<P> {
                                                 final_prompt_size_chars: prompt_chars,
                                                 compaction_report: last_compaction_report,
                                                 hook_invocations,
+                                                provider_retry_count,
+                                                provider_error_count,
+                                                token_usage: if saw_token_usage {
+                                                    Some(total_token_usage.clone())
+                                                } else {
+                                                    None
+                                                },
                                             };
                                         }
                                     }
@@ -397,6 +434,13 @@ impl<P: ModelProvider> Agent<P> {
                                             final_prompt_size_chars: prompt_chars,
                                             compaction_report: last_compaction_report,
                                             hook_invocations,
+                                            provider_retry_count,
+                                            provider_error_count,
+                                            token_usage: if saw_token_usage {
+                                                Some(total_token_usage.clone())
+                                            } else {
+                                                None
+                                            },
                                         };
                                     }
                                 }
@@ -425,6 +469,13 @@ impl<P: ModelProvider> Agent<P> {
                             final_prompt_size_chars: prompt_chars,
                             compaction_report: last_compaction_report,
                             hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            token_usage: if saw_token_usage {
+                                Some(total_token_usage.clone())
+                            } else {
+                                None
+                            },
                         };
                     }
                 }
@@ -493,6 +544,37 @@ impl<P: ModelProvider> Agent<P> {
             let resp = match resp_result {
                 Ok(r) => r,
                 Err(e) => {
+                    if let Some(pe) = e.downcast_ref::<ProviderError>() {
+                        for r in &pe.retries {
+                            provider_retry_count = provider_retry_count.saturating_add(1);
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::ProviderRetry,
+                                serde_json::json!({
+                                    "attempt": r.attempt,
+                                    "max_attempts": r.max_attempts,
+                                    "kind": r.kind,
+                                    "status": r.status,
+                                    "backoff_ms": r.backoff_ms
+                                }),
+                            );
+                        }
+                        provider_error_count = provider_error_count.saturating_add(1);
+                        self.emit_event(
+                            &run_id,
+                            step as u32,
+                            EventKind::ProviderError,
+                            serde_json::json!({
+                                "kind": pe.kind,
+                                "status": pe.http_status,
+                                "retryable": pe.retryable,
+                                "attempt": pe.attempt,
+                                "max_attempts": pe.max_attempts,
+                                "message_short": message_short(&pe.message)
+                            }),
+                        );
+                    }
                     self.emit_event(
                         &run_id,
                         step as u32,
@@ -519,9 +601,25 @@ impl<P: ModelProvider> Agent<P> {
                         final_prompt_size_chars: request_context_chars,
                         compaction_report: last_compaction_report,
                         hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                        token_usage: if saw_token_usage {
+                            Some(total_token_usage.clone())
+                        } else {
+                            None
+                        },
                     };
                 }
             };
+            if let Some(usage) = &resp.usage {
+                saw_token_usage = true;
+                total_token_usage.prompt_tokens =
+                    add_opt_u32(total_token_usage.prompt_tokens, usage.prompt_tokens);
+                total_token_usage.completion_tokens =
+                    add_opt_u32(total_token_usage.completion_tokens, usage.completion_tokens);
+                total_token_usage.total_tokens =
+                    add_opt_u32(total_token_usage.total_tokens, usage.total_tokens);
+            }
             self.emit_event(
                 &run_id,
                 step as u32,
@@ -551,6 +649,13 @@ impl<P: ModelProvider> Agent<P> {
                     final_prompt_size_chars: request_context_chars,
                     compaction_report: last_compaction_report,
                     hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    token_usage: if saw_token_usage {
+                        Some(total_token_usage.clone())
+                    } else {
+                        None
+                    },
                 };
             }
 
@@ -717,6 +822,13 @@ impl<P: ModelProvider> Agent<P> {
                                             final_prompt_size_chars: request_context_chars,
                                             compaction_report: last_compaction_report,
                                             hook_invocations,
+                                            provider_retry_count,
+                                            provider_error_count,
+                                            token_usage: if saw_token_usage {
+                                                Some(total_token_usage.clone())
+                                            } else {
+                                                None
+                                            },
                                         };
                                     }
                                 },
@@ -773,6 +885,13 @@ impl<P: ModelProvider> Agent<P> {
                                             final_prompt_size_chars: request_context_chars,
                                             compaction_report: last_compaction_report,
                                             hook_invocations,
+                                            provider_retry_count,
+                                            provider_error_count,
+                                            token_usage: if saw_token_usage {
+                                                Some(total_token_usage.clone())
+                                            } else {
+                                                None
+                                            },
                                         };
                                     }
                                     tool_msg.content = Some(hook_out.content.clone());
@@ -803,6 +922,13 @@ impl<P: ModelProvider> Agent<P> {
                                         final_prompt_size_chars: request_context_chars,
                                         compaction_report: last_compaction_report,
                                         hook_invocations,
+                                        provider_retry_count,
+                                        provider_error_count,
+                                        token_usage: if saw_token_usage {
+                                            Some(total_token_usage.clone())
+                                        } else {
+                                            None
+                                        },
                                     };
                                 }
                             }
@@ -926,6 +1052,13 @@ impl<P: ModelProvider> Agent<P> {
                             final_prompt_size_chars: request_context_chars,
                             compaction_report: last_compaction_report,
                             hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            token_usage: if saw_token_usage {
+                                Some(total_token_usage.clone())
+                            } else {
+                                None
+                            },
                         };
                     }
                     GateDecision::RequireApproval {
@@ -1073,6 +1206,13 @@ impl<P: ModelProvider> Agent<P> {
                             final_prompt_size_chars: request_context_chars,
                             compaction_report: last_compaction_report,
                             hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            token_usage: if saw_token_usage {
+                                Some(total_token_usage.clone())
+                            } else {
+                                None
+                            },
                         };
                     }
                 }
@@ -1100,6 +1240,13 @@ impl<P: ModelProvider> Agent<P> {
             final_prompt_size_chars,
             compaction_report: last_compaction_report,
             hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            token_usage: if saw_token_usage {
+                Some(total_token_usage.clone())
+            } else {
+                None
+            },
         }
     }
 }
@@ -1164,6 +1311,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn add_opt_u32(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.saturating_add(y)),
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1201,6 +1357,7 @@ mod tests {
                     tool_calls: None,
                 },
                 tool_calls: Vec::new(),
+                usage: None,
             })
         }
 

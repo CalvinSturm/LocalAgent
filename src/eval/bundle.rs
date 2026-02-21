@@ -244,8 +244,12 @@ mod tests {
                     steps: 0,
                     tool_calls: 0,
                 },
+                metrics: None,
+                tokens: None,
+                estimated_cost_usd: None,
                 verifier: None,
             }],
+            metrics: None,
             baseline: None,
             regression: None,
         };

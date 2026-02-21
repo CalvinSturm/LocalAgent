@@ -30,6 +30,7 @@ use eval::baseline::{
 };
 use eval::bundle::{create_bundle, BundleSpec};
 use eval::profile::{doctor_profile, list_profiles, load_profile};
+use eval::report_compare::compare_results_files;
 use eval::runner::{run_eval, EvalConfig};
 use eval::tasks::EvalPack;
 use events::{Event, EventKind, EventSink, JsonlFileSink, MultiSink, StdoutSink};
@@ -115,6 +116,24 @@ enum EvalSubcommand {
     Baseline {
         #[command(subcommand)]
         command: EvalBaselineSubcommand,
+    },
+    Report {
+        #[command(subcommand)]
+        command: EvalReportSubcommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum EvalReportSubcommand {
+    Compare {
+        #[arg(long)]
+        a: PathBuf,
+        #[arg(long)]
+        b: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        json: Option<PathBuf>,
     },
 }
 
@@ -283,6 +302,8 @@ struct EvalArgs {
     junit: Option<PathBuf>,
     #[arg(long = "summary-md")]
     summary_md: Option<PathBuf>,
+    #[arg(long)]
+    cost_model: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     runs_per_task: usize,
     #[arg(long, default_value_t = 30)]
@@ -764,6 +785,18 @@ async fn main() -> anyhow::Result<()> {
                         }
                         return Ok(());
                     }
+                    EvalSubcommand::Report { command } => {
+                        match command {
+                            EvalReportSubcommand::Compare { a, b, out, json } => {
+                                compare_results_files(a, b, out, json.as_deref())?;
+                                println!("compare report written: {}", out.display());
+                                if let Some(j) = json {
+                                    println!("compare json written: {}", j.display());
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                 }
             }
             let mut args = eval_cmd.run.clone();
@@ -803,6 +836,7 @@ async fn main() -> anyhow::Result<()> {
                 out: args.out.clone(),
                 junit: args.junit.clone(),
                 summary_md: args.summary_md.clone(),
+                cost_model_path: args.cost_model.clone(),
                 runs_per_task: args.runs_per_task,
                 max_steps: args.max_steps,
                 timeout_seconds: args.timeout_seconds,
@@ -1254,6 +1288,9 @@ async fn run_agent<P: ModelProvider>(
                 final_prompt_size_chars: 0,
                 compaction_report: None,
                 hook_invocations: Vec::new(),
+                provider_retry_count: 0,
+                provider_error_count: 0,
+                token_usage: None,
             }
         },
         _ = async {
@@ -1278,6 +1315,9 @@ async fn run_agent<P: ModelProvider>(
                 final_prompt_size_chars: 0,
                 compaction_report: None,
                 hook_invocations: Vec::new(),
+                provider_retry_count: 0,
+                provider_error_count: 0,
+                token_usage: None,
             }
         }
     };

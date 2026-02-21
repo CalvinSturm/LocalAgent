@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::agent::{Agent, AgentExitReason, AgentOutcome, PolicyLoadedInfo};
 use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
 use crate::eval::assert::evaluate_assertions;
+use crate::eval::cost::{estimate_cost_usd, load_cost_model, CostModel};
 use crate::eval::fixtures::FixtureServer;
 use crate::eval::tasks::{tasks_for_pack, EvalPack, EvalTask, Fixture, VerifierSpec};
 use crate::gate::{
@@ -30,6 +31,7 @@ use crate::tools::{builtin_tools_enabled, ToolArgsStrict, ToolRuntime};
 use crate::trust::approvals::ApprovalsStore;
 use crate::trust::audit::AuditLog;
 use crate::trust::policy::{McpAllowSummary, Policy};
+use crate::types::SideEffects;
 
 #[derive(Debug, Clone)]
 pub struct EvalConfig {
@@ -84,6 +86,7 @@ pub struct EvalConfig {
     pub resolved_profile_hash_hex: Option<String>,
     pub junit: Option<PathBuf>,
     pub summary_md: Option<PathBuf>,
+    pub cost_model_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +97,8 @@ pub struct EvalResults {
     pub summary: EvalSummary,
     pub by_model: BTreeMap<String, ModelSummary>,
     pub runs: Vec<EvalRunRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<EvalMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline: Option<EvalBaselineStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,6 +155,8 @@ pub struct EvalResultsConfig {
     pub fail_on_any: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_avg_steps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_model_path: Option<String>,
 }
 
 impl EvalResultsConfig {
@@ -200,6 +207,7 @@ impl EvalResultsConfig {
             min_pass_rate: 0.0,
             fail_on_any: false,
             max_avg_steps: None,
+            cost_model_path: None,
         }
     }
 }
@@ -267,6 +275,12 @@ pub struct EvalRunRow {
     pub failures: Vec<String>,
     pub stats: EvalRunStats,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<EvalRunMetrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<EvalTokenMetrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub verifier: Option<EvalVerifierResult>,
 }
 
@@ -274,6 +288,53 @@ pub struct EvalRunRow {
 pub struct EvalRunStats {
     pub steps: usize,
     pub tool_calls: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvalRunMetrics {
+    pub steps: u32,
+    pub tool_calls: u32,
+    pub tool_calls_by_side_effects: BTreeMap<String, u32>,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub wall_time_ms: u64,
+    pub verifier_time_ms: u64,
+    pub provider: EvalProviderMetrics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvalProviderMetrics {
+    pub http_retries: u32,
+    pub provider_errors: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalTokenMetrics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u32>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvalMetrics {
+    pub summary: EvalAggregateMetrics,
+    pub per_model: BTreeMap<String, EvalAggregateMetrics>,
+    pub per_task: BTreeMap<String, EvalAggregateMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvalAggregateMetrics {
+    pub avg_steps: f64,
+    pub avg_tool_calls: f64,
+    pub avg_wall_time_ms: f64,
+    pub pass_rate: f64,
+    pub fail_rate: f64,
+    pub skip_rate: f64,
+    pub avg_provider_retries: f64,
 }
 
 pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf> {
@@ -307,6 +368,11 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
         .clone()
         .unwrap_or_else(|| state_paths.state_dir.join("mcp_servers.json"));
     let mut enabled_mcp = config.mcp.clone();
+    let cost_model = if let Some(path) = &config.cost_model_path {
+        Some(load_cost_model(path)?)
+    } else {
+        None
+    };
     let tasks = tasks_for_pack(config.pack);
     let has_browser_tasks = tasks.iter().any(|t| t.needs_playwright && !t.optional);
     if has_browser_tasks
@@ -384,10 +450,15 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
             min_pass_rate: config.min_pass_rate,
             fail_on_any: config.fail_on_any,
             max_avg_steps: config.max_avg_steps,
+            cost_model_path: config
+                .cost_model_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
         },
         summary: EvalSummary::default(),
         by_model: BTreeMap::new(),
         runs: Vec::new(),
+        metrics: None,
         baseline: None,
         regression: None,
     };
@@ -418,7 +489,15 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
                 apply_fixtures(&run_dir, &task.fixtures)?;
 
                 let timeout = Duration::from_secs(config.timeout_seconds);
-                let exec = run_single(&config, &state_paths, &run_dir, &enabled_mcp, model, task);
+                let exec = run_single(
+                    &config,
+                    &state_paths,
+                    &run_dir,
+                    &enabled_mcp,
+                    model,
+                    task,
+                    cost_model.as_ref(),
+                );
                 let row = match tokio::time::timeout(timeout, exec).await {
                     Ok(Ok(mut row)) => {
                         row.run_index = run_index;
@@ -456,6 +535,9 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
                                 steps: 0,
                                 tool_calls: 0,
                             },
+                            metrics: None,
+                            tokens: None,
+                            estimated_cost_usd: None,
                             verifier: None,
                         }
                     }
@@ -488,6 +570,9 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
                                 steps: 0,
                                 tool_calls: 0,
                             },
+                            metrics: None,
+                            tokens: None,
+                            estimated_cost_usd: None,
                             verifier: None,
                         }
                     }
@@ -502,6 +587,7 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
     }
 
     finalize_summary(&mut results);
+    results.metrics = Some(compute_eval_metrics(&results));
     write_results(&out_path, &results)?;
     if let Some(junit) = &config.junit {
         write_junit(junit, &results)?;
@@ -540,6 +626,9 @@ fn write_synthetic_error_artifact(
         final_prompt_size_chars: 0,
         compaction_report: None,
         hook_invocations: Vec::new(),
+        provider_retry_count: 0,
+        provider_error_count: 0,
+        token_usage: None,
     };
     let _ = write_run_artifact_for_eval(
         config,
@@ -682,6 +771,9 @@ fn skipped_row(model: &str, task: &EvalTask, run_index: usize, reason: &str) -> 
             steps: 0,
             tool_calls: 0,
         },
+        metrics: Some(EvalRunMetrics::default()),
+        tokens: None,
+        estimated_cost_usd: None,
         verifier: Some(EvalVerifierResult {
             ran: false,
             ok: false,
@@ -775,7 +867,9 @@ async fn run_single(
     enabled_mcp: &[String],
     model: &str,
     task: &EvalTask,
+    cost_model: Option<&CostModel>,
 ) -> anyhow::Result<EvalRunRow> {
+    let run_started = std::time::Instant::now();
     let fixture_server = if task.needs_playwright {
         Some(FixtureServer::start().context("failed to start local browser fixture server")?)
     } else {
@@ -894,12 +988,54 @@ async fn run_single(
     };
     let session_messages = Vec::new();
     let outcome = agent.run(&prompt, session_messages, None).await;
+    let wall_time_ms = run_started.elapsed().as_millis() as u64;
     let mut failures = evaluate_assertions(&task.assertions, workdir, &outcome);
+    let verifier_started = std::time::Instant::now();
     let verifier = run_task_verifier(task.verifier.as_ref(), workdir, 200_000)?;
+    let verifier_time_ms = verifier_started.elapsed().as_millis() as u64;
     if verifier.ran && !verifier.ok {
         failures.push(format!("verifier failed: {}", verifier.summary));
     }
     let passed = failures.is_empty() && matches!(outcome.exit_reason, AgentExitReason::Ok);
+    let steps = outcome
+        .messages
+        .iter()
+        .filter(|m| matches!(m.role, crate::types::Role::Assistant))
+        .count();
+    let tool_calls = outcome.tool_calls.len();
+    let tool_calls_by_side_effects = count_tool_calls_by_side_effects(&outcome.tool_calls);
+    let (bytes_read, bytes_written) = derive_io_bytes_from_messages(&outcome.messages);
+    let tokens = Some(match outcome.token_usage.clone() {
+        Some(t) => EvalTokenMetrics {
+            prompt_tokens: t.prompt_tokens,
+            completion_tokens: t.completion_tokens,
+            total_tokens: t.total_tokens,
+            source: "provider".to_string(),
+        },
+        None => EvalTokenMetrics {
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+            source: "unknown".to_string(),
+        },
+    });
+    let estimated_cost_usd = match (cost_model, outcome.token_usage.as_ref()) {
+        (Some(cm), Some(t)) => estimate_cost_usd(model, t, cm),
+        _ => None,
+    };
+    let run_metrics = EvalRunMetrics {
+        steps: steps as u32,
+        tool_calls: tool_calls as u32,
+        tool_calls_by_side_effects,
+        bytes_read,
+        bytes_written,
+        wall_time_ms,
+        verifier_time_ms,
+        provider: EvalProviderMetrics {
+            http_retries: outcome.provider_retry_count,
+            provider_errors: outcome.provider_error_count,
+        },
+    };
 
     write_run_artifact_for_eval(
         config,
@@ -932,14 +1068,10 @@ async fn run_single(
         required_flags: task.required_flags(),
         passed,
         failures,
-        stats: EvalRunStats {
-            steps: outcome
-                .messages
-                .iter()
-                .filter(|m| matches!(m.role, crate::types::Role::Assistant))
-                .count(),
-            tool_calls: outcome.tool_calls.len(),
-        },
+        stats: EvalRunStats { steps, tool_calls },
+        metrics: Some(run_metrics),
+        tokens,
+        estimated_cost_usd,
         verifier: Some(verifier),
     })
 }
@@ -1086,6 +1218,137 @@ fn write_run_artifact_for_eval(
         outcome,
     )?;
     Ok(())
+}
+
+fn count_tool_calls_by_side_effects(
+    tool_calls: &[crate::types::ToolCall],
+) -> BTreeMap<String, u32> {
+    let mut out = BTreeMap::new();
+    for key in [
+        "filesystem_read",
+        "filesystem_write",
+        "shell_exec",
+        "network",
+        "browser",
+        "none",
+    ] {
+        out.insert(key.to_string(), 0u32);
+    }
+    for tc in tool_calls {
+        let key = match crate::tools::tool_side_effects(&tc.name) {
+            SideEffects::FilesystemRead => "filesystem_read",
+            SideEffects::FilesystemWrite => "filesystem_write",
+            SideEffects::ShellExec => "shell_exec",
+            SideEffects::Network => "network",
+            SideEffects::Browser => "browser",
+            SideEffects::None => "none",
+        };
+        let entry = out.entry(key.to_string()).or_insert(0u32);
+        *entry = (*entry).saturating_add(1u32);
+    }
+    out
+}
+
+fn derive_io_bytes_from_messages(messages: &[crate::types::Message]) -> (u64, u64) {
+    let mut bytes_read = 0u64;
+    let mut bytes_written = 0u64;
+    for m in messages {
+        if !matches!(m.role, crate::types::Role::Tool) {
+            continue;
+        }
+        let Some(content) = &m.content else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(content) else {
+            continue;
+        };
+        let side = v
+            .get("meta")
+            .and_then(|m| m.get("side_effects"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let bytes = v
+            .get("meta")
+            .and_then(|m| m.get("bytes"))
+            .and_then(|b| b.as_u64())
+            .unwrap_or(0);
+        if side == "filesystem_read" {
+            bytes_read = bytes_read.saturating_add(bytes);
+        } else if side == "filesystem_write" {
+            bytes_written = bytes_written.saturating_add(bytes);
+        }
+    }
+    (bytes_read, bytes_written)
+}
+
+fn compute_eval_metrics(results: &EvalResults) -> EvalMetrics {
+    let mut per_model_runs: BTreeMap<String, Vec<&EvalRunRow>> = BTreeMap::new();
+    let mut per_task_runs: BTreeMap<String, Vec<&EvalRunRow>> = BTreeMap::new();
+    for run in &results.runs {
+        per_model_runs
+            .entry(run.model.clone())
+            .or_default()
+            .push(run);
+        per_task_runs
+            .entry(run.task_id.clone())
+            .or_default()
+            .push(run);
+    }
+    let mut out = EvalMetrics {
+        summary: aggregate_rows(&results.runs.iter().collect::<Vec<_>>()),
+        ..Default::default()
+    };
+    for (model, rows) in per_model_runs {
+        out.per_model.insert(model, aggregate_rows(&rows));
+    }
+    for (task, rows) in per_task_runs {
+        out.per_task.insert(task, aggregate_rows(&rows));
+    }
+    out
+}
+
+fn aggregate_rows(rows: &[&EvalRunRow]) -> EvalAggregateMetrics {
+    if rows.is_empty() {
+        return EvalAggregateMetrics::default();
+    }
+    let mut pass = 0usize;
+    let mut fail = 0usize;
+    let mut skip = 0usize;
+    let mut steps_sum = 0f64;
+    let mut tools_sum = 0f64;
+    let mut wall_sum = 0f64;
+    let mut retry_sum = 0f64;
+    let mut non_skip = 0usize;
+    for r in rows {
+        match r.status.as_str() {
+            "passed" => pass = pass.saturating_add(1),
+            "skipped" => skip = skip.saturating_add(1),
+            _ => fail = fail.saturating_add(1),
+        }
+        if r.status != "skipped" {
+            non_skip = non_skip.saturating_add(1);
+            if let Some(m) = &r.metrics {
+                steps_sum += m.steps as f64;
+                tools_sum += m.tool_calls as f64;
+                wall_sum += m.wall_time_ms as f64;
+                retry_sum += m.provider.http_retries as f64;
+            } else {
+                steps_sum += r.stats.steps as f64;
+                tools_sum += r.stats.tool_calls as f64;
+            }
+        }
+    }
+    let total = rows.len() as f64;
+    let denom = if non_skip == 0 { 1.0 } else { non_skip as f64 };
+    EvalAggregateMetrics {
+        avg_steps: steps_sum / denom,
+        avg_tool_calls: tools_sum / denom,
+        avg_wall_time_ms: wall_sum / denom,
+        pass_rate: pass as f64 / total,
+        fail_rate: fail as f64 / total,
+        skip_rate: skip as f64 / total,
+        avg_provider_retries: retry_sum / denom,
+    }
 }
 
 struct GateBuild {
@@ -1294,14 +1557,31 @@ fn write_summary_md(path: &Path, results: &EvalResults) -> anyhow::Result<()> {
     ));
     md.push_str("## Per model\n\n");
     for (model, stats) in &results.by_model {
+        let metrics = results
+            .metrics
+            .as_ref()
+            .and_then(|m| m.per_model.get(model))
+            .cloned()
+            .unwrap_or_default();
         md.push_str(&format!(
-            "- {}: passed {}, failed {}, skipped {}, pass {:.2}%\n",
+            "- {}: passed {}, failed {}, skipped {}, pass {:.2}%, avg_steps {:.2}, avg_tool_calls {:.2}, avg_provider_retries {:.2}\n",
             model,
             stats.passed,
             stats.failed,
             stats.skipped,
-            stats.pass_rate * 100.0
+            stats.pass_rate * 100.0,
+            metrics.avg_steps,
+            metrics.avg_tool_calls,
+            metrics.avg_provider_retries
         ));
+    }
+    let total_cost = results
+        .runs
+        .iter()
+        .filter_map(|r| r.estimated_cost_usd)
+        .sum::<f64>();
+    if total_cost > 0.0 {
+        md.push_str(&format!("\n- Total estimated cost: ${:.6}\n", total_cost));
     }
     std::fs::write(path, md)?;
     Ok(())
@@ -1320,8 +1600,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        finalize_summary, missing_capability_reason, run_task_verifier, EvalConfig, EvalResults,
-        EvalResultsConfig, EvalRunRow, EvalRunStats, EvalVerifierResult,
+        compute_eval_metrics, count_tool_calls_by_side_effects, finalize_summary,
+        missing_capability_reason, run_task_verifier, EvalConfig, EvalResults, EvalResultsConfig,
+        EvalRunMetrics, EvalRunRow, EvalRunStats, EvalVerifierResult,
     };
     use crate::compaction::{CompactionMode, ToolResultPersist};
     use crate::eval::tasks::{EvalTask, Fixture, RequiredCapabilities, VerifierSpec};
@@ -1329,6 +1610,7 @@ mod tests {
     use crate::hooks::config::HooksMode;
     use crate::providers::http::HttpConfig;
     use crate::tools::ToolArgsStrict;
+    use crate::types::ToolCall;
 
     #[test]
     fn summary_aggregation_counts_pass_fail() {
@@ -1355,6 +1637,9 @@ mod tests {
                         steps: 1,
                         tool_calls: 1,
                     },
+                    metrics: None,
+                    tokens: None,
+                    estimated_cost_usd: None,
                     verifier: Some(EvalVerifierResult {
                         ran: false,
                         ok: false,
@@ -1379,6 +1664,9 @@ mod tests {
                         steps: 1,
                         tool_calls: 1,
                     },
+                    metrics: None,
+                    tokens: None,
+                    estimated_cost_usd: None,
                     verifier: Some(EvalVerifierResult {
                         ran: false,
                         ok: false,
@@ -1388,6 +1676,7 @@ mod tests {
                     }),
                 },
             ],
+            metrics: None,
             baseline: None,
             regression: None,
         };
@@ -1397,6 +1686,70 @@ mod tests {
         assert_eq!(results.summary.failed, 1);
         assert_eq!(results.summary.skipped, 0);
         assert!(results.summary.pass_rate > 0.4 && results.summary.pass_rate < 0.6);
+    }
+
+    #[test]
+    fn metrics_count_side_effects_and_averages() {
+        let calls = vec![
+            ToolCall {
+                id: "1".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({"path":"a"}),
+            },
+            ToolCall {
+                id: "2".to_string(),
+                name: "write_file".to_string(),
+                arguments: serde_json::json!({"path":"b","content":"x"}),
+            },
+        ];
+        let by = count_tool_calls_by_side_effects(&calls);
+        assert_eq!(by.get("filesystem_read"), Some(&1));
+        assert_eq!(by.get("filesystem_write"), Some(&1));
+
+        let mut results = EvalResults {
+            schema_version: "openagent.eval.v1".to_string(),
+            created_at: "x".to_string(),
+            config: EvalResultsConfig::minimal_for_tests(),
+            summary: Default::default(),
+            by_model: BTreeMap::new(),
+            runs: vec![EvalRunRow {
+                model: "m".to_string(),
+                task_id: "C1".to_string(),
+                run_index: 0,
+                workdir: None,
+                run_id: "r".to_string(),
+                exit_reason: "ok".to_string(),
+                status: "passed".to_string(),
+                skip_reason: None,
+                required_flags: vec![],
+                passed: true,
+                failures: vec![],
+                stats: EvalRunStats {
+                    steps: 2,
+                    tool_calls: 2,
+                },
+                metrics: Some(EvalRunMetrics {
+                    steps: 2,
+                    tool_calls: 2,
+                    tool_calls_by_side_effects: by,
+                    bytes_read: 10,
+                    bytes_written: 20,
+                    wall_time_ms: 30,
+                    verifier_time_ms: 0,
+                    provider: Default::default(),
+                }),
+                tokens: None,
+                estimated_cost_usd: None,
+                verifier: None,
+            }],
+            metrics: None,
+            baseline: None,
+            regression: None,
+        };
+        finalize_summary(&mut results);
+        let m = compute_eval_metrics(&results);
+        assert!(m.summary.avg_steps > 1.0);
+        assert!(m.summary.pass_rate > 0.9);
     }
 
     #[test]
@@ -1471,6 +1824,7 @@ mod tests {
             resolved_profile_hash_hex: None,
             junit: None,
             summary_md: None,
+            cost_model_path: None,
         };
         let reason = missing_capability_reason(&task, &cfg, false).expect("reason");
         assert!(reason.contains("--enable-write-tools"));
@@ -1546,6 +1900,7 @@ mod tests {
             resolved_profile_hash_hex: None,
             junit: None,
             summary_md: None,
+            cost_model_path: None,
         };
         let reason = missing_capability_reason(&task, &cfg, false).expect("reason");
         assert!(reason.contains("--mcp playwright"));

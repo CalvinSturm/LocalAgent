@@ -169,6 +169,9 @@ mod tests {
             final_prompt_size_chars: 0,
             compaction_report: None,
             hook_invocations: Vec::new(),
+            provider_retry_count: 0,
+            provider_error_count: 0,
+            token_usage: None,
         };
         let failures = evaluate_assertions(
             &[
@@ -211,6 +214,9 @@ mod tests {
             final_prompt_size_chars: 0,
             compaction_report: None,
             hook_invocations: Vec::new(),
+            provider_retry_count: 0,
+            provider_error_count: 0,
+            token_usage: None,
         };
         let ok = evaluate_assertions(
             &[Assertion::ToolNotUsedGlob {
