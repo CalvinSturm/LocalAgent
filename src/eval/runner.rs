@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::agent::{Agent, AgentExitReason, AgentOutcome, PolicyLoadedInfo};
 use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
 use crate::eval::assert::evaluate_assertions;
-use crate::eval::tasks::{tasks_for_pack, EvalPack, EvalTask, Fixture};
+use crate::eval::tasks::{tasks_for_pack, EvalPack, EvalTask, Fixture, VerifierSpec};
 use crate::gate::{
     compute_policy_hash_hex, ApprovalMode, AutoApproveScope, GateContext, NoGate, ProviderKind,
     ToolGate, TrustGate, TrustMode,
@@ -134,6 +134,7 @@ pub struct EvalSummary {
     pub total_runs: usize,
     pub passed: usize,
     pub failed: usize,
+    pub skipped: usize,
     pub pass_rate: f64,
 }
 
@@ -141,6 +142,10 @@ pub struct EvalSummary {
 pub struct ModelSummary {
     pub passed: usize,
     pub failed: usize,
+    pub skipped: usize,
+    pub pass_rate: f64,
+    pub fail_rate: f64,
+    pub skip_rate: f64,
     pub tasks: BTreeMap<String, TaskSummary>,
 }
 
@@ -148,7 +153,17 @@ pub struct ModelSummary {
 pub struct TaskSummary {
     pub passed: usize,
     pub failed: usize,
+    pub skipped: usize,
     pub runs: Vec<EvalRunRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalVerifierResult {
+    pub ran: bool,
+    pub ok: bool,
+    pub summary: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,9 +175,16 @@ pub struct EvalRunRow {
     pub workdir: Option<String>,
     pub run_id: String,
     pub exit_reason: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+    #[serde(default)]
+    pub required_flags: Vec<String>,
     pub passed: bool,
     pub failures: Vec<String>,
     pub stats: EvalRunStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<EvalVerifierResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,13 +306,8 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
             if task.optional {
                 continue;
             }
-            if task.needs_write && !config.allow_write && !config.unsafe_bypass_allow_flags {
-                let row = skipped_row(
-                    model,
-                    task,
-                    0,
-                    "skipped: coding pack requires --allow-write (or --unsafe-bypass-allow-flags)",
-                );
+            if let Some(reason) = missing_capability_reason(task, &config) {
+                let row = skipped_row(model, task, 0, &reason);
                 print_row(&row);
                 push_row(&mut results, row);
                 continue;
@@ -349,12 +366,16 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
                             },
                             run_id,
                             exit_reason: "provider_error".to_string(),
+                            status: "failed".to_string(),
+                            skip_reason: None,
+                            required_flags: task.required_flags(),
                             passed: false,
                             failures: vec![format!("run error: {e}")],
                             stats: EvalRunStats {
                                 steps: 0,
                                 tool_calls: 0,
                             },
+                            verifier: None,
                         }
                     }
                     Err(_) => {
@@ -377,12 +398,16 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
                             },
                             run_id,
                             exit_reason: "timeout".to_string(),
+                            status: "failed".to_string(),
+                            skip_reason: None,
+                            required_flags: task.required_flags(),
                             passed: false,
                             failures: vec!["timeout".to_string()],
                             stats: EvalRunStats {
                                 steps: 0,
                                 tool_calls: 0,
                             },
+                            verifier: None,
                         }
                     }
                 };
@@ -450,7 +475,10 @@ fn push_row(results: &mut EvalResults, row: EvalRunRow) {
     let task_id = row.task_id.clone();
     let model_entry = results.by_model.entry(model.clone()).or_default();
     let task_entry = model_entry.tasks.entry(task_id).or_default();
-    if row.passed {
+    if row.status == "skipped" {
+        model_entry.skipped += 1;
+        task_entry.skipped += 1;
+    } else if row.passed {
         model_entry.passed += 1;
         task_entry.passed += 1;
     } else {
@@ -464,19 +492,46 @@ fn push_row(results: &mut EvalResults, row: EvalRunRow) {
 fn finalize_summary(results: &mut EvalResults) {
     results.summary.total_runs = results.runs.len();
     results.summary.passed = results.runs.iter().filter(|r| r.passed).count();
+    results.summary.skipped = results
+        .runs
+        .iter()
+        .filter(|r| r.status == "skipped")
+        .count();
     results.summary.failed = results
         .summary
         .total_runs
-        .saturating_sub(results.summary.passed);
-    results.summary.pass_rate = if results.summary.total_runs == 0 {
+        .saturating_sub(results.summary.passed + results.summary.skipped);
+    let denom = results
+        .summary
+        .total_runs
+        .saturating_sub(results.summary.skipped);
+    results.summary.pass_rate = if denom == 0 {
         0.0
     } else {
-        results.summary.passed as f64 / results.summary.total_runs as f64
+        results.summary.passed as f64 / denom as f64
     };
+    for model in results.by_model.values_mut() {
+        let total = model.passed + model.failed + model.skipped;
+        if total == 0 {
+            model.pass_rate = 0.0;
+            model.fail_rate = 0.0;
+            model.skip_rate = 0.0;
+        } else {
+            model.pass_rate = model.passed as f64 / total as f64;
+            model.fail_rate = model.failed as f64 / total as f64;
+            model.skip_rate = model.skipped as f64 / total as f64;
+        }
+    }
 }
 
 fn print_row(row: &EvalRunRow) {
-    let status = if row.passed { "PASS" } else { "FAIL" };
+    let status = if row.status == "skipped" {
+        "SKIP"
+    } else if row.passed {
+        "PASS"
+    } else {
+        "FAIL"
+    };
     println!(
         "{} | {} | {} | {} | {}",
         row.model, row.task_id, status, row.run_id, row.exit_reason
@@ -499,6 +554,23 @@ fn missing_required_tool_reason(
     None
 }
 
+fn missing_capability_reason(task: &EvalTask, config: &EvalConfig) -> Option<String> {
+    if (task.required_capabilities.needs_write_tools || task.needs_write)
+        && !(config.enable_write_tools && (config.allow_write || config.unsafe_bypass_allow_flags))
+    {
+        return Some(
+            "requires --enable-write-tools and --allow-write (or --unsafe-bypass-allow-flags)"
+                .to_string(),
+        );
+    }
+    if task.required_capabilities.needs_shell
+        && !(config.allow_shell || config.unsafe_bypass_allow_flags)
+    {
+        return Some("requires --allow-shell (or --unsafe-bypass-allow-flags)".to_string());
+    }
+    None
+}
+
 fn skipped_row(model: &str, task: &EvalTask, run_index: usize, reason: &str) -> EvalRunRow {
     EvalRunRow {
         model: model.to_string(),
@@ -507,12 +579,22 @@ fn skipped_row(model: &str, task: &EvalTask, run_index: usize, reason: &str) -> 
         workdir: None,
         run_id: format!("skipped-{}", Uuid::new_v4()),
         exit_reason: "skipped".to_string(),
+        status: "skipped".to_string(),
+        skip_reason: Some(reason.to_string()),
+        required_flags: task.required_flags(),
         passed: false,
         failures: vec![reason.to_string()],
         stats: EvalRunStats {
             steps: 0,
             tool_calls: 0,
         },
+        verifier: Some(EvalVerifierResult {
+            ran: false,
+            ok: false,
+            summary: "not run".to_string(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        }),
     }
 }
 
@@ -542,6 +624,54 @@ fn apply_fixtures(workdir: &Path, fixtures: &[Fixture]) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_task_verifier(
+    spec: Option<&VerifierSpec>,
+    workdir: &Path,
+    max_bytes: usize,
+) -> anyhow::Result<EvalVerifierResult> {
+    let Some(spec) = spec else {
+        return Ok(EvalVerifierResult {
+            ran: false,
+            ok: false,
+            summary: "not configured".to_string(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        });
+    };
+    let cwd = workdir.join(&spec.cwd);
+    let output = std::process::Command::new(&spec.command)
+        .args(&spec.args)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("failed running verifier command {}", spec.command))?;
+    let (stdout, stdout_truncated) = truncate_bytes_lossy(&output.stdout, max_bytes);
+    let (stderr, stderr_truncated) = truncate_bytes_lossy(&output.stderr, max_bytes);
+    let combined = format!("{stdout}\n{stderr}");
+    let ok = output.status.success() && combined.contains(&spec.summary_success_contains);
+    Ok(EvalVerifierResult {
+        ran: true,
+        ok,
+        summary: if ok {
+            "ok".to_string()
+        } else {
+            format!(
+                "{} failed (status={:?})",
+                spec.command,
+                output.status.code().unwrap_or(-1)
+            )
+        },
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
+
+fn truncate_bytes_lossy(bytes: &[u8], max: usize) -> (String, bool) {
+    if bytes.len() <= max {
+        return (String::from_utf8_lossy(bytes).into_owned(), false);
+    }
+    (String::from_utf8_lossy(&bytes[..max]).into_owned(), true)
 }
 
 async fn run_single(
@@ -660,7 +790,11 @@ async fn run_single(
     };
     let session_messages = Vec::new();
     let outcome = agent.run(&task.prompt, session_messages, None).await;
-    let failures = evaluate_assertions(&task.assertions, workdir, &outcome);
+    let mut failures = evaluate_assertions(&task.assertions, workdir, &outcome);
+    let verifier = run_task_verifier(task.verifier.as_ref(), workdir, 200_000)?;
+    if verifier.ran && !verifier.ok {
+        failures.push(format!("verifier failed: {}", verifier.summary));
+    }
     let passed = failures.is_empty() && matches!(outcome.exit_reason, AgentExitReason::Ok);
 
     write_run_artifact_for_eval(
@@ -685,6 +819,13 @@ async fn run_single(
         workdir: None,
         run_id: outcome.run_id.clone(),
         exit_reason: outcome.exit_reason.as_str().to_string(),
+        status: if passed {
+            "passed".to_string()
+        } else {
+            "failed".to_string()
+        },
+        skip_reason: None,
+        required_flags: task.required_flags(),
         passed,
         failures,
         stats: EvalRunStats {
@@ -695,6 +836,7 @@ async fn run_single(
                 .count(),
             tool_calls: outcome.tool_calls.len(),
         },
+        verifier: Some(verifier),
     })
 }
 
@@ -992,7 +1134,16 @@ fn write_results(path: &Path, results: &EvalResults) -> anyhow::Result<()> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{finalize_summary, EvalResults, EvalResultsConfig, EvalRunRow, EvalRunStats};
+    use super::{
+        finalize_summary, missing_capability_reason, run_task_verifier, EvalConfig, EvalResults,
+        EvalResultsConfig, EvalRunRow, EvalRunStats, EvalVerifierResult,
+    };
+    use crate::compaction::{CompactionMode, ToolResultPersist};
+    use crate::eval::tasks::{EvalTask, Fixture, RequiredCapabilities, VerifierSpec};
+    use crate::gate::{ApprovalMode, AutoApproveScope, ProviderKind, TrustMode};
+    use crate::hooks::config::HooksMode;
+    use crate::providers::http::HttpConfig;
+    use crate::tools::ToolArgsStrict;
 
     #[test]
     fn summary_aggregation_counts_pass_fail() {
@@ -1049,12 +1200,22 @@ mod tests {
                     workdir: None,
                     run_id: "r1".to_string(),
                     exit_reason: "ok".to_string(),
+                    status: "passed".to_string(),
+                    skip_reason: None,
+                    required_flags: vec![],
                     passed: true,
                     failures: vec![],
                     stats: EvalRunStats {
                         steps: 1,
                         tool_calls: 1,
                     },
+                    verifier: Some(EvalVerifierResult {
+                        ran: false,
+                        ok: false,
+                        summary: String::new(),
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                    }),
                 },
                 EvalRunRow {
                     model: "m".to_string(),
@@ -1063,12 +1224,22 @@ mod tests {
                     workdir: None,
                     run_id: "r2".to_string(),
                     exit_reason: "denied".to_string(),
+                    status: "failed".to_string(),
+                    skip_reason: None,
+                    required_flags: vec![],
                     passed: false,
                     failures: vec!["x".to_string()],
                     stats: EvalRunStats {
                         steps: 1,
                         tool_calls: 1,
                     },
+                    verifier: Some(EvalVerifierResult {
+                        ran: false,
+                        ok: false,
+                        summary: String::new(),
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                    }),
                 },
             ],
         };
@@ -1076,6 +1247,114 @@ mod tests {
         assert_eq!(results.summary.total_runs, 2);
         assert_eq!(results.summary.passed, 1);
         assert_eq!(results.summary.failed, 1);
+        assert_eq!(results.summary.skipped, 0);
         assert!(results.summary.pass_rate > 0.4 && results.summary.pass_rate < 0.6);
+    }
+
+    #[test]
+    fn skip_logic_requires_write_and_shell_flags() {
+        let task = EvalTask {
+            id: "T".to_string(),
+            prompt: String::new(),
+            required_tools: vec![],
+            assertions: vec![],
+            fixtures: vec![Fixture::CreateDir {
+                path: "x".to_string(),
+            }],
+            needs_write: true,
+            needs_playwright: false,
+            optional: false,
+            required_capabilities: RequiredCapabilities {
+                needs_write_tools: true,
+                needs_shell: true,
+            },
+            verifier: None,
+        };
+        let cfg = EvalConfig {
+            provider: ProviderKind::Ollama,
+            base_url: "http://localhost:11434".to_string(),
+            api_key: None,
+            models: vec!["m".to_string()],
+            pack: crate::eval::tasks::EvalPack::Coding,
+            out: None,
+            runs_per_task: 1,
+            max_steps: 1,
+            timeout_seconds: 1,
+            trust: TrustMode::Off,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            enable_write_tools: false,
+            allow_write: false,
+            allow_shell: false,
+            unsafe_mode: false,
+            no_limits: false,
+            unsafe_bypass_allow_flags: false,
+            mcp: vec![],
+            mcp_config: None,
+            session: "default".to_string(),
+            no_session: true,
+            max_session_messages: 40,
+            max_context_chars: 0,
+            compaction_mode: CompactionMode::Off,
+            compaction_keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+            hooks_mode: HooksMode::Off,
+            hooks_config: None,
+            hooks_strict: false,
+            hooks_timeout_ms: 1000,
+            hooks_max_stdout_bytes: 1000,
+            tool_args_strict: ToolArgsStrict::On,
+            tui_enabled: false,
+            tui_refresh_ms: 50,
+            tui_max_log_lines: 100,
+            state_dir_override: None,
+            policy_override: None,
+            approvals_override: None,
+            audit_override: None,
+            workdir_override: None,
+            keep_workdir: false,
+            http: HttpConfig::default(),
+        };
+        let reason = missing_capability_reason(&task, &cfg).expect("reason");
+        assert!(reason.contains("--enable-write-tools"));
+    }
+
+    #[test]
+    fn verifier_failure_is_deterministic() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let spec = VerifierSpec {
+            command: "cargo".to_string(),
+            args: vec!["--version".to_string()],
+            cwd: ".".to_string(),
+            summary_success_contains: "__never__".to_string(),
+        };
+        let out = run_task_verifier(Some(&spec), tmp.path(), 1024).expect("verifier");
+        assert!(out.ran);
+        assert!(!out.ok);
+    }
+
+    #[test]
+    fn verifier_can_pass_on_local_fixture() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname=\"vpass\"\nversion=\"0.1.0\"\nedition=\"2021\"\n",
+        )
+        .expect("cargo");
+        std::fs::create_dir_all(tmp.path().join("src")).expect("src");
+        std::fs::write(
+            tmp.path().join("src/lib.rs"),
+            "#[cfg(test)] mod tests { #[test] fn ok(){ assert_eq!(2+2,4); } }",
+        )
+        .expect("lib");
+        let spec = VerifierSpec {
+            command: "cargo".to_string(),
+            args: vec!["test".to_string(), "-q".to_string()],
+            cwd: ".".to_string(),
+            summary_success_contains: "test result: ok".to_string(),
+        };
+        let out = run_task_verifier(Some(&spec), tmp.path(), 50_000).expect("verifier");
+        assert!(out.ran);
+        assert!(out.ok);
     }
 }

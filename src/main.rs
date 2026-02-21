@@ -232,11 +232,23 @@ struct EvalArgs {
     approval_mode: ApprovalMode,
     #[arg(long, value_enum, default_value_t = AutoApproveScope::Run)]
     auto_approve_scope: AutoApproveScope,
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Enable write tools exposure for coding tasks (some eval tasks are skipped without this)"
+    )]
     enable_write_tools: bool,
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Allow write tool execution (some eval tasks are skipped without this)"
+    )]
     allow_write: bool,
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Allow shell tool execution (some eval tasks are skipped without this)"
+    )]
     allow_shell: bool,
     #[arg(long = "unsafe", default_value_t = false)]
     unsafe_mode: bool,
