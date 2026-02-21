@@ -28,6 +28,18 @@ pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    pub side_effects: SideEffects,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SideEffects {
+    None,
+    FilesystemRead,
+    FilesystemWrite,
+    ShellExec,
+    Network,
+    Browser,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

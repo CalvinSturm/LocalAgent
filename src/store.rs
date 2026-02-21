@@ -9,7 +9,7 @@ use crate::agent::AgentOutcome;
 use crate::compaction::{CompactionReport, CompactionSettings};
 use crate::gate::TrustMode;
 use crate::trust::policy::McpAllowSummary;
-use crate::types::{Message, ToolCall};
+use crate::types::{Message, SideEffects, ToolCall};
 
 #[derive(Debug, Clone)]
 pub struct StatePaths {
@@ -50,8 +50,16 @@ pub struct RunRecord {
     pub compaction: Option<RunCompactionRecord>,
     #[serde(default)]
     pub hook_report: Vec<crate::hooks::protocol::HookInvocationReport>,
+    #[serde(default)]
+    pub tool_catalog: Vec<ToolCatalogEntry>,
     pub final_output: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCatalogEntry {
+    pub name: String,
+    pub side_effects: SideEffects,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +98,9 @@ pub struct RunCliConfig {
     pub hooks_strict: bool,
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
+    pub tool_args_strict: String,
+    #[serde(default)]
+    pub tool_catalog: Vec<ToolCatalogEntry>,
     pub policy_version: Option<u32>,
     #[serde(default)]
     pub includes_resolved: Vec<String>,
@@ -141,6 +152,8 @@ pub struct ConfigFingerprintV1 {
     pub hooks_strict: bool,
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
+    pub tool_args_strict: String,
+    pub tool_catalog_names: Vec<String>,
     pub policy_version: Option<u32>,
     pub includes_resolved: Vec<String>,
     pub mcp_allowlist: Option<McpAllowSummary>,
@@ -245,6 +258,7 @@ pub fn write_run_record(
 ) -> anyhow::Result<PathBuf> {
     ensure_dir(&paths.runs_dir)?;
     let run_path = paths.runs_dir.join(format!("{}.json", outcome.run_id));
+    let tool_catalog = cli.tool_catalog.clone();
     let record = RunRecord {
         metadata: RunMetadata {
             run_id: outcome.run_id.clone(),
@@ -274,6 +288,7 @@ pub fn write_run_record(
             report: outcome.compaction_report.clone(),
         }),
         hook_report: outcome.hook_invocations.clone(),
+        tool_catalog,
         final_output: outcome.final_output.clone(),
         error: outcome.error.clone(),
     };
@@ -508,6 +523,8 @@ mod tests {
                 hooks_strict: false,
                 hooks_timeout_ms: 2000,
                 hooks_max_stdout_bytes: 200_000,
+                tool_args_strict: "on".to_string(),
+                tool_catalog: Vec::new(),
                 policy_version: None,
                 includes_resolved: Vec::new(),
                 mcp_allowlist: None,
@@ -584,6 +601,8 @@ mod tests {
             hooks_strict: false,
             hooks_timeout_ms: 2000,
             hooks_max_stdout_bytes: 200_000,
+            tool_args_strict: "on".to_string(),
+            tool_catalog_names: Vec::new(),
             policy_version: None,
             includes_resolved: Vec::new(),
             mcp_allowlist: None,

@@ -1,8 +1,10 @@
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
 fn main() {
+    let call_count_path = std::env::args().nth(1);
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     for line in stdin.lock().lines() {
@@ -35,11 +37,20 @@ fn main() {
                     "tools": [{
                         "name":"echo",
                         "description":"Echo arguments",
-                        "inputSchema":{"type":"object"}
+                        "inputSchema":{"type":"object","properties":{"msg":{"type":"string"}},"required":["msg"],"additionalProperties":false}
                     }]
                 }
             }),
             "tools/call" => {
+                if let Some(path) = &call_count_path {
+                    let p = PathBuf::from(path);
+                    let next = std::fs::read_to_string(&p)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(0)
+                        + 1;
+                    let _ = std::fs::write(p, next.to_string());
+                }
                 let params = msg.get("params").cloned().unwrap_or(Value::Null);
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
                 json!({

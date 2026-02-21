@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use openagent::mcp::registry::McpRegistry;
 use openagent::mcp::types::{McpConfigFile, McpServerConfig};
+use openagent::tools::ToolArgsStrict;
 use openagent::trust::policy::{Policy, PolicyDecision};
 use openagent::types::ToolCall;
 use serde_json::json;
@@ -84,12 +85,61 @@ async fn mcp_call_routing_returns_wrapped_result() {
     let tc = ToolCall {
         id: "tc1".to_string(),
         name: "mcp.stub.echo".to_string(),
-        arguments: json!({"hello":"world"}),
+        arguments: json!({"msg":"world"}),
     };
-    let msg = reg.call_namespaced_tool(&tc).await.expect("call");
+    let msg = reg
+        .call_namespaced_tool(&tc, ToolArgsStrict::On)
+        .await
+        .expect("call");
     let content = msg.content.unwrap_or_default();
-    assert!(content.contains("\"mcp\""));
-    assert!(content.contains("\"server\":\"stub\""));
+    assert!(content.contains("\"schema_version\":\"openagent.tool_result.v1\""));
+    assert!(content.contains("\"tool_name\":\"mcp.stub.echo\""));
+    assert!(content.contains("\"ok\":true"));
+}
+
+#[tokio::test]
+async fn mcp_schema_validation_blocks_invalid_args_before_call() {
+    let Some(stub) = stub_bin() else {
+        eprintln!("skipping: CARGO_BIN_EXE_mcp_stub not set");
+        return;
+    };
+    let tmp = tempdir().expect("tempdir");
+    let cfg_path = tmp.path().join("mcp_servers.json");
+    let call_count = tmp.path().join("calls.txt");
+    let mut servers = std::collections::BTreeMap::new();
+    servers.insert(
+        "stub".to_string(),
+        McpServerConfig {
+            command: stub,
+            args: vec![call_count.display().to_string()],
+        },
+    );
+    let cfg = McpConfigFile {
+        schema_version: "openagent.mcp_servers.v1".to_string(),
+        servers,
+    };
+    fs::write(
+        &cfg_path,
+        serde_json::to_string_pretty(&cfg).expect("serialize"),
+    )
+    .expect("write config");
+    let reg =
+        McpRegistry::from_config_path(&cfg_path, &["stub".to_string()], Duration::from_secs(5))
+            .await
+            .expect("start registry");
+
+    let tc = ToolCall {
+        id: "tc_invalid".to_string(),
+        name: "mcp.stub.echo".to_string(),
+        arguments: json!({"wrong":"field"}),
+    };
+    let msg = reg
+        .call_namespaced_tool(&tc, ToolArgsStrict::On)
+        .await
+        .expect("result");
+    let content = msg.content.unwrap_or_default();
+    assert!(content.contains("invalid tool arguments"));
+    assert!(!call_count.exists());
 }
 
 #[test]

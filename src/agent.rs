@@ -9,7 +9,10 @@ use crate::hooks::protocol::{
 use crate::hooks::runner::{make_pre_model_input, make_tool_result_input, HookManager};
 use crate::mcp::registry::McpRegistry;
 use crate::providers::{ModelProvider, StreamDelta};
-use crate::tools::{execute_tool, ToolRuntime};
+use crate::tools::{
+    envelope_to_message, execute_tool, to_tool_result_envelope, tool_side_effects,
+    validate_builtin_tool_args, ToolResultMeta, ToolRuntime,
+};
 use crate::trust::policy::McpAllowSummary;
 use crate::types::{GenerateRequest, Message, Role, ToolCall, ToolDef};
 
@@ -519,8 +522,27 @@ impl<P: ModelProvider> Agent<P> {
                     &run_id,
                     step as u32,
                     EventKind::ToolCallDetected,
-                    serde_json::json!({"tool_call_id": tc.id, "name": tc.name, "arguments": tc.arguments}),
+                    serde_json::json!({
+                        "tool_call_id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                        "side_effects": tool_side_effects(&tc.name),
+                        "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
+                    }),
                 );
+                let invalid_args_error = if tc.name.starts_with("mcp.") {
+                    self.mcp_registry.as_ref().and_then(|reg| {
+                        reg.validate_namespaced_tool_args(tc, self.tool_rt.tool_args_strict)
+                            .err()
+                    })
+                } else {
+                    validate_builtin_tool_args(
+                        &tc.name,
+                        &tc.arguments,
+                        self.tool_rt.tool_args_strict,
+                    )
+                    .err()
+                };
                 let approval_mode_meta =
                     if matches!(self.gate_ctx.approval_mode, ApprovalMode::Auto) {
                         Some("auto".to_string())
@@ -556,39 +578,57 @@ impl<P: ModelProvider> Agent<P> {
                                 "approval_id": approval_id.clone(),
                                 "approval_key": approval_key.clone(),
                                 "reason": reason.clone(),
-                                "source": source.clone()
+                                "source": source.clone(),
+                                "side_effects": tool_side_effects(&tc.name),
+                                "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
                         );
                         self.emit_event(
                             &run_id,
                             step as u32,
                             EventKind::ToolExecStart,
-                            serde_json::json!({"tool_call_id": tc.id, "name": tc.name}),
+                            serde_json::json!({"tool_call_id": tc.id, "name": tc.name, "side_effects": tool_side_effects(&tc.name)}),
                         );
-                        let mut tool_msg = if tc.name.starts_with("mcp.") {
+                        let mut tool_msg = if let Some(err) = &invalid_args_error {
+                            make_invalid_args_tool_message(tc, err)
+                        } else if tc.name.starts_with("mcp.") {
                             match &self.mcp_registry {
-                                Some(reg) => match reg.call_namespaced_tool(tc).await {
+                                Some(reg) => match reg
+                                    .call_namespaced_tool(tc, self.tool_rt.tool_args_strict)
+                                    .await
+                                {
                                     Ok(msg) => msg,
-                                    Err(e) => Message {
-                                        role: Role::Tool,
-                                        content: Some(
-                                            serde_json::json!({"error": format!("mcp call failed: {}", e)})
-                                                .to_string(),
-                                        ),
-                                        tool_call_id: Some(tc.id.clone()),
-                                        tool_name: Some(tc.name.clone()),
-                                        tool_calls: None,
+                                    Err(e) => envelope_to_message(to_tool_result_envelope(
+                                        tc,
+                                        "mcp",
+                                        false,
+                                        format!("mcp call failed: {e}"),
+                                        false,
+                                        ToolResultMeta {
+                                            side_effects: tool_side_effects(&tc.name),
+                                            bytes: None,
+                                            exit_code: None,
+                                            stderr_truncated: None,
+                                            stdout_truncated: None,
+                                            source: "mcp".to_string(),
+                                        },
+                                    )),
+                                },
+                                None => envelope_to_message(to_tool_result_envelope(
+                                    tc,
+                                    "mcp",
+                                    false,
+                                    "mcp registry not available".to_string(),
+                                    false,
+                                    ToolResultMeta {
+                                        side_effects: tool_side_effects(&tc.name),
+                                        bytes: None,
+                                        exit_code: None,
+                                        stderr_truncated: None,
+                                        stdout_truncated: None,
+                                        source: "mcp".to_string(),
                                     },
-                                },
-                                None => Message {
-                                    role: Role::Tool,
-                                    content: Some(
-                                        serde_json::json!({"error":"mcp registry not available"}).to_string(),
-                                    ),
-                                    tool_call_id: Some(tc.id.clone()),
-                                    tool_name: Some(tc.name.clone()),
-                                    tool_calls: None,
-                                },
+                                )),
                             }
                         } else {
                             execute_tool(&self.tool_rt, tc).await
@@ -787,7 +827,9 @@ impl<P: ModelProvider> Agent<P> {
                                 "decision": "deny",
                                 "reason": reason.clone(),
                                 "approval_key": approval_key.clone(),
-                                "source": source.clone()
+                                "source": source.clone(),
+                                "side_effects": tool_side_effects(&tc.name),
+                                "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
                         );
                         self.gate.record(GateEvent {
@@ -854,6 +896,72 @@ impl<P: ModelProvider> Agent<P> {
                         approval_key,
                         source,
                     } => {
+                        if let Some(err) = &invalid_args_error {
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::ToolDecision,
+                                serde_json::json!({
+                                    "tool_call_id": tc.id,
+                                    "name": tc.name,
+                                    "decision": "allow",
+                                    "reason": format!("invalid args bypassed approval: {err}"),
+                                    "side_effects": tool_side_effects(&tc.name),
+                                    "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
+                                }),
+                            );
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::ToolExecStart,
+                                serde_json::json!({"tool_call_id": tc.id, "name": tc.name, "side_effects": tool_side_effects(&tc.name)}),
+                            );
+                            let tool_msg = make_invalid_args_tool_message(tc, err);
+                            let content = tool_msg.content.clone().unwrap_or_default();
+                            self.gate.record(GateEvent {
+                                run_id: run_id.clone(),
+                                step: step as u32,
+                                tool_call_id: tc.id.clone(),
+                                tool: tc.name.clone(),
+                                arguments: tc.arguments.clone(),
+                                decision: "allow".to_string(),
+                                decision_reason: Some(format!(
+                                    "invalid args bypassed approval: {err}"
+                                )),
+                                decision_source: source.clone(),
+                                approval_id: None,
+                                approval_key: None,
+                                approval_mode: approval_mode_meta.clone(),
+                                auto_approve_scope: auto_scope_meta.clone(),
+                                result_ok: false,
+                                result_content: content.clone(),
+                                result_input_digest: None,
+                                result_output_digest: None,
+                                result_input_len: None,
+                                result_output_len: None,
+                            });
+                            observed_tool_decisions.push(ToolDecisionRecord {
+                                step: step as u32,
+                                tool_call_id: tc.id.clone(),
+                                tool: tc.name.clone(),
+                                decision: "allow".to_string(),
+                                reason: Some(format!("invalid args bypassed approval: {err}")),
+                                source: source.clone(),
+                            });
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::ToolExecEnd,
+                                serde_json::json!({
+                                    "tool_call_id": tc.id,
+                                    "name": tc.name,
+                                    "ok": false,
+                                    "truncated": false
+                                }),
+                            );
+                            messages.push(tool_msg);
+                            continue;
+                        }
                         self.emit_event(
                             &run_id,
                             step as u32,
@@ -865,7 +973,9 @@ impl<P: ModelProvider> Agent<P> {
                                 "reason": reason.clone(),
                                 "approval_id": approval_id.clone(),
                                 "approval_key": approval_key.clone(),
-                                "source": source.clone()
+                                "source": source.clone(),
+                                "side_effects": tool_side_effects(&tc.name),
+                                "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
                         );
                         self.gate.record(GateEvent {
@@ -957,26 +1067,48 @@ impl<P: ModelProvider> Agent<P> {
 }
 fn tool_result_has_error(content: &str) -> bool {
     match serde_json::from_str::<serde_json::Value>(content) {
-        Ok(v) => v.get("error").is_some(),
+        Ok(v) => {
+            if let Some(ok) = v.get("ok").and_then(|x| x.as_bool()) {
+                !ok
+            } else {
+                v.get("error").is_some()
+            }
+        }
         Err(_) => false,
     }
 }
 
 fn infer_truncated_flag(content: &str) -> bool {
     match serde_json::from_str::<serde_json::Value>(content) {
-        Ok(v) => {
-            v.get("truncated")
-                .and_then(|x| x.as_bool())
-                .unwrap_or(false)
-                || v.get("stdout_truncated")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false)
-                || v.get("stderr_truncated")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false)
-        }
+        Ok(v) => v
+            .get("truncated")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
         Err(_) => false,
     }
+}
+
+fn make_invalid_args_tool_message(tc: &ToolCall, err: &str) -> Message {
+    let source = if tc.name.starts_with("mcp.") {
+        "mcp"
+    } else {
+        "builtin"
+    };
+    envelope_to_message(to_tool_result_envelope(
+        tc,
+        source,
+        false,
+        format!("invalid tool arguments: {err}"),
+        false,
+        ToolResultMeta {
+            side_effects: tool_side_effects(&tc.name),
+            bytes: None,
+            exit_code: None,
+            stderr_truncated: None,
+            stdout_truncated: None,
+            source: source.to_string(),
+        },
+    ))
 }
 
 fn provider_name(provider: crate::gate::ProviderKind) -> &'static str {
@@ -1008,7 +1140,7 @@ mod tests {
     use crate::hooks::config::HooksMode;
     use crate::hooks::runner::{HookManager, HookRuntimeConfig};
     use crate::providers::{ModelProvider, StreamDelta};
-    use crate::tools::ToolRuntime;
+    use crate::tools::{ToolArgsStrict, ToolRuntime};
     use crate::types::{GenerateRequest, GenerateResponse, Message, Role};
 
     struct MockProvider {
@@ -1066,6 +1198,7 @@ mod tests {
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
                 unsafe_bypass_allow_flags: false,
+                tool_args_strict: ToolArgsStrict::On,
             },
             gate: Box::new(NoGate::new()),
             gate_ctx: GateContext {

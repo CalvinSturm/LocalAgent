@@ -24,7 +24,7 @@ use crate::store::{
     config_hash_hex, provider_to_string, resolve_state_paths, stable_path_string,
     ConfigFingerprintV1, RunCliConfig, StatePaths,
 };
-use crate::tools::{builtin_tools_enabled, ToolRuntime};
+use crate::tools::{builtin_tools_enabled, ToolArgsStrict, ToolRuntime};
 use crate::trust::approvals::ApprovalsStore;
 use crate::trust::audit::AuditLog;
 use crate::trust::policy::{McpAllowSummary, Policy};
@@ -63,6 +63,7 @@ pub struct EvalConfig {
     pub hooks_strict: bool,
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
+    pub tool_args_strict: ToolArgsStrict,
     pub state_dir_override: Option<PathBuf>,
     pub policy_override: Option<PathBuf>,
     pub approvals_override: Option<PathBuf>,
@@ -111,6 +112,7 @@ pub struct EvalResultsConfig {
     pub hooks_strict: bool,
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
+    pub tool_args_strict: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -247,6 +249,7 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
             hooks_strict: config.hooks_strict,
             hooks_timeout_ms: config.hooks_timeout_ms,
             hooks_max_stdout_bytes: config.hooks_max_stdout_bytes,
+            tool_args_strict: format!("{:?}", config.tool_args_strict).to_lowercase(),
         },
         summary: EvalSummary::default(),
         by_model: BTreeMap::new(),
@@ -408,6 +411,7 @@ fn write_synthetic_error_artifact(
         state_paths,
         model,
         &outcome,
+        Vec::new(),
         EvalPolicyMeta {
             source: "none".to_string(),
             hash_hex: None,
@@ -580,6 +584,14 @@ async fn run_single(
         tools.extend(mcp_defs);
     }
 
+    let tool_catalog = tools
+        .iter()
+        .map(|t| crate::store::ToolCatalogEntry {
+            name: t.name.clone(),
+            side_effects: t.side_effects,
+        })
+        .collect::<Vec<_>>();
+
     let provider = make_provider(config.provider, &config.base_url, config.api_key.clone());
     let mut agent = Agent {
         provider,
@@ -593,6 +605,7 @@ async fn run_single(
             max_tool_output_bytes: if config.no_limits { 0 } else { 200_000 },
             max_read_bytes: if config.no_limits { 0 } else { 200_000 },
             unsafe_bypass_allow_flags: config.unsafe_bypass_allow_flags,
+            tool_args_strict: config.tool_args_strict,
         },
         gate: gate_build.gate,
         gate_ctx,
@@ -627,6 +640,7 @@ async fn run_single(
         state_paths,
         model,
         &outcome,
+        tool_catalog,
         EvalPolicyMeta {
             source: policy_source,
             hash_hex: policy_hash_hex,
@@ -661,6 +675,7 @@ fn write_run_artifact_for_eval(
     state_paths: &StatePaths,
     model: &str,
     outcome: &AgentOutcome,
+    tool_catalog: Vec<crate::store::ToolCatalogEntry>,
     policy: EvalPolicyMeta,
 ) -> anyhow::Result<()> {
     let cli_config = RunCliConfig {
@@ -699,6 +714,8 @@ fn write_run_artifact_for_eval(
         hooks_strict: config.hooks_strict,
         hooks_timeout_ms: config.hooks_timeout_ms,
         hooks_max_stdout_bytes: config.hooks_max_stdout_bytes,
+        tool_args_strict: format!("{:?}", config.tool_args_strict).to_lowercase(),
+        tool_catalog,
         policy_version: policy.version,
         includes_resolved: policy.includes_resolved.clone(),
         mcp_allowlist: policy.mcp_allowlist.clone(),
@@ -746,6 +763,12 @@ fn write_run_artifact_for_eval(
         hooks_strict: config.hooks_strict,
         hooks_timeout_ms: config.hooks_timeout_ms,
         hooks_max_stdout_bytes: config.hooks_max_stdout_bytes,
+        tool_args_strict: format!("{:?}", config.tool_args_strict).to_lowercase(),
+        tool_catalog_names: cli_config
+            .tool_catalog
+            .iter()
+            .map(|t| t.name.clone())
+            .collect(),
         policy_version: policy.version,
         includes_resolved: policy.includes_resolved.clone(),
         mcp_allowlist: policy.mcp_allowlist.clone(),
@@ -945,6 +968,7 @@ mod tests {
                 hooks_strict: false,
                 hooks_timeout_ms: 2000,
                 hooks_max_stdout_bytes: 200_000,
+                tool_args_strict: "on".to_string(),
             },
             summary: Default::default(),
             by_model: BTreeMap::new(),

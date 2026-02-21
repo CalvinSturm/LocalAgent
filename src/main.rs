@@ -39,7 +39,7 @@ use store::{
     config_hash_hex, extract_session_messages, provider_to_string, resolve_state_paths,
     stable_path_string, ConfigFingerprintV1, RunCliConfig,
 };
-use tools::{builtin_tools_enabled, ToolRuntime};
+use tools::{builtin_tools_enabled, ToolArgsStrict, ToolRuntime};
 use trust::approvals::ApprovalsStore;
 use trust::audit::AuditLog;
 use trust::policy::{McpAllowSummary, Policy};
@@ -196,6 +196,8 @@ struct EvalArgs {
     hooks_timeout_ms: u64,
     #[arg(long, default_value_t = 200_000)]
     hooks_max_stdout_bytes: usize,
+    #[arg(long, value_enum, default_value_t = ToolArgsStrict::On)]
+    tool_args_strict: ToolArgsStrict,
     #[arg(long)]
     state_dir: Option<PathBuf>,
     #[arg(long)]
@@ -298,6 +300,8 @@ struct RunArgs {
     hooks_timeout_ms: u64,
     #[arg(long, default_value_t = 200_000)]
     hooks_max_stdout_bytes: usize,
+    #[arg(long, value_enum, default_value_t = ToolArgsStrict::On)]
+    tool_args_strict: ToolArgsStrict,
     #[arg(long, default_value_t = false)]
     stream: bool,
     #[arg(long)]
@@ -506,6 +510,7 @@ async fn main() -> anyhow::Result<()> {
                 hooks_strict: args.hooks_strict,
                 hooks_timeout_ms: args.hooks_timeout_ms,
                 hooks_max_stdout_bytes: args.hooks_max_stdout_bytes,
+                tool_args_strict: args.tool_args_strict,
                 state_dir_override: args.state_dir.clone(),
                 policy_override: args.policy.clone(),
                 approvals_override: args.approvals.clone(),
@@ -695,6 +700,14 @@ async fn run_agent<P: ModelProvider>(
         max_stdout_bytes: args.hooks_max_stdout_bytes,
     })?;
 
+    let tool_catalog = all_tools
+        .iter()
+        .map(|t| store::ToolCatalogEntry {
+            name: t.name.clone(),
+            side_effects: t.side_effects,
+        })
+        .collect::<Vec<_>>();
+
     let mut agent = Agent {
         provider,
         model: model.to_string(),
@@ -715,6 +728,7 @@ async fn run_agent<P: ModelProvider>(
                 args.max_read_bytes
             },
             unsafe_bypass_allow_flags: args.unsafe_bypass_allow_flags,
+            tool_args_strict: args.tool_args_strict,
         },
         gate,
         gate_ctx,
@@ -803,6 +817,8 @@ async fn run_agent<P: ModelProvider>(
         hooks_strict: args.hooks_strict,
         hooks_timeout_ms: args.hooks_timeout_ms,
         hooks_max_stdout_bytes: args.hooks_max_stdout_bytes,
+        tool_args_strict: format!("{:?}", args.tool_args_strict).to_lowercase(),
+        tool_catalog: tool_catalog.clone(),
         policy_version,
         includes_resolved: includes_resolved.clone(),
         mcp_allowlist: mcp_allowlist.clone(),
@@ -850,6 +866,8 @@ async fn run_agent<P: ModelProvider>(
         hooks_strict: args.hooks_strict,
         hooks_timeout_ms: args.hooks_timeout_ms,
         hooks_max_stdout_bytes: args.hooks_max_stdout_bytes,
+        tool_args_strict: format!("{:?}", args.tool_args_strict).to_lowercase(),
+        tool_catalog_names: tool_catalog.iter().map(|t| t.name.clone()).collect(),
         policy_version,
         includes_resolved: includes_resolved.clone(),
         mcp_allowlist: mcp_allowlist.clone(),
