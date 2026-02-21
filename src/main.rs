@@ -256,7 +256,10 @@ struct EvalArgs {
     no_limits: bool,
     #[arg(long, default_value_t = false)]
     unsafe_bypass_allow_flags: bool,
-    #[arg(long = "mcp")]
+    #[arg(
+        long = "mcp",
+        help = "Enable MCP servers (browser eval uses only local fixture pages; use --mcp playwright)"
+    )]
     mcp: Vec<String>,
     #[arg(long)]
     mcp_config: Option<PathBuf>,

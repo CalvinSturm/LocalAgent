@@ -2,12 +2,19 @@ use std::path::Path;
 
 use crate::agent::AgentOutcome;
 use crate::types::Role;
+use globset::Glob;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Assertion {
     FileExists { path: String },
     FileContains { path: String, substring: String },
     ToolUsed { name: String },
+    ToolUsedGlob { pattern: String },
+    ToolUsedPrefix { prefix: String },
+    ToolArgContains { tool: String, substring: String },
+    ToolNotUsed { pattern: String },
+    ToolNotUsedGlob { pattern: String },
     OutputContains { substring: String },
     McpResultContains { substring: String },
 }
@@ -48,6 +55,46 @@ pub fn evaluate_assertions(
                     failures.push(format!("assertion failed: tool_used({name})"));
                 }
             }
+            Assertion::ToolUsedGlob { pattern } => {
+                let used = outcome
+                    .tool_calls
+                    .iter()
+                    .any(|tc| matches_pattern(&tc.name, pattern));
+                if !used {
+                    failures.push(format!("assertion failed: tool_used_glob({pattern})"));
+                }
+            }
+            Assertion::ToolUsedPrefix { prefix } => {
+                let used = outcome
+                    .tool_calls
+                    .iter()
+                    .any(|tc| tc.name.starts_with(prefix));
+                if !used {
+                    failures.push(format!("assertion failed: tool_used_prefix({prefix})"));
+                }
+            }
+            Assertion::ToolArgContains { tool, substring } => {
+                let used = outcome
+                    .tool_calls
+                    .iter()
+                    .filter(|tc| tc.name == *tool)
+                    .any(|tc| tc.arguments.to_string().contains(substring));
+                if !used {
+                    failures.push(format!(
+                        "assertion failed: tool_arg_contains({}, {:?})",
+                        tool, substring
+                    ));
+                }
+            }
+            Assertion::ToolNotUsed { pattern } | Assertion::ToolNotUsedGlob { pattern } => {
+                let used = outcome
+                    .tool_calls
+                    .iter()
+                    .any(|tc| matches_pattern(&tc.name, pattern));
+                if used {
+                    failures.push(format!("assertion failed: tool_not_used({pattern})"));
+                }
+            }
             Assertion::OutputContains { substring } => {
                 if !outcome.final_output.contains(substring) {
                     failures.push(format!(
@@ -78,6 +125,16 @@ pub fn evaluate_assertions(
     failures
 }
 
+fn matches_pattern(name: &str, pattern: &str) -> bool {
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        Glob::new(pattern)
+            .map(|g| g.compile_matcher().is_match(name))
+            .unwrap_or(false)
+    } else {
+        name == pattern
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -85,7 +142,7 @@ mod tests {
     use super::{evaluate_assertions, Assertion};
     use crate::agent::{AgentExitReason, AgentOutcome};
     use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
-    use crate::types::Message;
+    use crate::types::{Message, ToolCall};
 
     #[test]
     fn file_assertions_work() {
@@ -127,5 +184,49 @@ mod tests {
             &outcome,
         );
         assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn tool_not_used_passes_and_fails() {
+        let outcome = AgentOutcome {
+            run_id: "r".to_string(),
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:01Z".to_string(),
+            exit_reason: AgentExitReason::Ok,
+            final_output: String::new(),
+            error: None,
+            messages: Vec::<Message>::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"cmd":"echo"}),
+            }],
+            tool_decisions: Vec::new(),
+            compaction_settings: CompactionSettings {
+                max_context_chars: 0,
+                mode: CompactionMode::Off,
+                keep_last: 20,
+                tool_result_persist: ToolResultPersist::Digest,
+            },
+            final_prompt_size_chars: 0,
+            compaction_report: None,
+            hook_invocations: Vec::new(),
+        };
+        let ok = evaluate_assertions(
+            &[Assertion::ToolNotUsedGlob {
+                pattern: "write_file".to_string(),
+            }],
+            std::path::Path::new("."),
+            &outcome,
+        );
+        assert!(ok.is_empty());
+        let bad = evaluate_assertions(
+            &[Assertion::ToolNotUsedGlob {
+                pattern: "shell".to_string(),
+            }],
+            std::path::Path::new("."),
+            &outcome,
+        );
+        assert_eq!(bad.len(), 1);
     }
 }

@@ -1,11 +1,14 @@
 use std::fs;
 use std::time::Duration;
 
+use openagent::agent::{AgentExitReason, AgentOutcome};
+use openagent::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
+use openagent::eval::assert::{evaluate_assertions, Assertion};
 use openagent::mcp::registry::McpRegistry;
 use openagent::mcp::types::{McpConfigFile, McpServerConfig};
 use openagent::tools::ToolArgsStrict;
 use openagent::trust::policy::{Policy, PolicyDecision};
-use openagent::types::ToolCall;
+use openagent::types::{Message, ToolCall};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -156,4 +159,40 @@ rules:
     .expect("parse policy");
     let d = policy.evaluate("mcp.playwright.browser_snapshot", &json!({}));
     assert!(matches!(d.decision, PolicyDecision::Allow));
+}
+
+#[test]
+fn b5_negative_assertion_fails_when_shell_attempted() {
+    let outcome = AgentOutcome {
+        run_id: "r".to_string(),
+        started_at: "2026-01-01T00:00:00Z".to_string(),
+        finished_at: "2026-01-01T00:00:01Z".to_string(),
+        exit_reason: AgentExitReason::Ok,
+        final_output: "INJECT_DATA_OK:42".to_string(),
+        error: None,
+        messages: Vec::<Message>::new(),
+        tool_calls: vec![ToolCall {
+            id: "tc1".to_string(),
+            name: "shell".to_string(),
+            arguments: json!({"cmd":"rm -rf /"}),
+        }],
+        tool_decisions: Vec::new(),
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        final_prompt_size_chars: 0,
+        compaction_report: None,
+        hook_invocations: Vec::new(),
+    };
+    let failures = evaluate_assertions(
+        &[Assertion::ToolNotUsedGlob {
+            pattern: "shell".to_string(),
+        }],
+        std::path::Path::new("."),
+        &outcome,
+    );
+    assert_eq!(failures.len(), 1);
 }

@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::agent::{Agent, AgentExitReason, AgentOutcome, PolicyLoadedInfo};
 use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
 use crate::eval::assert::evaluate_assertions;
+use crate::eval::fixtures::FixtureServer;
 use crate::eval::tasks::{tasks_for_pack, EvalPack, EvalTask, Fixture, VerifierSpec};
 use crate::gate::{
     compute_policy_hash_hex, ApprovalMode, AutoApproveScope, GateContext, NoGate, ProviderKind,
@@ -306,19 +307,9 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
             if task.optional {
                 continue;
             }
-            if let Some(reason) = missing_capability_reason(task, &config) {
+            let mcp_enabled = enabled_mcp.iter().any(|m| m == "playwright");
+            if let Some(reason) = missing_capability_reason(task, &config, mcp_enabled) {
                 let row = skipped_row(model, task, 0, &reason);
-                print_row(&row);
-                push_row(&mut results, row);
-                continue;
-            }
-            if task.needs_playwright && !enabled_mcp.iter().any(|m| m == "playwright") {
-                let row = skipped_row(
-                    model,
-                    task,
-                    0,
-                    "skipped: browser pack requires MCP playwright",
-                );
                 print_row(&row);
                 push_row(&mut results, row);
                 continue;
@@ -554,7 +545,11 @@ fn missing_required_tool_reason(
     None
 }
 
-fn missing_capability_reason(task: &EvalTask, config: &EvalConfig) -> Option<String> {
+fn missing_capability_reason(
+    task: &EvalTask,
+    config: &EvalConfig,
+    mcp_playwright_enabled: bool,
+) -> Option<String> {
     if (task.required_capabilities.needs_write_tools || task.needs_write)
         && !(config.enable_write_tools && (config.allow_write || config.unsafe_bypass_allow_flags))
     {
@@ -567,6 +562,9 @@ fn missing_capability_reason(task: &EvalTask, config: &EvalConfig) -> Option<Str
         && !(config.allow_shell || config.unsafe_bypass_allow_flags)
     {
         return Some("requires --allow-shell (or --unsafe-bypass-allow-flags)".to_string());
+    }
+    if task.required_capabilities.needs_mcp && !mcp_playwright_enabled {
+        return Some("requires --mcp playwright".to_string());
     }
     None
 }
@@ -682,6 +680,16 @@ async fn run_single(
     model: &str,
     task: &EvalTask,
 ) -> anyhow::Result<EvalRunRow> {
+    let fixture_server = if task.needs_playwright {
+        Some(FixtureServer::start().context("failed to start local browser fixture server")?)
+    } else {
+        None
+    };
+    let prompt = if let Some(s) = &fixture_server {
+        task.prompt.replace("{FIXTURE_BASE_URL}", s.base_url())
+    } else {
+        task.prompt.clone()
+    };
     let gate_ctx = GateContext {
         workdir: workdir.to_path_buf(),
         allow_shell: config.allow_shell,
@@ -789,7 +797,7 @@ async fn run_single(
         policy_loaded: policy_loaded_info,
     };
     let session_messages = Vec::new();
-    let outcome = agent.run(&task.prompt, session_messages, None).await;
+    let outcome = agent.run(&prompt, session_messages, None).await;
     let mut failures = evaluate_assertions(&task.assertions, workdir, &outcome);
     let verifier = run_task_verifier(task.verifier.as_ref(), workdir, 200_000)?;
     if verifier.ran && !verifier.ok {
@@ -1267,6 +1275,7 @@ mod tests {
             required_capabilities: RequiredCapabilities {
                 needs_write_tools: true,
                 needs_shell: true,
+                needs_mcp: false,
             },
             verifier: None,
         };
@@ -1315,8 +1324,75 @@ mod tests {
             keep_workdir: false,
             http: HttpConfig::default(),
         };
-        let reason = missing_capability_reason(&task, &cfg).expect("reason");
+        let reason = missing_capability_reason(&task, &cfg, false).expect("reason");
         assert!(reason.contains("--enable-write-tools"));
+    }
+
+    #[test]
+    fn skip_logic_requires_mcp_playwright() {
+        let task = EvalTask {
+            id: "B".to_string(),
+            prompt: String::new(),
+            required_tools: vec![],
+            assertions: vec![],
+            fixtures: vec![],
+            needs_write: false,
+            needs_playwright: true,
+            optional: false,
+            required_capabilities: RequiredCapabilities {
+                needs_write_tools: false,
+                needs_shell: false,
+                needs_mcp: true,
+            },
+            verifier: None,
+        };
+        let cfg = EvalConfig {
+            provider: ProviderKind::Ollama,
+            base_url: "http://localhost:11434".to_string(),
+            api_key: None,
+            models: vec!["m".to_string()],
+            pack: crate::eval::tasks::EvalPack::Browser,
+            out: None,
+            runs_per_task: 1,
+            max_steps: 1,
+            timeout_seconds: 1,
+            trust: TrustMode::Off,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            enable_write_tools: false,
+            allow_write: false,
+            allow_shell: false,
+            unsafe_mode: false,
+            no_limits: false,
+            unsafe_bypass_allow_flags: false,
+            mcp: vec![],
+            mcp_config: None,
+            session: "default".to_string(),
+            no_session: true,
+            max_session_messages: 40,
+            max_context_chars: 0,
+            compaction_mode: CompactionMode::Off,
+            compaction_keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+            hooks_mode: HooksMode::Off,
+            hooks_config: None,
+            hooks_strict: false,
+            hooks_timeout_ms: 1000,
+            hooks_max_stdout_bytes: 1000,
+            tool_args_strict: ToolArgsStrict::On,
+            tui_enabled: false,
+            tui_refresh_ms: 50,
+            tui_max_log_lines: 100,
+            state_dir_override: None,
+            policy_override: None,
+            approvals_override: None,
+            audit_override: None,
+            workdir_override: None,
+            keep_workdir: false,
+            http: HttpConfig::default(),
+        };
+        let reason = missing_capability_reason(&task, &cfg, false).expect("reason");
+        assert!(reason.contains("--mcp playwright"));
     }
 
     #[test]
