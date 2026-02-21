@@ -7,6 +7,8 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +35,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/${{ matrix.binary_name }} dist/
+          cp target/release/${{ matrix.binary_name }} localagent-${{ runner.os }}-${{ github.ref_name }}
           tar -czf localagent-${{ runner.os }}-${{ github.ref_name }}.tar.gz -C dist ${{ matrix.binary_name }}
       - name: Package (windows)
         if: runner.os == 'Windows'
@@ -40,7 +43,16 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/${{ matrix.binary_name }} dist/
+          Copy-Item target/release/${{ matrix.binary_name }} localagent-${{ runner.os }}-${{ github.ref_name }}.exe
           Compress-Archive -Path dist/${{ matrix.binary_name }} -DestinationPath localagent-${{ runner.os }}-${{ github.ref_name }}.zip -Force
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            *.zip
+            localagent-${{ runner.os }}-${{ github.ref_name }}
+            localagent-${{ runner.os }}-${{ github.ref_name }}.exe
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
