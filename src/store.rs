@@ -323,17 +323,7 @@ pub fn resolve_state_dir(workdir: &Path, state_dir_override: Option<PathBuf>) ->
     }
 
     let new_dir = workdir.join(".localagent");
-    let legacy_openagent_dir = workdir.join(".openagent");
-    let legacy_agentloop_dir = workdir.join(".agentloop");
-    if new_dir.exists() {
-        (new_dir, false)
-    } else if legacy_openagent_dir.exists() {
-        (legacy_openagent_dir, true)
-    } else if legacy_agentloop_dir.exists() {
-        (legacy_agentloop_dir, true)
-    } else {
-        (new_dir, false)
-    }
+    (new_dir, false)
 }
 
 pub fn ensure_dir(path: &Path) -> anyhow::Result<()> {
@@ -582,21 +572,31 @@ mod tests {
     #[test]
     fn resolve_state_dir_prefers_legacy_when_new_missing() {
         let tmp = tempdir().expect("tempdir");
-        let legacy = tmp.path().join(".agentloop");
-        std::fs::create_dir_all(&legacy).expect("create legacy");
+        let legacy = tmp.path().join(".localagent");
+        std::fs::create_dir_all(&legacy).expect("create localagent");
         let (resolved, legacy_used) = resolve_state_dir(tmp.path(), None);
         assert_eq!(resolved, legacy);
-        assert!(legacy_used);
+        assert!(!legacy_used);
     }
 
     #[test]
-    fn resolve_state_dir_prefers_openagent_legacy_when_localagent_missing() {
+    fn resolve_state_dir_ignores_openagent_legacy_dir() {
         let tmp = tempdir().expect("tempdir");
         let legacy = tmp.path().join(".openagent");
         std::fs::create_dir_all(&legacy).expect("create legacy");
         let (resolved, legacy_used) = resolve_state_dir(tmp.path(), None);
-        assert_eq!(resolved, legacy);
-        assert!(legacy_used);
+        assert_eq!(resolved, tmp.path().join(".localagent"));
+        assert!(!legacy_used);
+    }
+
+    #[test]
+    fn resolve_state_dir_ignores_agentloop_legacy_dir() {
+        let tmp = tempdir().expect("tempdir");
+        let legacy = tmp.path().join(".agentloop");
+        std::fs::create_dir_all(&legacy).expect("create legacy");
+        let (resolved, legacy_used) = resolve_state_dir(tmp.path(), None);
+        assert_eq!(resolved, tmp.path().join(".localagent"));
+        assert!(!legacy_used);
     }
 
     #[test]
