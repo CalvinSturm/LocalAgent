@@ -143,6 +143,10 @@ impl Policy {
     }
 }
 
+pub fn safe_default_policy_repr() -> &'static str {
+    "version:1;default:deny;rules:[allow list_dir,allow read_file,require_approval shell,require_approval write_file,require_approval apply_patch]"
+}
+
 impl CompiledRule {
     fn matches_tool(&self, tool: &str) -> bool {
         match &self.tool {

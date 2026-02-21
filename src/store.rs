@@ -1,0 +1,455 @@
+use std::path::{Path, PathBuf};
+
+use hex::encode as hex_encode;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::agent::AgentOutcome;
+use crate::gate::TrustMode;
+use crate::types::{Message, ToolCall};
+
+#[derive(Debug, Clone)]
+pub struct StatePaths {
+    pub state_dir: PathBuf,
+    pub policy_path: PathBuf,
+    pub approvals_path: PathBuf,
+    pub audit_path: PathBuf,
+    pub runs_dir: PathBuf,
+    pub sessions_dir: PathBuf,
+    pub using_legacy_dir: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionFile {
+    pub schema_version: String,
+    pub updated_at: String,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRecord {
+    pub metadata: RunMetadata,
+    pub cli: RunCliConfig,
+    pub resolved_paths: RunResolvedPaths,
+    pub policy_source: String,
+    pub policy_hash_hex: Option<String>,
+    pub config_hash_hex: String,
+    pub transcript: Vec<Message>,
+    pub tool_calls: Vec<ToolCall>,
+    pub final_output: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunMetadata {
+    pub run_id: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub exit_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunCliConfig {
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub trust_mode: String,
+    pub allow_shell: bool,
+    pub allow_write: bool,
+    pub enable_write_tools: bool,
+    pub max_tool_output_bytes: usize,
+    pub max_read_bytes: usize,
+    pub approval_mode: String,
+    pub auto_approve_scope: String,
+    pub unsafe_mode: bool,
+    pub no_limits: bool,
+    pub unsafe_bypass_allow_flags: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunResolvedPaths {
+    pub state_dir: String,
+    pub policy_path: String,
+    pub approvals_path: String,
+    pub audit_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigFingerprintV1 {
+    pub schema_version: String,
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub trust_mode: String,
+    pub state_dir: String,
+    pub policy_path: String,
+    pub approvals_path: String,
+    pub audit_path: String,
+    pub allow_shell: bool,
+    pub allow_write: bool,
+    pub enable_write_tools: bool,
+    pub max_steps: usize,
+    pub max_tool_output_bytes: usize,
+    pub max_read_bytes: usize,
+    pub session_name: String,
+    pub no_session: bool,
+    pub max_session_messages: usize,
+    pub approval_mode: String,
+    pub auto_approve_scope: String,
+    pub unsafe_mode: bool,
+    pub no_limits: bool,
+    pub unsafe_bypass_allow_flags: bool,
+}
+
+pub fn resolve_state_paths(
+    workdir: &Path,
+    state_dir_override: Option<PathBuf>,
+    policy_override: Option<PathBuf>,
+    approvals_override: Option<PathBuf>,
+    audit_override: Option<PathBuf>,
+) -> StatePaths {
+    let (state_dir, using_legacy_dir) = resolve_state_dir(workdir, state_dir_override);
+    let policy_path = policy_override.unwrap_or_else(|| state_dir.join("policy.yaml"));
+    let approvals_path = approvals_override.unwrap_or_else(|| state_dir.join("approvals.json"));
+    let audit_path = audit_override.unwrap_or_else(|| state_dir.join("audit.jsonl"));
+    StatePaths {
+        runs_dir: state_dir.join("runs"),
+        sessions_dir: state_dir.join("sessions"),
+        state_dir,
+        policy_path,
+        approvals_path,
+        audit_path,
+        using_legacy_dir,
+    }
+}
+
+pub fn resolve_state_dir(workdir: &Path, state_dir_override: Option<PathBuf>) -> (PathBuf, bool) {
+    if let Some(path) = state_dir_override {
+        return (path, false);
+    }
+
+    let new_dir = workdir.join(".openagent");
+    let legacy_dir = workdir.join(".agentloop");
+    if new_dir.exists() {
+        (new_dir, false)
+    } else if legacy_dir.exists() {
+        (legacy_dir, true)
+    } else {
+        (new_dir, false)
+    }
+}
+
+pub fn ensure_dir(path: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(path)?;
+    Ok(())
+}
+
+pub fn load_session(path: &Path) -> anyhow::Result<Vec<Message>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let session: SessionFile = serde_json::from_str(&content)?;
+    Ok(session.messages)
+}
+
+pub fn save_session(path: &Path, messages: &[Message], max_messages: usize) -> anyhow::Result<()> {
+    let mut trimmed = messages.to_vec();
+    if trimmed.len() > max_messages {
+        let keep_from = trimmed.len() - max_messages;
+        trimmed = trimmed[keep_from..].to_vec();
+    }
+    let session = SessionFile {
+        schema_version: "openagent.session.v1".to_string(),
+        updated_at: crate::trust::now_rfc3339(),
+        messages: trimmed,
+    };
+    write_json_atomic(path, &session)
+}
+
+pub fn reset_session(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+pub fn write_run_record(
+    paths: &StatePaths,
+    cli: RunCliConfig,
+    policy_source: String,
+    policy_hash_hex: Option<String>,
+    config_hash_hex: String,
+    outcome: &AgentOutcome,
+) -> anyhow::Result<PathBuf> {
+    ensure_dir(&paths.runs_dir)?;
+    let run_path = paths.runs_dir.join(format!("{}.json", outcome.run_id));
+    let record = RunRecord {
+        metadata: RunMetadata {
+            run_id: outcome.run_id.clone(),
+            started_at: outcome.started_at.clone(),
+            finished_at: outcome.finished_at.clone(),
+            exit_reason: outcome.exit_reason.as_str().to_string(),
+        },
+        cli,
+        resolved_paths: RunResolvedPaths {
+            state_dir: paths.state_dir.display().to_string(),
+            policy_path: paths.policy_path.display().to_string(),
+            approvals_path: paths.approvals_path.display().to_string(),
+            audit_path: paths.audit_path.display().to_string(),
+        },
+        policy_source,
+        policy_hash_hex,
+        config_hash_hex,
+        transcript: outcome.messages.clone(),
+        tool_calls: outcome.tool_calls.clone(),
+        final_output: outcome.final_output.clone(),
+        error: outcome.error.clone(),
+    };
+    write_json_atomic(&run_path, &record)?;
+    Ok(run_path)
+}
+
+pub fn load_run_record(state_dir: &Path, run_id: &str) -> anyhow::Result<RunRecord> {
+    let path = state_dir.join("runs").join(format!("{}.json", run_id));
+    let content = std::fs::read_to_string(path)?;
+    let record: RunRecord = serde_json::from_str(&content)?;
+    Ok(record)
+}
+
+pub fn render_replay(record: &RunRecord) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "run_id: {}\nprovider: {}\nmodel: {}\nexit_reason: {}\nPolicy hash: {}\nConfig hash: {}\napproval_mode: {}\nauto_approve_scope: {}\nunsafe: {}\nno_limits: {}\nunsafe_bypass_allow_flags: {}\n",
+        record.metadata.run_id,
+        record.cli.provider,
+        record.cli.model,
+        record.metadata.exit_reason,
+        record.policy_hash_hex.as_deref().unwrap_or("-"),
+        record.config_hash_hex,
+        record.cli.approval_mode,
+        record.cli.auto_approve_scope,
+        record.cli.unsafe_mode,
+        record.cli.no_limits,
+        record.cli.unsafe_bypass_allow_flags
+    ));
+    for m in &record.transcript {
+        let content = m.content.clone().unwrap_or_default();
+        match m.role {
+            crate::types::Role::User => out.push_str(&format!("USER: {}\n", content)),
+            crate::types::Role::Assistant => out.push_str(&format!("ASSISTANT: {}\n", content)),
+            crate::types::Role::Tool => {
+                let name = m.tool_name.clone().unwrap_or_else(|| "unknown".to_string());
+                out.push_str(&format!("TOOL({}): {}\n", name, content));
+            }
+            crate::types::Role::System => out.push_str(&format!("SYSTEM: {}\n", content)),
+            crate::types::Role::Developer => out.push_str(&format!("DEVELOPER: {}\n", content)),
+        }
+    }
+    out
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+    let tmp_path = path.with_extension(format!("tmp.{}", Uuid::new_v4()));
+    let content = serde_json::to_string_pretty(value)?;
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+pub fn cli_trust_mode(mode: TrustMode) -> String {
+    match mode {
+        TrustMode::Auto => "auto".to_string(),
+        TrustMode::On => "on".to_string(),
+        TrustMode::Off => "off".to_string(),
+    }
+}
+
+pub fn extract_session_messages(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .filter(|m| !matches!(m.role, crate::types::Role::System))
+        .cloned()
+        .collect()
+}
+
+pub fn provider_to_string(provider: crate::gate::ProviderKind) -> String {
+    match provider {
+        crate::gate::ProviderKind::Lmstudio => "lmstudio".to_string(),
+        crate::gate::ProviderKind::Llamacpp => "llamacpp".to_string(),
+        crate::gate::ProviderKind::Ollama => "ollama".to_string(),
+    }
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex_encode(hasher.finalize())
+}
+
+pub fn stable_path_string(path: &Path) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(p) => p.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+pub fn config_hash_hex(fingerprint: &ConfigFingerprintV1) -> anyhow::Result<String> {
+    let bytes = serde_json::to_vec(fingerprint)?;
+    Ok(sha256_hex(&bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::{
+        config_hash_hex, load_run_record, load_session, reset_session, resolve_state_dir,
+        save_session, sha256_hex, write_run_record, ConfigFingerprintV1, RunCliConfig,
+    };
+    use crate::agent::{AgentExitReason, AgentOutcome};
+    use crate::types::{Message, Role};
+
+    #[test]
+    fn resolve_state_dir_prefers_legacy_when_new_missing() {
+        let tmp = tempdir().expect("tempdir");
+        let legacy = tmp.path().join(".agentloop");
+        std::fs::create_dir_all(&legacy).expect("create legacy");
+        let (resolved, legacy_used) = resolve_state_dir(tmp.path(), None);
+        assert_eq!(resolved, legacy);
+        assert!(legacy_used);
+    }
+
+    #[test]
+    fn resolve_state_dir_prefers_new_when_both_exist() {
+        let tmp = tempdir().expect("tempdir");
+        let legacy = tmp.path().join(".agentloop");
+        let new_dir = tmp.path().join(".openagent");
+        std::fs::create_dir_all(&legacy).expect("create legacy");
+        std::fs::create_dir_all(&new_dir).expect("create new");
+        let (resolved, legacy_used) = resolve_state_dir(tmp.path(), None);
+        assert_eq!(resolved, new_dir);
+        assert!(!legacy_used);
+    }
+
+    #[test]
+    fn resolve_state_dir_uses_override() {
+        let tmp = tempdir().expect("tempdir");
+        let override_dir = tmp.path().join("custom_state");
+        let (resolved, legacy_used) = resolve_state_dir(tmp.path(), Some(override_dir.clone()));
+        assert_eq!(resolved, override_dir);
+        assert!(!legacy_used);
+    }
+
+    #[test]
+    fn session_roundtrip_and_reset() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("session.json");
+        let msgs = vec![Message {
+            role: Role::User,
+            content: Some("hello".to_string()),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }];
+        save_session(&path, &msgs, 40).expect("save session");
+        let loaded = load_session(&path).expect("load session");
+        assert_eq!(loaded.len(), 1);
+        reset_session(&path).expect("reset");
+        let loaded = load_session(&path).expect("load after reset");
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn run_artifact_write_and_read() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = super::resolve_state_paths(tmp.path(), None, None, None, None);
+        let outcome = AgentOutcome {
+            run_id: "run_1".to_string(),
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:01Z".to_string(),
+            exit_reason: AgentExitReason::Ok,
+            final_output: "done".to_string(),
+            error: None,
+            messages: Vec::new(),
+            tool_calls: Vec::new(),
+        };
+        write_run_record(
+            &paths,
+            RunCliConfig {
+                provider: "ollama".to_string(),
+                base_url: "http://localhost:11434".to_string(),
+                model: "m".to_string(),
+                trust_mode: "off".to_string(),
+                allow_shell: false,
+                allow_write: false,
+                enable_write_tools: false,
+                max_tool_output_bytes: 200_000,
+                max_read_bytes: 200_000,
+                approval_mode: "interrupt".to_string(),
+                auto_approve_scope: "run".to_string(),
+                unsafe_mode: false,
+                no_limits: false,
+                unsafe_bypass_allow_flags: false,
+            },
+            "none".to_string(),
+            None,
+            "cfg_hash".to_string(),
+            &outcome,
+        )
+        .expect("write run");
+        let loaded = load_run_record(&paths.state_dir, "run_1").expect("load run");
+        assert_eq!(loaded.metadata.run_id, "run_1");
+        assert_eq!(loaded.metadata.exit_reason, "ok");
+        assert_eq!(loaded.config_hash_hex, "cfg_hash");
+    }
+
+    #[test]
+    fn sha256_known_bytes() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn config_hash_stable_and_changes() {
+        let mut a = ConfigFingerprintV1 {
+            schema_version: "openagent.confighash.v1".to_string(),
+            provider: "ollama".to_string(),
+            base_url: "http://localhost:11434".to_string(),
+            model: "m".to_string(),
+            trust_mode: "off".to_string(),
+            state_dir: "/tmp/s".to_string(),
+            policy_path: "/tmp/s/policy.yaml".to_string(),
+            approvals_path: "/tmp/s/approvals.json".to_string(),
+            audit_path: "/tmp/s/audit.jsonl".to_string(),
+            allow_shell: false,
+            allow_write: false,
+            enable_write_tools: false,
+            max_steps: 20,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            session_name: "default".to_string(),
+            no_session: false,
+            max_session_messages: 40,
+            approval_mode: "interrupt".to_string(),
+            auto_approve_scope: "run".to_string(),
+            unsafe_mode: false,
+            no_limits: false,
+            unsafe_bypass_allow_flags: false,
+        };
+        let b = a.clone();
+        let ha = config_hash_hex(&a).expect("hash a");
+        let hb = config_hash_hex(&b).expect("hash b");
+        assert_eq!(ha, hb);
+
+        a.max_read_bytes = 100;
+        let hc = config_hash_hex(&a).expect("hash c");
+        assert_ne!(ha, hc);
+    }
+}

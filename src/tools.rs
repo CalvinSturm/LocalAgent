@@ -12,6 +12,7 @@ pub struct ToolRuntime {
     pub allow_write: bool,
     pub max_tool_output_bytes: usize,
     pub max_read_bytes: usize,
+    pub unsafe_bypass_allow_flags: bool,
 }
 
 pub fn builtin_tools_enabled(enable_write_tools: bool) -> Vec<ToolDef> {
@@ -187,7 +188,7 @@ async fn run_read_file(rt: &ToolRuntime, args: &serde_json::Value) -> serde_json
 }
 
 async fn run_shell(rt: &ToolRuntime, args: &serde_json::Value) -> serde_json::Value {
-    if !rt.allow_shell {
+    if !rt.allow_shell && !rt.unsafe_bypass_allow_flags {
         return json!({
             "error": "shell tool is disabled. Re-run with --allow-shell"
         });
@@ -241,7 +242,7 @@ async fn run_shell(rt: &ToolRuntime, args: &serde_json::Value) -> serde_json::Va
 }
 
 async fn run_write_file(rt: &ToolRuntime, args: &serde_json::Value) -> serde_json::Value {
-    if !rt.allow_write {
+    if !rt.allow_write && !rt.unsafe_bypass_allow_flags {
         return json!({ "error": "writes require --allow-write" });
     }
 
@@ -283,7 +284,7 @@ async fn run_write_file(rt: &ToolRuntime, args: &serde_json::Value) -> serde_jso
 }
 
 async fn run_apply_patch(rt: &ToolRuntime, args: &serde_json::Value) -> serde_json::Value {
-    if !rt.allow_write {
+    if !rt.allow_write && !rt.unsafe_bypass_allow_flags {
         return json!({ "error": "writes require --allow-write" });
     }
 
@@ -350,6 +351,9 @@ async fn run_apply_patch(rt: &ToolRuntime, args: &serde_json::Value) -> serde_js
 }
 
 fn truncate_utf8_to_bytes(input: &str, max_bytes: usize) -> (String, bool) {
+    if max_bytes == 0 {
+        return (input.to_string(), false);
+    }
     if input.len() <= max_bytes {
         return (input.to_string(), false);
     }
@@ -393,6 +397,7 @@ mod tests {
             allow_write: false,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
         };
         let tc = ToolCall {
             id: "tc_1".to_string(),
@@ -413,6 +418,7 @@ mod tests {
             allow_write: false,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
         };
         let tc = ToolCall {
             id: "tc_w".to_string(),
@@ -437,6 +443,7 @@ mod tests {
             allow_write: true,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
         };
         let tc = ToolCall {
             id: "tc_p".to_string(),
@@ -453,5 +460,38 @@ mod tests {
             .await
             .expect("read patched");
         assert_eq!(updated, "world\n");
+    }
+
+    #[test]
+    fn truncation_zero_means_unlimited() {
+        let s = "abcdefghijklmnopqrstuvwxyz";
+        let (out, truncated) = super::truncate_utf8_to_bytes(s, 0);
+        assert_eq!(out, s);
+        assert!(!truncated);
+    }
+
+    #[tokio::test]
+    async fn read_file_zero_limit_not_truncated() {
+        let tmp = tempdir().expect("tempdir");
+        let file = tmp.path().join("b.txt");
+        tokio::fs::write(&file, "0123456789abcdef")
+            .await
+            .expect("write");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_write: false,
+            max_tool_output_bytes: 0,
+            max_read_bytes: 0,
+            unsafe_bypass_allow_flags: false,
+        };
+        let tc = ToolCall {
+            id: "tc_r".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"b.txt"}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let content = msg.content.unwrap_or_default();
+        assert!(content.contains("\"truncated\":false"));
     }
 }

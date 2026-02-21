@@ -3,13 +3,26 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalStatus {
     Pending,
-    Approved,
     Denied,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApprovalDecisionMatch {
+    pub id: String,
+    pub status: ApprovalStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApprovedUsage {
+    pub id: String,
+    pub approval_key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,6 +37,14 @@ pub struct ApprovalRequest {
     pub tool: String,
     pub arguments: Value,
     pub status: StoredStatus,
+    #[serde(default)]
+    pub approval_key: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub max_uses: Option<u32>,
+    #[serde(default)]
+    pub uses: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -48,49 +69,130 @@ impl ApprovalsStore {
         self.load_data()
     }
 
-    pub fn approve(&self, id: &str) -> anyhow::Result<()> {
-        self.set_status(id, StoredStatus::Approved)
+    pub fn approve(
+        &self,
+        id: &str,
+        ttl_hours: Option<u32>,
+        max_uses: Option<u32>,
+    ) -> anyhow::Result<()> {
+        let mut data = self.load_data()?;
+        let req = data
+            .requests
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("approval id not found: {id}"))?;
+        req.status = StoredStatus::Approved;
+        if let Some(hours) = ttl_hours {
+            let expires = OffsetDateTime::now_utc() + Duration::hours(hours as i64);
+            req.expires_at = Some(
+                expires
+                    .format(&Rfc3339)
+                    .unwrap_or_else(|_| crate::trust::now_rfc3339()),
+            );
+        }
+        if let Some(mu) = max_uses {
+            req.max_uses = Some(mu);
+        }
+        self.save_data(&data)
     }
 
     pub fn deny(&self, id: &str) -> anyhow::Result<()> {
         self.set_status(id, StoredStatus::Denied)
     }
 
-    pub fn find_matching_status(
+    pub fn prune(&self) -> anyhow::Result<usize> {
+        let mut data = self.load_data()?;
+        let now = OffsetDateTime::now_utc();
+        let before = data.requests.len();
+        data.requests.retain(|_, req| {
+            if req.status == StoredStatus::Denied {
+                return false;
+            }
+            if is_expired(req, now) {
+                return false;
+            }
+            if is_exhausted(req) {
+                return false;
+            }
+            true
+        });
+        let removed = before.saturating_sub(data.requests.len());
+        self.save_data(&data)?;
+        Ok(removed)
+    }
+
+    pub fn find_matching_decision(
         &self,
-        tool: &str,
-        arguments: &Value,
-    ) -> anyhow::Result<Option<(String, ApprovalStatus)>> {
+        approval_key: &str,
+    ) -> anyhow::Result<Option<ApprovalDecisionMatch>> {
         let data = self.load_data()?;
-        let mut found_approved = None;
         let mut found_denied = None;
-        let mut found_pending = None;
         for (id, req) in data.requests {
-            if req.tool != tool || req.arguments != *arguments {
+            if req.approval_key.as_deref() != Some(approval_key) {
                 continue;
             }
             match req.status {
-                StoredStatus::Approved => {
-                    if found_approved.is_none() {
-                        found_approved = Some((id, ApprovalStatus::Approved));
-                    }
-                }
                 StoredStatus::Denied => {
                     if found_denied.is_none() {
-                        found_denied = Some((id, ApprovalStatus::Denied));
+                        found_denied = Some(ApprovalDecisionMatch {
+                            id,
+                            status: ApprovalStatus::Denied,
+                        });
                     }
                 }
                 StoredStatus::Pending => {
-                    if found_pending.is_none() {
-                        found_pending = Some((id, ApprovalStatus::Pending));
-                    }
+                    return Ok(Some(ApprovalDecisionMatch {
+                        id,
+                        status: ApprovalStatus::Pending,
+                    }));
                 }
+                StoredStatus::Approved => {}
             }
         }
-        Ok(found_approved.or(found_denied).or(found_pending))
+        Ok(found_denied)
     }
 
-    pub fn create_pending(&self, tool: &str, arguments: &Value) -> anyhow::Result<String> {
+    pub fn consume_matching_approved(
+        &self,
+        approval_key: &str,
+    ) -> anyhow::Result<Option<ApprovedUsage>> {
+        let mut data = self.load_data()?;
+        let now = OffsetDateTime::now_utc();
+        let mut selected_id: Option<String> = None;
+        for (id, req) in &data.requests {
+            if req.approval_key.as_deref() != Some(approval_key) {
+                continue;
+            }
+            if req.status != StoredStatus::Approved {
+                continue;
+            }
+            if is_expired(req, now) || is_exhausted(req) {
+                continue;
+            }
+            selected_id = Some(id.clone());
+            break;
+        }
+        let Some(id) = selected_id else {
+            return Ok(None);
+        };
+
+        let req = data
+            .requests
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("approval id disappeared during consume: {id}"))?;
+        req.uses = Some(req.uses.unwrap_or(0).saturating_add(1));
+        self.save_data(&data)?;
+        Ok(Some(ApprovedUsage {
+            id,
+            approval_key: approval_key.to_string(),
+        }))
+    }
+
+    pub fn create_pending(
+        &self,
+        tool: &str,
+        arguments: &Value,
+        approval_key: Option<String>,
+    ) -> anyhow::Result<String> {
         let mut data = self.load_data()?;
         let id = Uuid::new_v4().to_string();
         data.requests.insert(
@@ -100,6 +202,51 @@ impl ApprovalsStore {
                 tool: tool.to_string(),
                 arguments: arguments.clone(),
                 status: StoredStatus::Pending,
+                approval_key,
+                expires_at: None,
+                max_uses: None,
+                uses: Some(0),
+            },
+        );
+        self.save_data(&data)?;
+        Ok(id)
+    }
+
+    pub fn ensure_approved_for_key(
+        &self,
+        tool: &str,
+        arguments: &Value,
+        approval_key: &str,
+    ) -> anyhow::Result<String> {
+        let mut data = self.load_data()?;
+        let existing_id = data
+            .requests
+            .iter()
+            .find(|(_, req)| req.approval_key.as_deref() == Some(approval_key))
+            .map(|(id, _)| id.clone());
+        if let Some(id) = existing_id {
+            if let Some(req) = data.requests.get_mut(&id) {
+                req.status = StoredStatus::Approved;
+                if req.uses.is_none() {
+                    req.uses = Some(0);
+                }
+            }
+            self.save_data(&data)?;
+            return Ok(id);
+        }
+
+        let id = Uuid::new_v4().to_string();
+        data.requests.insert(
+            id.clone(),
+            ApprovalRequest {
+                created_at: crate::trust::now_rfc3339(),
+                tool: tool.to_string(),
+                arguments: arguments.clone(),
+                status: StoredStatus::Approved,
+                approval_key: Some(approval_key.to_string()),
+                expires_at: None,
+                max_uses: None,
+                uses: Some(0),
             },
         );
         self.save_data(&data)?;
@@ -139,9 +286,49 @@ impl ApprovalsStore {
     }
 }
 
+pub fn canonical_json(value: &Value) -> anyhow::Result<String> {
+    let normalized = canonicalize_value(value);
+    Ok(serde_json::to_string(&normalized)?)
+}
+
+fn canonicalize_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys = map.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            let mut out = serde_json::Map::new();
+            for key in keys {
+                if let Some(v) = map.get(&key) {
+                    out.insert(key, canonicalize_value(v));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(canonicalize_value).collect()),
+        _ => value.clone(),
+    }
+}
+
+fn is_exhausted(req: &ApprovalRequest) -> bool {
+    match req.max_uses {
+        Some(max) => req.uses.unwrap_or(0) >= max,
+        None => false,
+    }
+}
+
+fn is_expired(req: &ApprovalRequest, now: OffsetDateTime) -> bool {
+    let Some(exp) = &req.expires_at else {
+        return false;
+    };
+    match OffsetDateTime::parse(exp, &Rfc3339) {
+        Ok(ts) => now > ts,
+        Err(_) => false,
+    }
+}
+
 fn empty_data() -> ApprovalsData {
     ApprovalsData {
-        schema_version: "agentloop.approvals.v1".to_string(),
+        schema_version: "openagent.approvals.v1".to_string(),
         requests: BTreeMap::new(),
     }
 }
@@ -151,7 +338,16 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{ApprovalStatus, ApprovalsStore, StoredStatus};
+    use super::{canonical_json, ApprovalStatus, ApprovalsStore, StoredStatus};
+
+    #[test]
+    fn canonical_json_sorts_object_keys() {
+        let a = json!({"b":1,"a":{"z":2,"y":1}});
+        let b = json!({"a":{"y":1,"z":2},"b":1});
+        let ca = canonical_json(&a).expect("canonical a");
+        let cb = canonical_json(&b).expect("canonical b");
+        assert_eq!(ca, cb);
+    }
 
     #[test]
     fn create_and_transition_approval() {
@@ -159,17 +355,21 @@ mod tests {
         let path = dir.path().join("approvals.json");
         let store = ApprovalsStore::new(path);
         let id = store
-            .create_pending("shell", &json!({"cmd":"echo","args":["hi"]}))
+            .create_pending(
+                "shell",
+                &json!({"cmd":"echo","args":["hi"]}),
+                Some("k".to_string()),
+            )
             .expect("create pending");
 
         let before = store
-            .find_matching_status("shell", &json!({"cmd":"echo","args":["hi"]}))
+            .find_matching_decision("k")
             .expect("find matching")
             .expect("must exist");
-        assert_eq!(before.0, id);
-        assert_eq!(before.1, ApprovalStatus::Pending);
+        assert_eq!(before.id, id);
+        assert_eq!(before.status, ApprovalStatus::Pending);
 
-        store.approve(&id).expect("approve");
+        store.approve(&id, None, None).expect("approve");
         let list = store.list().expect("list");
         let req = list.requests.get(&id).expect("exists");
         assert_eq!(req.status, StoredStatus::Approved);
@@ -178,5 +378,24 @@ mod tests {
         let list = store.list().expect("list");
         let req = list.requests.get(&id).expect("exists");
         assert_eq!(req.status, StoredStatus::Denied);
+    }
+
+    #[test]
+    fn max_uses_exhaustion() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("approvals.json");
+        let store = ApprovalsStore::new(path);
+        let id = store
+            .create_pending("shell", &json!({"cmd":"echo"}), Some("key1".to_string()))
+            .expect("create pending");
+        store.approve(&id, None, Some(1)).expect("approve");
+        let first = store
+            .consume_matching_approved("key1")
+            .expect("consume first");
+        assert!(first.is_some());
+        let second = store
+            .consume_matching_approved("key1")
+            .expect("consume second");
+        assert!(second.is_none());
     }
 }

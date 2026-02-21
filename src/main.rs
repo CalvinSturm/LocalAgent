@@ -1,6 +1,7 @@
 mod agent;
 mod gate;
 mod providers;
+mod store;
 mod tools;
 mod trust;
 mod types;
@@ -8,14 +9,21 @@ mod types;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use agent::Agent;
+use agent::{Agent, AgentExitReason};
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
-use gate::{GateContext, NoGate, ProviderKind, ToolGate, TrustGate, TrustMode};
+use gate::{
+    compute_policy_hash_hex, ApprovalMode, AutoApproveScope, GateContext, NoGate, ProviderKind,
+    ToolGate, TrustGate, TrustMode,
+};
 use providers::ollama::OllamaProvider;
 use providers::openai_compat::OpenAiCompatProvider;
 use providers::ModelProvider;
 use reqwest::Client;
+use store::{
+    config_hash_hex, extract_session_messages, provider_to_string, resolve_state_paths,
+    stable_path_string, ConfigFingerprintV1, RunCliConfig,
+};
 use tools::{builtin_tools_enabled, ToolRuntime};
 use trust::approvals::ApprovalsStore;
 use trust::audit::AuditLog;
@@ -27,11 +35,13 @@ enum Commands {
     Approvals(ApprovalsArgs),
     Approve(ApproveArgs),
     Deny(DenyArgs),
+    Replay(ReplayArgs),
 }
 
 #[derive(Debug, Subcommand)]
 enum ApprovalsSubcommand {
     List,
+    Prune,
 }
 
 #[derive(Debug, Parser)]
@@ -43,6 +53,10 @@ struct ApprovalsArgs {
 #[derive(Debug, Parser)]
 struct ApproveArgs {
     id: String,
+    #[arg(long)]
+    ttl_hours: Option<u32>,
+    #[arg(long)]
+    max_uses: Option<u32>,
 }
 
 #[derive(Debug, Parser)]
@@ -51,8 +65,13 @@ struct DenyArgs {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "agentloop")]
-#[command(about = "Local-runtime agent loop with tool calling", long_about = None)]
+struct ReplayArgs {
+    run_id: String,
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "openagent")]
+#[command(about = "Local-runtime OpenAgent loop with tool calling", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -76,6 +95,8 @@ struct RunArgs {
     max_steps: usize,
     #[arg(long, default_value = ".")]
     workdir: PathBuf,
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     allow_shell: bool,
     #[arg(long, default_value_t = false)]
@@ -88,12 +109,30 @@ struct RunArgs {
     max_read_bytes: usize,
     #[arg(long, value_enum, default_value_t = TrustMode::Off)]
     trust: TrustMode,
+    #[arg(long, value_enum, default_value_t = ApprovalMode::Interrupt)]
+    approval_mode: ApprovalMode,
+    #[arg(long, value_enum, default_value_t = AutoApproveScope::Run)]
+    auto_approve_scope: AutoApproveScope,
+    #[arg(long = "unsafe", default_value_t = false)]
+    unsafe_mode: bool,
+    #[arg(long, default_value_t = false)]
+    no_limits: bool,
+    #[arg(long, default_value_t = false)]
+    unsafe_bypass_allow_flags: bool,
     #[arg(long)]
     policy: Option<PathBuf>,
     #[arg(long)]
     approvals: Option<PathBuf>,
     #[arg(long)]
     audit: Option<PathBuf>,
+    #[arg(long, default_value = "default")]
+    session: String,
+    #[arg(long, default_value_t = false)]
+    no_session: bool,
+    #[arg(long, default_value_t = false)]
+    reset_session: bool,
+    #[arg(long, default_value_t = 40)]
+    max_session_messages: usize,
 }
 
 #[derive(Debug, Parser)]
@@ -109,6 +148,27 @@ struct DoctorArgs {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if cli.run.no_limits && !cli.run.unsafe_mode {
+        return Err(anyhow!("--no-limits requires --unsafe"));
+    }
+    if cli.run.unsafe_mode {
+        eprintln!("WARN: unsafe mode enabled");
+    }
+    let workdir = std::fs::canonicalize(&cli.run.workdir)
+        .with_context(|| format!("failed to resolve workdir: {}", cli.run.workdir.display()))?;
+    let paths = resolve_state_paths(
+        &workdir,
+        cli.run.state_dir.clone(),
+        cli.run.policy.clone(),
+        cli.run.approvals.clone(),
+        cli.run.audit.clone(),
+    );
+    if paths.using_legacy_dir {
+        eprintln!(
+            "WARN: using legacy state dir at {}",
+            paths.state_dir.display()
+        );
+    }
 
     match &cli.command {
         Some(Commands::Doctor(args)) => match doctor_check(args).await {
@@ -122,47 +182,36 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Some(Commands::Approvals(args)) => {
-            let workdir = std::fs::canonicalize(&cli.run.workdir).with_context(|| {
-                format!("failed to resolve workdir: {}", cli.run.workdir.display())
-            })?;
-            let paths = trust::resolve_paths(
-                &workdir,
-                cli.run.policy.clone(),
-                cli.run.approvals.clone(),
-                cli.run.audit.clone(),
-            );
-            handle_approvals_command(&paths.approvals, &args.command)?;
+            handle_approvals_command(&paths.approvals_path, &args.command)?;
             return Ok(());
         }
         Some(Commands::Approve(args)) => {
-            let workdir = std::fs::canonicalize(&cli.run.workdir).with_context(|| {
-                format!("failed to resolve workdir: {}", cli.run.workdir.display())
-            })?;
-            let paths = trust::resolve_paths(
-                &workdir,
-                cli.run.policy.clone(),
-                cli.run.approvals.clone(),
-                cli.run.audit.clone(),
-            );
-            let store = ApprovalsStore::new(paths.approvals);
-            store.approve(&args.id)?;
+            let store = ApprovalsStore::new(paths.approvals_path.clone());
+            store.approve(&args.id, args.ttl_hours, args.max_uses)?;
             println!("approved {}", args.id);
             return Ok(());
         }
         Some(Commands::Deny(args)) => {
-            let workdir = std::fs::canonicalize(&cli.run.workdir).with_context(|| {
-                format!("failed to resolve workdir: {}", cli.run.workdir.display())
-            })?;
-            let paths = trust::resolve_paths(
-                &workdir,
-                cli.run.policy.clone(),
-                cli.run.approvals.clone(),
-                cli.run.audit.clone(),
-            );
-            let store = ApprovalsStore::new(paths.approvals);
+            let store = ApprovalsStore::new(paths.approvals_path.clone());
             store.deny(&args.id)?;
             println!("denied {}", args.id);
             return Ok(());
+        }
+        Some(Commands::Replay(args)) => {
+            match store::load_run_record(&paths.state_dir, &args.run_id) {
+                Ok(record) => {
+                    print!("{}", store::render_replay(&record));
+                    return Ok(());
+                }
+                Err(e) => {
+                    return Err(anyhow!(
+                        "failed to load run '{}': {}. runs dir: {}",
+                        args.run_id,
+                        e,
+                        paths.runs_dir.display()
+                    ));
+                }
+            }
         }
         None => {}
     }
@@ -197,6 +246,7 @@ async fn main() -> anyhow::Result<()> {
                 &model,
                 &prompt,
                 &cli.run,
+                &paths,
             )
             .await?;
         }
@@ -209,6 +259,7 @@ async fn main() -> anyhow::Result<()> {
                 &model,
                 &prompt,
                 &cli.run,
+                &paths,
             )
             .await?;
         }
@@ -230,8 +281,21 @@ fn handle_approvals_command(
                 return Ok(());
             }
             for (id, req) in data.requests {
-                println!("{id}\t{:?}\t{}\t{}", req.status, req.tool, req.created_at);
+                let expires_at = req.expires_at.unwrap_or_else(|| "-".to_string());
+                let uses = req.uses.unwrap_or(0);
+                let uses_info = match req.max_uses {
+                    Some(max) => format!("{uses}/{max}"),
+                    None => "-".to_string(),
+                };
+                println!(
+                    "{id}\t{:?}\t{}\t{}\t{}\t{}",
+                    req.status, req.tool, req.created_at, expires_at, uses_info
+                );
             }
+        }
+        ApprovalsSubcommand::Prune => {
+            let removed = store.prune()?;
+            println!("removed {} entries", removed);
         }
     }
     Ok(())
@@ -244,6 +308,7 @@ async fn run_agent<P: ModelProvider>(
     model: &str,
     prompt: &str,
     args: &RunArgs,
+    paths: &store::StatePaths,
 ) -> anyhow::Result<()> {
     let workdir = std::fs::canonicalize(&args.workdir)
         .with_context(|| format!("failed to resolve workdir: {}", args.workdir.display()))?;
@@ -251,13 +316,39 @@ async fn run_agent<P: ModelProvider>(
         workdir: workdir.clone(),
         allow_shell: args.allow_shell,
         allow_write: args.allow_write,
+        approval_mode: args.approval_mode,
+        auto_approve_scope: args.auto_approve_scope,
+        unsafe_mode: args.unsafe_mode,
+        unsafe_bypass_allow_flags: args.unsafe_bypass_allow_flags,
+        run_id: None,
         enable_write_tools: args.enable_write_tools,
-        max_tool_output_bytes: args.max_tool_output_bytes,
-        max_read_bytes: args.max_read_bytes,
+        max_tool_output_bytes: if args.no_limits {
+            0
+        } else {
+            args.max_tool_output_bytes
+        },
+        max_read_bytes: if args.no_limits {
+            0
+        } else {
+            args.max_read_bytes
+        },
         provider: provider_kind,
         model: model.to_string(),
     };
-    let gate = build_gate(args, &workdir)?;
+    let gate_build = build_gate(args, paths)?;
+    let policy_hash_hex = gate_build.policy_hash_hex.clone();
+    let policy_source = gate_build.policy_source.to_string();
+    let gate = gate_build.gate;
+
+    let session_path = paths.sessions_dir.join(format!("{}.json", args.session));
+    if !args.no_session && args.reset_session {
+        store::reset_session(&session_path)?;
+    }
+    let session_messages = if args.no_session {
+        Vec::new()
+    } else {
+        store::load_session(&session_path)?
+    };
 
     let mut agent = Agent {
         provider,
@@ -268,70 +359,190 @@ async fn run_agent<P: ModelProvider>(
             workdir,
             allow_shell: args.allow_shell,
             allow_write: args.allow_write,
-            max_tool_output_bytes: args.max_tool_output_bytes,
-            max_read_bytes: args.max_read_bytes,
+            max_tool_output_bytes: if args.no_limits {
+                0
+            } else {
+                args.max_tool_output_bytes
+            },
+            max_read_bytes: if args.no_limits {
+                0
+            } else {
+                args.max_read_bytes
+            },
+            unsafe_bypass_allow_flags: args.unsafe_bypass_allow_flags,
         },
         gate,
         gate_ctx,
     };
 
-    let output = agent.run(prompt).await.map_err(|e| {
-        anyhow!(
-            "{}\nHint: run `agentloop doctor --provider {} --base-url {}`\nDefault base URL for {} is {}",
-            e,
+    let outcome = agent.run(prompt, session_messages).await;
+    if !args.no_session {
+        let session_messages = extract_session_messages(&outcome.messages);
+        if let Err(e) =
+            store::save_session(&session_path, &session_messages, args.max_session_messages)
+        {
+            eprintln!("WARN: failed to save session: {e}");
+        }
+    }
+
+    let cli_config = RunCliConfig {
+        provider: provider_to_string(provider_kind),
+        base_url: base_url.to_string(),
+        model: model.to_string(),
+        trust_mode: store::cli_trust_mode(args.trust),
+        allow_shell: args.allow_shell,
+        allow_write: args.allow_write,
+        enable_write_tools: args.enable_write_tools,
+        max_tool_output_bytes: args.max_tool_output_bytes,
+        max_read_bytes: args.max_read_bytes,
+        approval_mode: format!("{:?}", args.approval_mode).to_lowercase(),
+        auto_approve_scope: format!("{:?}", args.auto_approve_scope).to_lowercase(),
+        unsafe_mode: args.unsafe_mode,
+        no_limits: args.no_limits,
+        unsafe_bypass_allow_flags: args.unsafe_bypass_allow_flags,
+    };
+    let config_fingerprint = ConfigFingerprintV1 {
+        schema_version: "openagent.confighash.v1".to_string(),
+        provider: provider_to_string(provider_kind),
+        base_url: base_url.to_string(),
+        model: model.to_string(),
+        trust_mode: store::cli_trust_mode(args.trust),
+        state_dir: stable_path_string(&paths.state_dir),
+        policy_path: stable_path_string(&paths.policy_path),
+        approvals_path: stable_path_string(&paths.approvals_path),
+        audit_path: stable_path_string(&paths.audit_path),
+        allow_shell: args.allow_shell,
+        allow_write: args.allow_write,
+        enable_write_tools: args.enable_write_tools,
+        max_steps: args.max_steps,
+        max_tool_output_bytes: args.max_tool_output_bytes,
+        max_read_bytes: args.max_read_bytes,
+        session_name: if args.no_session {
+            String::new()
+        } else {
+            args.session.clone()
+        },
+        no_session: args.no_session,
+        max_session_messages: args.max_session_messages,
+        approval_mode: format!("{:?}", args.approval_mode).to_lowercase(),
+        auto_approve_scope: format!("{:?}", args.auto_approve_scope).to_lowercase(),
+        unsafe_mode: args.unsafe_mode,
+        no_limits: args.no_limits,
+        unsafe_bypass_allow_flags: args.unsafe_bypass_allow_flags,
+    };
+    let config_hash_hex = config_hash_hex(&config_fingerprint)?;
+    if let Err(e) = store::write_run_record(
+        paths,
+        cli_config,
+        policy_source,
+        policy_hash_hex,
+        config_hash_hex,
+        &outcome,
+    ) {
+        eprintln!("WARN: failed to write run artifact: {e}");
+    }
+
+    println!("{}", outcome.final_output);
+
+    if matches!(outcome.exit_reason, AgentExitReason::ProviderError) {
+        let err = outcome
+            .error
+            .unwrap_or_else(|| "provider error".to_string());
+        return Err(anyhow!(
+            "{}\nHint: run `openagent doctor --provider {} --base-url {}`\nDefault base URL for {} is {}",
+            err,
             provider_cli_name(provider_kind),
             base_url,
             provider_cli_name(provider_kind),
             default_base_url(provider_kind)
-        )
-    })?;
-    println!("{output}");
+        ));
+    }
+
     Ok(())
 }
 
-fn build_gate(args: &RunArgs, workdir: &std::path::Path) -> anyhow::Result<Box<dyn ToolGate>> {
-    let paths = trust::resolve_paths(
-        workdir,
-        args.policy.clone(),
-        args.approvals.clone(),
-        args.audit.clone(),
-    );
+struct GateBuild {
+    gate: Box<dyn ToolGate>,
+    policy_hash_hex: Option<String>,
+    policy_source: &'static str,
+}
+
+fn build_gate(args: &RunArgs, paths: &store::StatePaths) -> anyhow::Result<GateBuild> {
     match args.trust {
-        TrustMode::Off => Ok(Box::new(NoGate::new())),
+        TrustMode::Off => Ok(GateBuild {
+            gate: Box::new(NoGate::new()),
+            policy_hash_hex: None,
+            policy_source: "none",
+        }),
         TrustMode::Auto => {
-            if !paths.policy.exists() {
-                return Ok(Box::new(NoGate::new()));
+            if !paths.policy_path.exists() {
+                return Ok(GateBuild {
+                    gate: Box::new(NoGate::new()),
+                    policy_hash_hex: None,
+                    policy_source: "none",
+                });
             }
-            let policy_text = std::fs::read_to_string(&paths.policy).with_context(|| {
-                format!("failed reading policy file: {}", paths.policy.display())
+            let policy_bytes = std::fs::read(&paths.policy_path).with_context(|| {
+                format!(
+                    "failed reading policy file: {}",
+                    paths.policy_path.display()
+                )
             })?;
+            let policy_text = String::from_utf8_lossy(&policy_bytes).to_string();
             let policy = Policy::from_yaml(&policy_text).with_context(|| {
-                format!("failed parsing policy file: {}", paths.policy.display())
+                format!(
+                    "failed parsing policy file: {}",
+                    paths.policy_path.display()
+                )
             })?;
-            Ok(Box::new(TrustGate::new(
-                policy,
-                ApprovalsStore::new(paths.approvals),
-                AuditLog::new(paths.audit),
-                TrustMode::Auto,
-            )))
+            let policy_hash_hex = compute_policy_hash_hex(&policy_bytes);
+            Ok(GateBuild {
+                gate: Box::new(TrustGate::new(
+                    policy,
+                    ApprovalsStore::new(paths.approvals_path.clone()),
+                    AuditLog::new(paths.audit_path.clone()),
+                    TrustMode::Auto,
+                    policy_hash_hex.clone(),
+                )),
+                policy_hash_hex: Some(policy_hash_hex),
+                policy_source: "file",
+            })
         }
         TrustMode::On => {
-            let policy = if paths.policy.exists() {
-                let policy_text = std::fs::read_to_string(&paths.policy).with_context(|| {
-                    format!("failed reading policy file: {}", paths.policy.display())
+            let (policy, policy_hash_hex, policy_source) = if paths.policy_path.exists() {
+                let policy_bytes = std::fs::read(&paths.policy_path).with_context(|| {
+                    format!(
+                        "failed reading policy file: {}",
+                        paths.policy_path.display()
+                    )
                 })?;
-                Policy::from_yaml(&policy_text).with_context(|| {
-                    format!("failed parsing policy file: {}", paths.policy.display())
-                })?
+                let policy_text = String::from_utf8_lossy(&policy_bytes).to_string();
+                let policy = Policy::from_yaml(&policy_text).with_context(|| {
+                    format!(
+                        "failed parsing policy file: {}",
+                        paths.policy_path.display()
+                    )
+                })?;
+                (policy, compute_policy_hash_hex(&policy_bytes), "file")
             } else {
-                Policy::safe_default()
+                let repr = trust::policy::safe_default_policy_repr();
+                (
+                    Policy::safe_default(),
+                    compute_policy_hash_hex(repr.as_bytes()),
+                    "default",
+                )
             };
-            Ok(Box::new(TrustGate::new(
-                policy,
-                ApprovalsStore::new(paths.approvals),
-                AuditLog::new(paths.audit),
-                TrustMode::On,
-            )))
+            Ok(GateBuild {
+                gate: Box::new(TrustGate::new(
+                    policy,
+                    ApprovalsStore::new(paths.approvals_path.clone()),
+                    AuditLog::new(paths.audit_path.clone()),
+                    TrustMode::On,
+                    policy_hash_hex.clone(),
+                )),
+                policy_hash_hex: Some(policy_hash_hex),
+                policy_source,
+            })
         }
     }
 }
