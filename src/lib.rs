@@ -9,4 +9,5 @@ pub mod providers;
 pub mod store;
 pub mod tools;
 pub mod trust;
+pub mod tui;
 pub mod types;

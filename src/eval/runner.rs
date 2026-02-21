@@ -64,6 +64,9 @@ pub struct EvalConfig {
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
     pub tool_args_strict: ToolArgsStrict,
+    pub tui_enabled: bool,
+    pub tui_refresh_ms: u64,
+    pub tui_max_log_lines: usize,
     pub state_dir_override: Option<PathBuf>,
     pub policy_override: Option<PathBuf>,
     pub approvals_override: Option<PathBuf>,
@@ -113,6 +116,9 @@ pub struct EvalResultsConfig {
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
     pub tool_args_strict: String,
+    pub tui_enabled: bool,
+    pub tui_refresh_ms: u64,
+    pub tui_max_log_lines: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -250,6 +256,9 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
             hooks_timeout_ms: config.hooks_timeout_ms,
             hooks_max_stdout_bytes: config.hooks_max_stdout_bytes,
             tool_args_strict: format!("{:?}", config.tool_args_strict).to_lowercase(),
+            tui_enabled: config.tui_enabled,
+            tui_refresh_ms: config.tui_refresh_ms,
+            tui_max_log_lines: config.tui_max_log_lines,
         },
         summary: EvalSummary::default(),
         by_model: BTreeMap::new(),
@@ -715,6 +724,9 @@ fn write_run_artifact_for_eval(
         hooks_timeout_ms: config.hooks_timeout_ms,
         hooks_max_stdout_bytes: config.hooks_max_stdout_bytes,
         tool_args_strict: format!("{:?}", config.tool_args_strict).to_lowercase(),
+        tui_enabled: config.tui_enabled,
+        tui_refresh_ms: config.tui_refresh_ms,
+        tui_max_log_lines: config.tui_max_log_lines,
         tool_catalog,
         policy_version: policy.version,
         includes_resolved: policy.includes_resolved.clone(),
@@ -764,6 +776,9 @@ fn write_run_artifact_for_eval(
         hooks_timeout_ms: config.hooks_timeout_ms,
         hooks_max_stdout_bytes: config.hooks_max_stdout_bytes,
         tool_args_strict: format!("{:?}", config.tool_args_strict).to_lowercase(),
+        tui_enabled: config.tui_enabled,
+        tui_refresh_ms: config.tui_refresh_ms,
+        tui_max_log_lines: config.tui_max_log_lines,
         tool_catalog_names: cli_config
             .tool_catalog
             .iter()
@@ -969,6 +984,9 @@ mod tests {
                 hooks_timeout_ms: 2000,
                 hooks_max_stdout_bytes: 200_000,
                 tool_args_strict: "on".to_string(),
+                tui_enabled: false,
+                tui_refresh_ms: 50,
+                tui_max_log_lines: 200,
             },
             summary: Default::default(),
             by_model: BTreeMap::new(),

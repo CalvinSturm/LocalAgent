@@ -1,0 +1,125 @@
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::{Color, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
+use ratatui::Frame;
+
+use crate::tui::state::UiState;
+
+pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(10),
+            Constraint::Length(5),
+        ])
+        .split(frame.area());
+
+    let top = Line::from(format!(
+        "run={} step={} provider={} model={} caps={} policy={} exit={}",
+        state.run_id,
+        state.step,
+        state.provider,
+        state.model,
+        if state.caps_source.is_empty() {
+            "-"
+        } else {
+            &state.caps_source
+        },
+        if state.policy_hash.is_empty() {
+            "-"
+        } else {
+            &state.policy_hash
+        },
+        state.exit_reason.as_deref().unwrap_or("-")
+    ));
+    frame.render_widget(Paragraph::new(top), outer[0]);
+
+    let mid = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(outer[1]);
+    frame.render_widget(
+        Paragraph::new(state.assistant_text.clone())
+            .block(Block::default().title("Assistant").borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+        mid[0],
+    );
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(mid[1]);
+
+    let rows = state.tool_calls.iter().map(|t| {
+        Row::new(vec![
+            Cell::from(t.tool_name.clone()),
+            Cell::from(t.status.clone()),
+            Cell::from(t.decision.clone().unwrap_or_default()),
+            Cell::from(
+                t.ok.map(|v| if v { "ok" } else { "fail" })
+                    .unwrap_or("-")
+                    .to_string(),
+            ),
+            Cell::from(t.side_effects.clone()),
+        ])
+    });
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(20),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(6),
+                Constraint::Length(18),
+            ],
+        )
+        .header(Row::new(vec![
+            "Tool", "Status", "Decision", "OK", "Effects",
+        ]))
+        .block(Block::default().title("Tools").borders(Borders::ALL)),
+        right[0],
+    );
+
+    let approv_rows = state.pending_approvals.iter().enumerate().map(|(i, a)| {
+        let style = if i == approvals_selected {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+        Row::new(vec![
+            Cell::from(a.id.clone()),
+            Cell::from(a.status.clone()),
+            Cell::from(a.tool.clone()),
+            Cell::from(a.created_at.clone()),
+        ])
+        .style(style)
+    });
+    frame.render_widget(
+        Table::new(
+            approv_rows,
+            [
+                Constraint::Length(36),
+                Constraint::Length(10),
+                Constraint::Length(20),
+                Constraint::Length(24),
+            ],
+        )
+        .header(Row::new(vec!["Approval ID", "Status", "Tool", "Created"]))
+        .block(
+            Block::default()
+                .title("Approvals (a=approve d=deny r=refresh q=quit)")
+                .borders(Borders::ALL),
+        ),
+        right[1],
+    );
+
+    let logs = state.logs.join("\n");
+    frame.render_widget(
+        Paragraph::new(logs)
+            .block(Block::default().title("Logs").borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+        outer[2],
+    );
+}

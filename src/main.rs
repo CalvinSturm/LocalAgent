@@ -9,9 +9,11 @@ mod providers;
 mod store;
 mod tools;
 mod trust;
+mod tui;
 mod types;
 
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use crate::mcp::registry::{
@@ -39,6 +41,7 @@ use store::{
     config_hash_hex, extract_session_messages, provider_to_string, resolve_state_paths,
     stable_path_string, ConfigFingerprintV1, RunCliConfig,
 };
+use tokio::sync::watch;
 use tools::{builtin_tools_enabled, ToolArgsStrict, ToolRuntime};
 use trust::approvals::ApprovalsStore;
 use trust::audit::AuditLog;
@@ -55,6 +58,23 @@ enum Commands {
     Deny(DenyArgs),
     Replay(ReplayArgs),
     Eval(Box<EvalArgs>),
+    Tui(TuiArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum TuiSubcommand {
+    Tail {
+        #[arg(long)]
+        events: PathBuf,
+        #[arg(long, default_value_t = 50)]
+        refresh_ms: u64,
+    },
+}
+
+#[derive(Debug, Parser)]
+struct TuiArgs {
+    #[command(subcommand)]
+    command: TuiSubcommand,
 }
 
 #[derive(Debug, Subcommand)]
@@ -306,6 +326,12 @@ struct RunArgs {
     stream: bool,
     #[arg(long)]
     events: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    tui: bool,
+    #[arg(long, default_value_t = 50)]
+    tui_refresh_ms: u64,
+    #[arg(long, default_value_t = 200)]
+    tui_max_log_lines: usize,
 }
 
 #[derive(Debug, Parser)]
@@ -511,6 +537,9 @@ async fn main() -> anyhow::Result<()> {
                 hooks_timeout_ms: args.hooks_timeout_ms,
                 hooks_max_stdout_bytes: args.hooks_max_stdout_bytes,
                 tool_args_strict: args.tool_args_strict,
+                tui_enabled: false,
+                tui_refresh_ms: 50,
+                tui_max_log_lines: 200,
                 state_dir_override: args.state_dir.clone(),
                 policy_override: args.policy.clone(),
                 approvals_override: args.approvals.clone(),
@@ -522,6 +551,15 @@ async fn main() -> anyhow::Result<()> {
             run_eval(cfg, &cwd).await?;
             return Ok(());
         }
+        Some(Commands::Tui(args)) => match &args.command {
+            TuiSubcommand::Tail { events, refresh_ms } => {
+                if let Err(e) = tui::tail::run_tail(events, *refresh_ms) {
+                    eprintln!("FAIL: {e}");
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+        },
         None => {}
     }
 
@@ -734,7 +772,7 @@ async fn run_agent<P: ModelProvider>(
         gate_ctx,
         mcp_registry,
         stream: args.stream,
-        event_sink: build_event_sink(args.stream, args.events.as_deref())?,
+        event_sink: None,
         compaction_settings: CompactionSettings {
             max_context_chars: args.max_context_chars,
             mode: args.compaction_mode,
@@ -745,9 +783,58 @@ async fn run_agent<P: ModelProvider>(
         policy_loaded: policy_loaded_info,
     };
 
+    let (ui_tx, ui_rx) = if args.tui {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (cancel_tx, mut cancel_rx) = watch::channel(false);
+    let ui_join = if let Some(rx) = ui_rx {
+        let approvals_path = paths.approvals_path.clone();
+        let cfg = tui::TuiConfig {
+            refresh_ms: args.tui_refresh_ms,
+            max_log_lines: args.tui_max_log_lines,
+            provider: provider_to_string(provider_kind),
+            model: model.to_string(),
+            caps_source: "off".to_string(),
+            policy_hash: policy_hash_hex.clone().unwrap_or_default(),
+        };
+        Some(std::thread::spawn(move || {
+            tui::run_live(rx, approvals_path, cfg, cancel_tx.clone())
+        }))
+    } else {
+        None
+    };
+    agent.event_sink = build_event_sink(args.stream, args.events.as_deref(), args.tui, ui_tx)?;
+
     let outcome = tokio::select! {
         out = agent.run(prompt, session_messages) => out,
         _ = tokio::signal::ctrl_c() => {
+            agent::AgentOutcome {
+                run_id: uuid::Uuid::new_v4().to_string(),
+                started_at: trust::now_rfc3339(),
+                finished_at: trust::now_rfc3339(),
+                exit_reason: AgentExitReason::Cancelled,
+                final_output: String::new(),
+                error: Some("cancelled".to_string()),
+                messages: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_decisions: Vec::new(),
+                compaction_settings: CompactionSettings {
+                    max_context_chars: args.max_context_chars,
+                    mode: args.compaction_mode,
+                    keep_last: args.compaction_keep_last,
+                    tool_result_persist: args.tool_result_persist,
+                },
+                final_prompt_size_chars: 0,
+                compaction_report: None,
+                hook_invocations: Vec::new(),
+            }
+        },
+        _ = async {
+            let _ = cancel_rx.changed().await;
+        } => {
             agent::AgentOutcome {
                 run_id: uuid::Uuid::new_v4().to_string(),
                 started_at: trust::now_rfc3339(),
@@ -780,6 +867,12 @@ async fn run_agent<P: ModelProvider>(
             )) {
                 eprintln!("WARN: failed to emit cancellation event: {e}");
             }
+        }
+    }
+    agent.event_sink = None;
+    if let Some(h) = ui_join {
+        if let Err(_e) = h.join() {
+            eprintln!("WARN: tui thread ended unexpectedly");
         }
     }
     if !args.no_session {
@@ -818,6 +911,9 @@ async fn run_agent<P: ModelProvider>(
         hooks_timeout_ms: args.hooks_timeout_ms,
         hooks_max_stdout_bytes: args.hooks_max_stdout_bytes,
         tool_args_strict: format!("{:?}", args.tool_args_strict).to_lowercase(),
+        tui_enabled: args.tui,
+        tui_refresh_ms: args.tui_refresh_ms,
+        tui_max_log_lines: args.tui_max_log_lines,
         tool_catalog: tool_catalog.clone(),
         policy_version,
         includes_resolved: includes_resolved.clone(),
@@ -867,6 +963,9 @@ async fn run_agent<P: ModelProvider>(
         hooks_timeout_ms: args.hooks_timeout_ms,
         hooks_max_stdout_bytes: args.hooks_max_stdout_bytes,
         tool_args_strict: format!("{:?}", args.tool_args_strict).to_lowercase(),
+        tui_enabled: args.tui,
+        tui_refresh_ms: args.tui_refresh_ms,
+        tui_max_log_lines: args.tui_max_log_lines,
         tool_catalog_names: tool_catalog.iter().map(|t| t.name.clone()).collect(),
         policy_version,
         includes_resolved: includes_resolved.clone(),
@@ -889,7 +988,11 @@ async fn run_agent<P: ModelProvider>(
         eprintln!("WARN: failed to write run artifact: {e}");
     }
 
-    if !args.stream {
+    if args.tui {
+        if !outcome.final_output.is_empty() {
+            println!("{}", outcome.final_output);
+        }
+    } else if !args.stream {
         println!("{}", outcome.final_output);
     }
 
@@ -1064,10 +1167,15 @@ async fn handle_hooks_doctor(
 fn build_event_sink(
     stream: bool,
     events_path: Option<&std::path::Path>,
+    tui_enabled: bool,
+    ui_tx: Option<Sender<Event>>,
 ) -> anyhow::Result<Option<Box<dyn EventSink>>> {
     let mut multi = MultiSink::new();
-    if stream {
+    if stream && !tui_enabled {
         multi.push(Box::new(StdoutSink::new()));
+    }
+    if let Some(tx) = ui_tx {
+        multi.push(Box::new(tui::UiSink::new(tx)));
     }
     if let Some(path) = events_path {
         multi.push(Box::new(JsonlFileSink::new(path)?));

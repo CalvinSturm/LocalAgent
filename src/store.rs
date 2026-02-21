@@ -99,6 +99,9 @@ pub struct RunCliConfig {
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
     pub tool_args_strict: String,
+    pub tui_enabled: bool,
+    pub tui_refresh_ms: u64,
+    pub tui_max_log_lines: usize,
     #[serde(default)]
     pub tool_catalog: Vec<ToolCatalogEntry>,
     pub policy_version: Option<u32>,
@@ -153,6 +156,9 @@ pub struct ConfigFingerprintV1 {
     pub hooks_timeout_ms: u64,
     pub hooks_max_stdout_bytes: usize,
     pub tool_args_strict: String,
+    pub tui_enabled: bool,
+    pub tui_refresh_ms: u64,
+    pub tui_max_log_lines: usize,
     pub tool_catalog_names: Vec<String>,
     pub policy_version: Option<u32>,
     pub includes_resolved: Vec<String>,
@@ -319,6 +325,7 @@ pub fn render_replay(record: &RunRecord) -> String {
         record.cli.no_limits,
         record.cli.unsafe_bypass_allow_flags
     ));
+    out.push_str(&format!("tui_enabled: {}\n", record.cli.tui_enabled));
     for m in &record.transcript {
         let content = m.content.clone().unwrap_or_default();
         match m.role {
@@ -524,6 +531,9 @@ mod tests {
                 hooks_timeout_ms: 2000,
                 hooks_max_stdout_bytes: 200_000,
                 tool_args_strict: "on".to_string(),
+                tui_enabled: false,
+                tui_refresh_ms: 50,
+                tui_max_log_lines: 200,
                 tool_catalog: Vec::new(),
                 policy_version: None,
                 includes_resolved: Vec::new(),
@@ -602,6 +612,9 @@ mod tests {
             hooks_timeout_ms: 2000,
             hooks_max_stdout_bytes: 200_000,
             tool_args_strict: "on".to_string(),
+            tui_enabled: false,
+            tui_refresh_ms: 50,
+            tui_max_log_lines: 200,
             tool_catalog_names: Vec::new(),
             policy_version: None,
             includes_resolved: Vec::new(),
