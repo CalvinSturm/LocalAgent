@@ -1217,6 +1217,11 @@ fn write_run_artifact_for_eval(
         policy_version: policy.version,
         includes_resolved: policy.includes_resolved.clone(),
         mcp_allowlist: policy.mcp_allowlist.clone(),
+        instructions_config_path: None,
+        instructions_config_hash_hex: None,
+        instruction_model_profile: None,
+        instruction_task_profile: None,
+        instruction_message_count: 0,
     };
     let fingerprint = ConfigFingerprintV1 {
         schema_version: "openagent.confighash.v1".to_string(),
@@ -1300,6 +1305,11 @@ fn write_run_artifact_for_eval(
         policy_version: policy.version,
         includes_resolved: policy.includes_resolved.clone(),
         mcp_allowlist: policy.mcp_allowlist.clone(),
+        instructions_config_path: String::new(),
+        instructions_config_hash_hex: String::new(),
+        instruction_model_profile: String::new(),
+        instruction_task_profile: String::new(),
+        instruction_message_count: 0,
     };
     let cfg_hash = config_hash_hex(&fingerprint)?;
     let _ = crate::store::write_run_record(

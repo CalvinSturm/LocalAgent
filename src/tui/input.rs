@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 #[derive(Debug, Clone, Copy)]
 pub enum UiAction {
@@ -12,6 +12,9 @@ pub enum UiAction {
 }
 
 pub fn map_key(key: KeyEvent) -> Option<UiAction> {
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return None;
+    }
     match key.code {
         KeyCode::Char('q') => Some(UiAction::Quit),
         KeyCode::Char('j') | KeyCode::Down => Some(UiAction::Down),

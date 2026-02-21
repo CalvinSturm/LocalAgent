@@ -19,8 +19,10 @@ pub struct CostRule {
 
 pub fn load_cost_model(path: &Path) -> anyhow::Result<CostModel> {
     let bytes = std::fs::read(path)?;
-    let model: CostModel = serde_json::from_slice(&bytes)?;
-    Ok(model)
+    match serde_json::from_slice::<CostModel>(&bytes) {
+        Ok(m) => Ok(m),
+        Err(_) => Ok(serde_yaml::from_slice::<CostModel>(&bytes)?),
+    }
 }
 
 pub fn estimate_cost_usd(model_name: &str, usage: &TokenUsage, model: &CostModel) -> Option<f64> {

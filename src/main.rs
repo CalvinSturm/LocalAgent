@@ -4,10 +4,12 @@ mod eval;
 mod events;
 mod gate;
 mod hooks;
+mod instructions;
 mod mcp;
 mod planner;
 mod providers;
 mod repro;
+mod scaffold;
 mod session;
 mod store;
 mod taint;
@@ -18,6 +20,7 @@ mod trust;
 mod tui;
 mod types;
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
@@ -29,6 +32,14 @@ use agent::{Agent, AgentExitReason, PolicyLoadedInfo};
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand, ValueEnum};
 use compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEventKind,
+    KeyModifiers, MouseEventKind,
+};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use eval::baseline::{
     baseline_path, compare_results, create_baseline_from_results, delete_baseline, list_baselines,
     load_baseline,
@@ -46,12 +57,20 @@ use gate::{
 use hooks::config::HooksMode;
 use hooks::protocol::{PreModelCompactionPayload, PreModelPayload, ToolResultPayload};
 use hooks::runner::{make_pre_model_input, make_tool_result_input, HookManager, HookRuntimeConfig};
+use instructions::InstructionResolution;
 use providers::http::HttpConfig;
 use providers::ollama::OllamaProvider;
 use providers::openai_compat::OpenAiCompatProvider;
 use providers::ModelProvider;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::{Color, Style};
+use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
+use ratatui::Terminal;
 use repro::{render_verify_report, verify_run_record, ReproEnvMode, ReproMode};
 use reqwest::Client;
+use scaffold::{version_info, InitOptions};
+use serde_json::Value;
 use session::{
     settings_from_run, task_memory_message, CapsMode, ExplicitFlags, RunSettingInputs, SessionStore,
 };
@@ -67,10 +86,17 @@ use tools::{builtin_tools_enabled, ToolArgsStrict, ToolRuntime};
 use trust::approvals::ApprovalsStore;
 use trust::audit::AuditLog;
 use trust::policy::{McpAllowSummary, Policy};
+use tui::state::UiState;
 use types::{GenerateRequest, Message, Role};
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    Run,
+    Exec,
+    Version(VersionArgs),
+    Init(InitArgs),
+    Template(TemplateArgs),
+    Chat(ChatArgs),
     Doctor(DoctorArgs),
     Mcp(McpArgs),
     Hooks(HooksArgs),
@@ -83,6 +109,55 @@ enum Commands {
     Eval(Box<EvalCmd>),
     Tui(TuiArgs),
     Tasks(TasksArgs),
+}
+
+#[derive(Debug, Parser)]
+struct VersionArgs {
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct InitArgs {
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
+    #[arg(long)]
+    workdir: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    force: bool,
+    #[arg(long, default_value_t = false)]
+    print: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum TemplateSubcommand {
+    List,
+    Show {
+        name: String,
+    },
+    Write {
+        name: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Parser)]
+struct TemplateArgs {
+    #[command(subcommand)]
+    command: TemplateSubcommand,
+}
+
+#[derive(Debug, Clone, Parser)]
+struct ChatArgs {
+    #[arg(long, default_value_t = false)]
+    tui: bool,
+    #[arg(long, default_value_t = false)]
+    plain_tui: bool,
+    #[arg(long, default_value_t = false)]
+    no_banner: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -519,8 +594,8 @@ struct EvalArgs {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "openagent")]
-#[command(about = "Local-runtime OpenAgent loop with tool calling", long_about = None)]
+#[command(name = "localagent")]
+#[command(about = "LocalAgent: local-runtime agent loop with tool calling", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -620,6 +695,14 @@ struct RunArgs {
     hooks_max_stdout_bytes: usize,
     #[arg(long, value_enum, default_value_t = ToolArgsStrict::On)]
     tool_args_strict: ToolArgsStrict,
+    #[arg(long)]
+    instructions_config: Option<PathBuf>,
+    #[arg(long)]
+    instruction_model_profile: Option<String>,
+    #[arg(long)]
+    instruction_task_profile: Option<String>,
+    #[arg(long)]
+    task_kind: Option<String>,
     #[arg(long, value_enum, default_value_t = TaintToggle::Off)]
     taint: TaintToggle,
     #[arg(long, value_enum, default_value_t = TaintMode::Propagate)]
@@ -714,6 +797,58 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match &cli.command {
+        Some(Commands::Run) | Some(Commands::Exec) => {}
+        Some(Commands::Version(args)) => {
+            let info = version_info();
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&info)?);
+            } else {
+                println!("LocalAgent {}", info.version);
+                println!("git_sha: {}", info.git_sha);
+                println!("target: {}", info.target);
+                println!("build_time_utc: {}", info.build_time_utc);
+            }
+            return Ok(());
+        }
+        Some(Commands::Init(args)) => {
+            let init_workdir = if let Some(w) = &args.workdir {
+                std::fs::canonicalize(w)
+                    .with_context(|| format!("failed to resolve workdir: {}", w.display()))?
+            } else {
+                workdir.clone()
+            };
+            let out = scaffold::run_init(&InitOptions {
+                workdir: init_workdir,
+                state_dir_override: args.state_dir.clone(),
+                force: args.force,
+                print_only: args.print,
+            })?;
+            print!("{out}");
+            return Ok(());
+        }
+        Some(Commands::Template(args)) => {
+            match &args.command {
+                TemplateSubcommand::List => {
+                    for name in scaffold::list_templates() {
+                        println!("{name}");
+                    }
+                }
+                TemplateSubcommand::Show { name } => {
+                    let content = scaffold::template_content(name)
+                        .ok_or_else(|| anyhow!("unknown template '{}'", name))?;
+                    print!("{content}");
+                }
+                TemplateSubcommand::Write { name, out, force } => {
+                    scaffold::write_template(name, out, *force)?;
+                    println!("wrote template {} to {}", name, out.display());
+                }
+            }
+            return Ok(());
+        }
+        Some(Commands::Chat(args)) => {
+            run_chat_repl(args, &cli.run, &paths).await?;
+            return Ok(());
+        }
         Some(Commands::Doctor(args)) => match doctor_check(args).await {
             Ok(ok_msg) => {
                 println!("{ok_msg}");
@@ -864,7 +999,7 @@ async fn main() -> anyhow::Result<()> {
                 let run_id = args
                     .run_id
                     .as_ref()
-                    .ok_or_else(|| anyhow!("missing run_id. use `openagent replay <run_id>`"))?;
+                    .ok_or_else(|| anyhow!("missing run_id. use `localagent replay <run_id>`"))?;
                 match store::load_run_record(&paths.state_dir, run_id) {
                     Ok(record) => {
                         print!("{}", store::render_replay(&record));
@@ -1215,6 +1350,28 @@ async fn main() -> anyhow::Result<()> {
         None => {}
     }
 
+    if cli.command.is_none()
+        && cli.run.provider.is_none()
+        && cli.run.model.is_none()
+        && cli.run.prompt.is_none()
+    {
+        let (provider, model, base_url) =
+            discover_local_default(http_config_from_run_args(&cli.run)).await?;
+        let mut auto_run = cli.run.clone();
+        auto_run.provider = Some(provider);
+        auto_run.model = Some(model);
+        auto_run.base_url = Some(base_url);
+        auto_run.tui = true;
+        auto_run.stream = false;
+        let chat = ChatArgs {
+            tui: true,
+            plain_tui: false,
+            no_banner: false,
+        };
+        run_chat_tui(&chat, &auto_run, &paths).await?;
+        return Ok(());
+    }
+
     let provider_kind = cli
         .run
         .provider
@@ -1258,7 +1415,7 @@ async fn main() -> anyhow::Result<()> {
                     .error
                     .unwrap_or_else(|| "provider error".to_string());
                 return Err(anyhow!(
-                    "{}\nHint: run `openagent doctor --provider {} --base-url {}`\nDefault base URL for {} is {}",
+                    "{}\nHint: run `localagent doctor --provider {} --base-url {}`\nDefault base URL for {} is {}",
                     err,
                     provider_cli_name(provider_kind),
                     base_url,
@@ -1286,7 +1443,7 @@ async fn main() -> anyhow::Result<()> {
                     .error
                     .unwrap_or_else(|| "provider error".to_string());
                 return Err(anyhow!(
-                    "{}\nHint: run `openagent doctor --provider {} --base-url {}`\nDefault base URL for {} is {}",
+                    "{}\nHint: run `localagent doctor --provider {} --base-url {}`\nDefault base URL for {} is {}",
                     err,
                     provider_cli_name(provider_kind),
                     base_url,
@@ -1298,6 +1455,96 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn discover_local_default(
+    http: HttpConfig,
+) -> anyhow::Result<(ProviderKind, String, String)> {
+    // Priority: LM Studio -> Ollama -> llama.cpp
+    let candidates = [
+        (
+            ProviderKind::Lmstudio,
+            default_base_url(ProviderKind::Lmstudio).to_string(),
+        ),
+        (
+            ProviderKind::Ollama,
+            default_base_url(ProviderKind::Ollama).to_string(),
+        ),
+        (
+            ProviderKind::Llamacpp,
+            default_base_url(ProviderKind::Llamacpp).to_string(),
+        ),
+    ];
+    for (provider, base_url) in candidates {
+        if let Some(model) = discover_model_for_provider(provider, &base_url, &http).await {
+            return Ok((provider, model, base_url));
+        }
+    }
+    Err(anyhow!(
+        "No local provider detected. Start LM Studio ({}), Ollama ({}), or llama.cpp server ({}) then rerun.",
+        default_base_url(ProviderKind::Lmstudio),
+        default_base_url(ProviderKind::Ollama),
+        default_base_url(ProviderKind::Llamacpp)
+    ))
+}
+
+async fn discover_model_for_provider(
+    provider: ProviderKind,
+    base_url: &str,
+    http: &HttpConfig,
+) -> Option<String> {
+    match provider {
+        ProviderKind::Ollama => discover_ollama_model(base_url, http).await,
+        ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
+            discover_openai_compat_model(base_url, http).await
+        }
+    }
+}
+
+async fn discover_openai_compat_model(base_url: &str, http: &HttpConfig) -> Option<String> {
+    let client = Client::builder()
+        .connect_timeout(Duration::from_millis(http.connect_timeout_ms))
+        .timeout(Duration::from_millis(http.request_timeout_ms))
+        .build()
+        .ok()?;
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: Value = resp.json().await.ok()?;
+    let data = v.get("data")?.as_array()?;
+    for item in data {
+        if let Some(id) = item.get("id").and_then(|x| x.as_str()) {
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
+async fn discover_ollama_model(base_url: &str, http: &HttpConfig) -> Option<String> {
+    let client = Client::builder()
+        .connect_timeout(Duration::from_millis(http.connect_timeout_ms))
+        .timeout(Duration::from_millis(http.request_timeout_ms))
+        .build()
+        .ok()?;
+    let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: Value = resp.json().await.ok()?;
+    let models = v.get("models")?.as_array()?;
+    for item in models {
+        if let Some(name) = item.get("name").and_then(|x| x.as_str()) {
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn handle_approvals_command(
@@ -1348,6 +1595,1063 @@ fn handle_approvals_command(
     Ok(())
 }
 
+async fn run_chat_repl(
+    chat: &ChatArgs,
+    base_run: &RunArgs,
+    paths: &store::StatePaths,
+) -> anyhow::Result<()> {
+    if chat.tui {
+        return run_chat_tui(chat, base_run, paths).await;
+    }
+    let provider_kind = base_run
+        .provider
+        .ok_or_else(|| anyhow!("--provider is required in chat mode"))?;
+    let model = base_run
+        .model
+        .clone()
+        .ok_or_else(|| anyhow!("--model is required in chat mode"))?;
+    let base_url = base_run
+        .base_url
+        .clone()
+        .unwrap_or_else(|| default_base_url(provider_kind).to_string());
+
+    println!(
+        "LocalAgent chat started (provider={} model={} tui={}).",
+        provider_cli_name(provider_kind),
+        model,
+        chat.tui
+    );
+    println!("Commands: /help, /exit, /clear");
+
+    loop {
+        print!("You> ");
+        io::stdout().flush()?;
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line)? == 0 {
+            break;
+        }
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if input.starts_with('/') {
+            match input {
+                "/exit" => break,
+                "/help" => {
+                    println!("/help  show commands");
+                    println!("/clear clear current session messages");
+                    println!("/exit  quit chat");
+                }
+                "/clear" => {
+                    if base_run.no_session {
+                        println!("sessions are disabled (--no-session), nothing to clear");
+                    } else {
+                        let session_path = paths
+                            .sessions_dir
+                            .join(format!("{}.json", base_run.session));
+                        let store = SessionStore::new(session_path, base_run.session.clone());
+                        store.reset()?;
+                        println!("session '{}' cleared", base_run.session);
+                    }
+                }
+                _ => println!("unknown command: {input}"),
+            }
+            continue;
+        }
+
+        let mut turn_args = base_run.clone();
+        turn_args.prompt = Some(input.to_string());
+        turn_args.tui = chat.tui;
+        if !chat.tui && !turn_args.stream {
+            turn_args.stream = true;
+        }
+
+        match provider_kind {
+            ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
+                let provider = OpenAiCompatProvider::new(
+                    base_url.clone(),
+                    turn_args.api_key.clone(),
+                    http_config_from_run_args(&turn_args),
+                )?;
+                let res = run_agent(
+                    provider,
+                    provider_kind,
+                    &base_url,
+                    &model,
+                    input,
+                    &turn_args,
+                    paths,
+                )
+                .await?;
+                if matches!(res.outcome.exit_reason, AgentExitReason::ProviderError) {
+                    let err = res
+                        .outcome
+                        .error
+                        .unwrap_or_else(|| "provider error".to_string());
+                    eprintln!(
+                        "{}\nHint: run `localagent doctor --provider {} --base-url {}`\nDefault base URL for {} is {}",
+                        err,
+                        provider_cli_name(provider_kind),
+                        base_url,
+                        provider_cli_name(provider_kind),
+                        default_base_url(provider_kind)
+                    );
+                }
+            }
+            ProviderKind::Ollama => {
+                let provider =
+                    OllamaProvider::new(base_url.clone(), http_config_from_run_args(&turn_args))?;
+                let res = run_agent(
+                    provider,
+                    provider_kind,
+                    &base_url,
+                    &model,
+                    input,
+                    &turn_args,
+                    paths,
+                )
+                .await?;
+                if matches!(res.outcome.exit_reason, AgentExitReason::ProviderError) {
+                    let err = res
+                        .outcome
+                        .error
+                        .unwrap_or_else(|| "provider error".to_string());
+                    eprintln!(
+                        "{}\nHint: run `localagent doctor --provider {} --base-url {}`\nDefault base URL for {} is {}",
+                        err,
+                        provider_cli_name(provider_kind),
+                        base_url,
+                        provider_cli_name(provider_kind),
+                        default_base_url(provider_kind)
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_chat_tui(
+    chat: &ChatArgs,
+    base_run: &RunArgs,
+    paths: &store::StatePaths,
+) -> anyhow::Result<()> {
+    let provider_kind = base_run
+        .provider
+        .ok_or_else(|| anyhow!("--provider is required in chat mode"))?;
+    let model = base_run
+        .model
+        .clone()
+        .ok_or_else(|| anyhow!("--model is required in chat mode"))?;
+    let base_url = base_run
+        .base_url
+        .clone()
+        .unwrap_or_else(|| default_base_url(provider_kind).to_string());
+
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    if chat.plain_tui {
+        execute!(stdout, DisableMouseCapture)?;
+    } else {
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    }
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut input = String::new();
+    let mut prompt_history: Vec<String> = Vec::new();
+    let mut history_idx: Option<usize> = None;
+    let mut transcript: Vec<(String, String)> = vec![];
+    let show_banner = !chat.no_banner;
+    let mut logs: Vec<String> = Vec::new();
+    let max_logs = base_run.tui_max_log_lines;
+    let mut status = "idle".to_string();
+    let mut think_tick: u64 = 0;
+    let mut ui_tick: u64 = 0;
+    let mut approvals_selected = 0usize;
+    let mut show_tools = false;
+    let mut show_approvals = false;
+    let mut show_logs = false;
+    let mut transcript_scroll: usize = 0;
+    let mut follow_output = true;
+    let mut compact_tools = true;
+    let palette_items = [
+        "toggle tools pane",
+        "toggle approvals pane",
+        "toggle logs pane",
+        "toggle tool row density",
+        "clear transcript",
+        "jump to latest",
+    ];
+    let mut palette_open = false;
+    let mut palette_selected = 0usize;
+    let mut search_mode = false;
+    let mut search_query = String::new();
+    let mut search_line_cursor = 0usize;
+    let mut slash_menu_index: usize = 0;
+    let mut ui_state = UiState::new(max_logs);
+    ui_state.provider = provider_cli_name(provider_kind).to_string();
+    ui_state.model = model.clone();
+    ui_state.caps_source = format!("{:?}", base_run.caps).to_lowercase();
+    ui_state.policy_hash = "-".to_string();
+    let mut streaming_assistant = String::new();
+
+    let run_result: anyhow::Result<()> = async {
+        loop {
+            terminal.draw(|f| {
+                draw_chat_frame(
+                    f,
+                    provider_cli_name(provider_kind),
+                    &model,
+                    &status,
+                    &transcript,
+                    &streaming_assistant,
+                    &ui_state,
+                    approvals_selected,
+                    &input,
+                    &logs,
+                    think_tick,
+                    show_tools,
+                    show_approvals,
+                    show_logs,
+                    transcript_scroll,
+                    compact_tools,
+                    show_banner,
+                    ui_tick,
+                    if palette_open {
+                        Some(format!(
+                            "⌘ {}  (Up/Down, Enter, Esc)",
+                            palette_items[palette_selected]
+                        ))
+                    } else if search_mode {
+                        Some(format!(
+                            "🔎 {}  (Enter next, Esc close)",
+                            search_query
+                        ))
+                    } else if input.starts_with('/') {
+                        slash_overlay_text(&input, slash_menu_index)
+                    } else if input.starts_with('?') {
+                        keybinds_overlay_text()
+                    } else {
+                        None
+                    },
+                );
+            })?;
+
+            if event::poll(Duration::from_millis(base_run.tui_refresh_ms))? {
+                match event::read()? {
+                    CEvent::Mouse(me) => match me.kind {
+                        MouseEventKind::ScrollUp => {
+                            transcript_scroll = transcript_scroll.saturating_sub(3);
+                            follow_output = false;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            transcript_scroll = transcript_scroll.saturating_add(3);
+                            follow_output = false;
+                        }
+                        _ => {}
+                    },
+                    CEvent::Key(key) => {
+                    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                        continue;
+                    }
+                    if key.code == KeyCode::Esc {
+                        break;
+                    }
+                    if key.code == KeyCode::End {
+                        follow_output = true;
+                        transcript_scroll = usize::MAX;
+                        continue;
+                    }
+                    if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        palette_open = !palette_open;
+                        search_mode = false;
+                        continue;
+                    }
+                    if key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        search_mode = true;
+                        palette_open = false;
+                        continue;
+                    }
+                    if palette_open {
+                        match key.code {
+                            KeyCode::Esc => palette_open = false,
+                            KeyCode::Up => {
+                                palette_selected = palette_selected.saturating_sub(1);
+                            }
+                            KeyCode::Down => {
+                                if palette_selected + 1 < palette_items.len() {
+                                    palette_selected += 1;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                match palette_selected {
+                                    0 => show_tools = !show_tools,
+                                    1 => show_approvals = !show_approvals,
+                                    2 => show_logs = !show_logs,
+                                    3 => compact_tools = !compact_tools,
+                                    4 => {
+                                        transcript.clear();
+                                        ui_state.tool_calls.clear();
+                                        streaming_assistant.clear();
+                                        transcript_scroll = 0;
+                                        follow_output = true;
+                                    }
+                                    5 => {
+                                        follow_output = true;
+                                        transcript_scroll = usize::MAX;
+                                    }
+                                    _ => {}
+                                }
+                                palette_open = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    if search_mode {
+                        let mut do_search = false;
+                        match key.code {
+                            KeyCode::Esc => search_mode = false,
+                            KeyCode::Backspace => {
+                                search_query.pop();
+                                search_line_cursor = 0;
+                                do_search = true;
+                            }
+                            KeyCode::Enter => {
+                                do_search = true;
+                                search_line_cursor = search_line_cursor.saturating_add(1);
+                            }
+                            KeyCode::Char(c) if is_text_input_mods(key.modifiers) => {
+                                search_query.push(c);
+                                search_line_cursor = 0;
+                                do_search = true;
+                            }
+                            _ => {}
+                        }
+                        if do_search && !search_query.is_empty() {
+                            let hay = transcript
+                                .iter()
+                                .map(|(role, text)| format!("{}: {}", role.to_uppercase(), text))
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
+                            let lines: Vec<&str> = hay.lines().collect();
+                            let query = search_query.to_lowercase();
+                            let mut found = None;
+                            for (idx, line) in lines.iter().enumerate().skip(search_line_cursor) {
+                                if line.to_lowercase().contains(&query) {
+                                    found = Some(idx);
+                                    break;
+                                }
+                            }
+                            if found.is_none() {
+                                for (idx, line) in lines.iter().enumerate().take(search_line_cursor) {
+                                    if line.to_lowercase().contains(&query) {
+                                        found = Some(idx);
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(idx) = found {
+                                transcript_scroll = idx;
+                                follow_output = false;
+                                search_line_cursor = idx;
+                            }
+                        }
+                        continue;
+                    }
+                    match key.code {
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                        KeyCode::Up => {
+                            if input.starts_with('/') {
+                                let matches = slash_command_matches(&input);
+                                if !matches.is_empty() {
+                                    slash_menu_index = if slash_menu_index == 0 {
+                                        matches.len() - 1
+                                    } else {
+                                        slash_menu_index - 1
+                                    };
+                                }
+                                continue;
+                            }
+                            if !prompt_history.is_empty() {
+                                let next = match history_idx {
+                                    None => prompt_history.len().saturating_sub(1),
+                                    Some(i) => i.saturating_sub(1),
+                                };
+                                history_idx = Some(next);
+                                input = prompt_history[next].clone();
+                            }
+                        }
+                        KeyCode::Down => {
+                            if input.starts_with('/') {
+                                let matches = slash_command_matches(&input);
+                                if !matches.is_empty() {
+                                    slash_menu_index = (slash_menu_index + 1) % matches.len();
+                                }
+                                continue;
+                            }
+                            if !prompt_history.is_empty() {
+                                if let Some(i) = history_idx {
+                                    let next = (i + 1).min(prompt_history.len());
+                                    if next >= prompt_history.len() {
+                                        history_idx = None;
+                                        input.clear();
+                                    } else {
+                                        history_idx = Some(next);
+                                        input = prompt_history[next].clone();
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            transcript_scroll = transcript_scroll.saturating_sub(12);
+                            follow_output = false;
+                        }
+                        KeyCode::PageDown => {
+                            transcript_scroll = transcript_scroll.saturating_add(12);
+                            follow_output = false;
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            transcript_scroll = transcript_scroll.saturating_sub(10);
+                            follow_output = false;
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            transcript_scroll = transcript_scroll.saturating_add(10);
+                            follow_output = false;
+                        }
+                        KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            show_tools = !show_tools;
+                        }
+                        KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            show_approvals = !show_approvals;
+                        }
+                        KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            show_logs = !show_logs;
+                        }
+                        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if approvals_selected + 1 < ui_state.pending_approvals.len() {
+                                approvals_selected += 1;
+                            }
+                        }
+                        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            approvals_selected = approvals_selected.saturating_sub(1);
+                        }
+                        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if let Err(e) = ui_state.refresh_approvals(&paths.approvals_path) {
+                                logs.push(format!("approvals refresh failed: {e}"));
+                            }
+                        }
+                        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if let Some(row) = ui_state.pending_approvals.get(approvals_selected) {
+                                let store = ApprovalsStore::new(paths.approvals_path.clone());
+                                if let Err(e) = store.approve(&row.id, None, None) {
+                                    logs.push(format!("approve failed: {e}"));
+                                } else {
+                                    logs.push(format!("approved {}", row.id));
+                                }
+                                let _ = ui_state.refresh_approvals(&paths.approvals_path);
+                            }
+                        }
+                        KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if let Some(row) = ui_state.pending_approvals.get(approvals_selected) {
+                                let store = ApprovalsStore::new(paths.approvals_path.clone());
+                                if let Err(e) = store.deny(&row.id) {
+                                    logs.push(format!("deny failed: {e}"));
+                                } else {
+                                    logs.push(format!("denied {}", row.id));
+                                }
+                                let _ = ui_state.refresh_approvals(&paths.approvals_path);
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let line = input.trim().to_string();
+                            input.clear();
+                            history_idx = None;
+                            slash_menu_index = 0;
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if line.starts_with('/') {
+                                let resolved = selected_slash_command(&line, slash_menu_index)
+                                    .or_else(|| resolve_slash_command(&line))
+                                    .unwrap_or(line.as_str());
+                                match resolved {
+                                    "/exit" => break,
+                                    "/help" => {
+                                        logs.push(
+                                            "commands: /help /clear /exit /hide tools|approvals|logs /show tools|approvals|logs|all ; slash dropdown: type / then Up/Down + Enter ; panes: Ctrl+1/2/3 ; scroll: PgUp/PgDn, Ctrl+U/Ctrl+D, mouse wheel ; approvals: Ctrl+J/K select, Ctrl+A approve, Ctrl+X deny, Ctrl+R refresh ; history: Up/Down ; Esc quits"
+                                                .to_string(),
+                                        );
+                                        show_logs = true;
+                                    }
+                                    "/clear" => {
+                                        if base_run.no_session {
+                                            transcript.clear();
+                                            ui_state.tool_calls.clear();
+                                            streaming_assistant.clear();
+                                            transcript_scroll = 0;
+                                            follow_output = true;
+                                            logs.push("cleared chat transcript".to_string());
+                                        } else {
+                                            let session_path =
+                                                paths.sessions_dir.join(format!("{}.json", base_run.session));
+                                            let store = SessionStore::new(session_path, base_run.session.clone());
+                                            store.reset()?;
+                                            transcript.clear();
+                                            ui_state.tool_calls.clear();
+                                            streaming_assistant.clear();
+                                            transcript_scroll = 0;
+                                            follow_output = true;
+                                            logs.push(format!(
+                                                "session '{}' and transcript cleared",
+                                                base_run.session
+                                            ));
+                                        }
+                                    }
+                                    "/hide tools" => show_tools = false,
+                                    "/hide approvals" => show_approvals = false,
+                                    "/hide logs" => show_logs = false,
+                                    "/show tools" => show_tools = true,
+                                    "/show approvals" => show_approvals = true,
+                                    "/show logs" => show_logs = true,
+                                    "/show all" => {
+                                        show_tools = true;
+                                        show_approvals = true;
+                                        show_logs = true;
+                                    }
+                                    _ => logs.push(format!("unknown command: {}", line)),
+                                }
+                                continue;
+                            }
+
+                            prompt_history.push(line.clone());
+                            transcript.push(("user".to_string(), line.clone()));
+                            if line.starts_with('?') {
+                                show_logs = true;
+                                continue;
+                            }
+                            status = "running".to_string();
+                            streaming_assistant.clear();
+                            think_tick = 0;
+                            if follow_output {
+                                transcript_scroll = usize::MAX;
+                            }
+
+                            let (tx, rx) = std::sync::mpsc::channel::<Event>();
+                            let mut turn_args = base_run.clone();
+                            turn_args.prompt = Some(line.clone());
+                            turn_args.tui = false;
+                            turn_args.stream = true;
+
+                            let mut fut: std::pin::Pin<
+                                Box<
+                                    dyn std::future::Future<
+                                            Output = anyhow::Result<RunExecutionResult>,
+                                        > + Send,
+                                >,
+                            > = match provider_kind {
+                                ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
+                                    let provider = OpenAiCompatProvider::new(
+                                        base_url.clone(),
+                                        turn_args.api_key.clone(),
+                                        http_config_from_run_args(&turn_args),
+                                    )?;
+                                    Box::pin(run_agent_with_ui(
+                                        provider,
+                                        provider_kind,
+                                        &base_url,
+                                        &model,
+                                        &line,
+                                        &turn_args,
+                                        paths,
+                                        Some(tx),
+                                        true,
+                                    ))
+                                }
+                                ProviderKind::Ollama => {
+                                    let provider = OllamaProvider::new(
+                                        base_url.clone(),
+                                        http_config_from_run_args(&turn_args),
+                                    )?;
+                                    Box::pin(run_agent_with_ui(
+                                        provider,
+                                        provider_kind,
+                                        &base_url,
+                                        &model,
+                                        &line,
+                                        &turn_args,
+                                        paths,
+                                        Some(tx),
+                                        true,
+                                    ))
+                                }
+                            };
+
+                            loop {
+                                while let Ok(ev) = rx.try_recv() {
+                                    ui_state.apply_event(&ev);
+                                    match ev.kind {
+                                        EventKind::ModelDelta => {
+                                            if let Some(d) = ev.data.get("delta").and_then(|v| v.as_str()) {
+                                                streaming_assistant.push_str(d);
+                                                if follow_output {
+                                                    transcript_scroll = usize::MAX;
+                                                }
+                                            }
+                                        }
+                                        EventKind::ModelResponseEnd => {
+                                            if streaming_assistant.is_empty() {
+                                                if let Some(c) = ev.data.get("content").and_then(|v| v.as_str()) {
+                                                    streaming_assistant.push_str(c);
+                                                    if follow_output {
+                                                        transcript_scroll = usize::MAX;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                terminal.draw(|f| {
+                                    draw_chat_frame(
+                                        f,
+                                        provider_cli_name(provider_kind),
+                                        &model,
+                                        &status,
+                                        &transcript,
+                                        &streaming_assistant,
+                                        &ui_state,
+                                        approvals_selected,
+                                        &input,
+                                        &logs,
+                                        think_tick,
+                                        show_tools,
+                                        show_approvals,
+                                        show_logs,
+                                        transcript_scroll,
+                                        compact_tools,
+                                        show_banner,
+                                        ui_tick,
+                                        if palette_open {
+                                            Some(format!(
+                                                "⌘ {}  (Up/Down, Enter, Esc)",
+                                                palette_items[palette_selected]
+                                            ))
+                                        } else if search_mode {
+                                            Some(format!(
+                                                "🔎 {}  (Enter next, Esc close)",
+                                                search_query
+                                            ))
+                                        } else if input.starts_with('/') {
+                                            slash_overlay_text(&input, slash_menu_index)
+                                        } else if input.starts_with('?') {
+                                            keybinds_overlay_text()
+                                        } else {
+                                            None
+                                        },
+                                    );
+                                })?;
+
+                                let maybe_res = tokio::select! {
+                                    r = &mut fut => Some(r),
+                                    _ = tokio::time::sleep(Duration::from_millis(base_run.tui_refresh_ms)) => None,
+                                };
+                                if let Some(res) = maybe_res {
+                                    match res {
+                                        Ok(out) => {
+                                            if matches!(out.outcome.exit_reason, AgentExitReason::ProviderError) {
+                                                let err = out
+                                                    .outcome
+                                                    .error
+                                                    .unwrap_or_else(|| "provider error".to_string());
+                                                logs.push(err);
+                                            }
+                                            let final_text = if out.outcome.final_output.is_empty() {
+                                                agent::sanitize_user_visible_output(
+                                                    &streaming_assistant,
+                                                )
+                                            } else {
+                                                out.outcome.final_output
+                                            };
+                                            transcript.push(("assistant".to_string(), final_text));
+                                            if follow_output {
+                                                transcript_scroll = usize::MAX;
+                                            }
+                                        }
+                                        Err(e) => logs.push(format!("run failed: {e}")),
+                                    }
+                                    streaming_assistant.clear();
+                                    status = "idle".to_string();
+                                    break;
+                                }
+                                think_tick = think_tick.saturating_add(1);
+                                ui_tick = ui_tick.saturating_add(1);
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            input.pop();
+                            slash_menu_index = 0;
+                        }
+                        KeyCode::Char(c) => {
+                            if is_text_input_mods(key.modifiers) {
+                                input.push(c);
+                                if c == '/' && input.len() == 1 {
+                                    slash_menu_index = 0;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    if logs.len() > max_logs {
+                        let drop_n = logs.len() - max_logs;
+                        logs.drain(0..drop_n);
+                    }
+                    ui_tick = ui_tick.saturating_add(1);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    disable_raw_mode()?;
+    if chat.plain_tui {
+        execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    } else {
+        execute!(
+            terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        )?;
+    }
+    terminal.show_cursor()?;
+    run_result
+}
+
+fn is_text_input_mods(mods: KeyModifiers) -> bool {
+    mods.is_empty() || mods == KeyModifiers::SHIFT
+}
+
+const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "show shortcuts and slash commands"),
+    ("/clear", "clear transcript (and session if enabled)"),
+    ("/exit", "exit chat"),
+    ("/hide tools", "hide tools pane"),
+    ("/hide approvals", "hide approvals pane"),
+    ("/hide logs", "hide logs pane"),
+    ("/show tools", "show tools pane"),
+    ("/show approvals", "show approvals pane"),
+    ("/show logs", "show logs pane"),
+    ("/show all", "show all panes"),
+];
+
+fn slash_command_matches(input: &str) -> Vec<(&'static str, &'static str)> {
+    SLASH_COMMANDS
+        .iter()
+        .copied()
+        .filter(|(cmd, _)| cmd.starts_with(input))
+        .collect()
+}
+
+fn resolve_slash_command(input: &str) -> Option<&'static str> {
+    let matches = slash_command_matches(input);
+    if matches.len() == 1 {
+        matches.first().map(|(cmd, _)| *cmd)
+    } else {
+        None
+    }
+}
+
+fn selected_slash_command(input: &str, index: usize) -> Option<&'static str> {
+    let matches = slash_command_matches(input);
+    if matches.is_empty() {
+        return None;
+    }
+    Some(matches[index % matches.len()].0)
+}
+
+fn slash_overlay_text(input: &str, selected: usize) -> Option<String> {
+    let matches = slash_command_matches(input);
+    if matches.is_empty() {
+        return Some("no matching / commands".to_string());
+    }
+    let selected_idx = selected % matches.len();
+    let window = 6usize;
+    let start = if selected_idx >= window {
+        selected_idx + 1 - window
+    } else {
+        0
+    };
+    let end = (start + window).min(matches.len());
+    let mut lines = vec!["/ commands".to_string()];
+    for (idx, (cmd, _desc)) in matches[start..end].iter().enumerate() {
+        let absolute_idx = start + idx;
+        lines.push(format!(
+            "{} {}",
+            if absolute_idx == selected_idx {
+                "›"
+            } else {
+                " "
+            },
+            cmd
+        ));
+    }
+    let (_cmd, desc) = matches[selected_idx];
+    lines.push(format!("desc: {desc}"));
+    Some(lines.join("\n"))
+}
+
+fn keybinds_overlay_text() -> Option<String> {
+    Some(
+        [
+            "keybinds",
+            "  Esc                quit chat",
+            "  Ctrl+1 / Ctrl+2 / Ctrl+3   toggle tools / approvals / logs",
+            "  PgUp / PgDn        scroll transcript",
+            "  Ctrl+U / Ctrl+D    scroll transcript",
+            "  Mouse wheel        scroll transcript",
+            "  Ctrl+J / Ctrl+K    approvals selection",
+            "  Ctrl+A / Ctrl+X    approve / deny selected approval",
+            "  Ctrl+R             refresh approvals",
+            "  Ctrl+P             command palette",
+            "  Ctrl+F             search transcript",
+            "  /...               slash commands dropdown",
+            "  ?                  show this keybinds panel",
+        ]
+        .join("\n"),
+    )
+}
+
+fn openagent_banner(_tick: u64) -> String {
+    let raw = r#"
+██╗      █████╗  █████╗  █████╗ ██╗      █████╗  ██████╗ ███████╗███╗  ██╗████████╗
+██║     ██╔══██╗██╔══██╗██╔══██╗██║     ██╔══██╗██╔════╝ ██╔════╝████╗ ██║╚══██╔══╝
+██║     ██║  ██║██║  ╚═╝███████║██║     ███████║██║  ██╗ █████╗  ██╔██╗██║   ██║   
+██║     ██║  ██║██║  ██╗██╔══██║██║     ██╔══██║██║  ╚██╗██╔══╝  ██║╚████║   ██║   
+███████╗╚█████╔╝╚█████╔╝██║  ██║███████╗██║  ██║╚██████╔╝███████╗██║ ╚███║   ██║   
+╚══════╝ ╚════╝  ╚════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚══╝   ╚═╝   
+                                                                            v0.1.0"#;
+    raw.lines().collect::<Vec<_>>().join("\n")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_chat_frame(
+    f: &mut ratatui::Frame<'_>,
+    provider_name: &str,
+    model: &str,
+    status: &str,
+    transcript: &[(String, String)],
+    streaming_assistant: &str,
+    ui_state: &UiState,
+    approvals_selected: usize,
+    input: &str,
+    logs: &[String],
+    think_tick: u64,
+    show_tools: bool,
+    show_approvals: bool,
+    show_logs: bool,
+    transcript_scroll: usize,
+    compact_tools: bool,
+    show_banner: bool,
+    ui_tick: u64,
+    overlay_hint: Option<String>,
+) {
+    let bottom_height = if overlay_hint.is_some() {
+        8
+    } else if show_logs {
+        4
+    } else {
+        0
+    };
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(8),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(bottom_height),
+        ])
+        .split(f.area());
+
+    f.render_widget(
+        Paragraph::new(format!(
+            "chat  provider={}  model={}  status={}  (/help /clear /exit)",
+            provider_name, model, status
+        )),
+        outer[0],
+    );
+
+    let has_side = show_tools || show_approvals;
+    let mid = if has_side {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(72), Constraint::Percentage(28)])
+            .split(outer[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(100), Constraint::Percentage(0)])
+            .split(outer[1])
+    };
+
+    let mut chat_text = String::new();
+    if show_banner {
+        chat_text.push_str(&openagent_banner(ui_tick));
+        chat_text.push_str("\n\n");
+    }
+    let transcript_text = transcript
+        .iter()
+        .map(|(role, text)| format!("{}: {}", role.to_uppercase(), text))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    chat_text.push_str(&transcript_text);
+    if !streaming_assistant.is_empty() {
+        if !chat_text.is_empty() {
+            chat_text.push_str("\n\n");
+        }
+        chat_text.push_str(&format!("ASSISTANT: {}", streaming_assistant));
+    }
+    let max_scroll = chat_text.lines().count().saturating_sub(1);
+    let scroll = if transcript_scroll == usize::MAX {
+        max_scroll
+    } else {
+        transcript_scroll.min(max_scroll)
+    };
+    f.render_widget(
+        Paragraph::new(chat_text)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll as u16, 0)),
+        mid[0],
+    );
+
+    if has_side {
+        match (show_tools, show_approvals) {
+            (true, true) => {
+                let right = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+                    .split(mid[1]);
+                draw_tools_pane(f, right[0], ui_state, compact_tools);
+                draw_approvals_pane(f, right[1], ui_state, approvals_selected);
+            }
+            (true, false) => draw_tools_pane(f, mid[1], ui_state, compact_tools),
+            (false, true) => draw_approvals_pane(f, mid[1], ui_state, approvals_selected),
+            (false, false) => {}
+        }
+    }
+
+    f.render_widget(Paragraph::new(format!("› {}", input)), outer[2]);
+
+    let tools_running = ui_state.tool_calls.iter().any(|t| t.status == "running");
+    let (indicator, style) = if status == "running" {
+        if tools_running {
+            (
+                "⏺ Running tools...".to_string(),
+                Style::default().fg(Color::Yellow),
+            )
+        } else {
+            let phase = ((think_tick / 4) % 8) as usize;
+            let wave = ["▁", "▂", "▃", "▄", "▅", "▄", "▃", "▂"];
+            let dots = ".".repeat(((think_tick / 6) as usize % 3) + 1);
+            (
+                format!("{} Thinking{dots}", wave[phase]),
+                Style::default().fg(match phase {
+                    0 | 1 => Color::DarkGray,
+                    2 | 3 => Color::Blue,
+                    4 | 5 => Color::Cyan,
+                    _ => Color::Blue,
+                }),
+            )
+        }
+    } else {
+        ("○ Ready".to_string(), Style::default().fg(Color::DarkGray))
+    };
+    f.render_widget(Paragraph::new(indicator).style(style), outer[3]);
+
+    if bottom_height > 0 {
+        let logs_text = if let Some(hint) = overlay_hint {
+            hint
+        } else {
+            logs.join("\n")
+        };
+        f.render_widget(
+            Paragraph::new(logs_text).wrap(Wrap { trim: false }),
+            outer[4],
+        );
+    }
+}
+
+fn draw_tools_pane(
+    f: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    ui_state: &UiState,
+    compact_tools: bool,
+) {
+    let row_count = if compact_tools { 20 } else { 12 };
+    let tool_rows = ui_state.tool_calls.iter().rev().take(row_count).map(|t| {
+        Row::new(vec![
+            Cell::from(t.tool_name.clone()),
+            Cell::from(t.status.clone()),
+            Cell::from(t.decision.clone().unwrap_or_default()),
+            Cell::from(
+                t.ok.map(|v| if v { "ok" } else { "fail" })
+                    .unwrap_or("-")
+                    .to_string(),
+            ),
+        ])
+    });
+    f.render_widget(
+        Table::new(
+            tool_rows,
+            [
+                Constraint::Length(20),
+                Constraint::Length(10),
+                Constraint::Length(12),
+                Constraint::Length(6),
+            ],
+        )
+        .header(Row::new(vec!["Tool", "Status", "Decision", "OK"])),
+        area,
+    );
+}
+
+fn draw_approvals_pane(
+    f: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    ui_state: &UiState,
+    approvals_selected: usize,
+) {
+    let approval_rows = ui_state.pending_approvals.iter().enumerate().map(|(i, a)| {
+        let style = if i == approvals_selected {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+        Row::new(vec![
+            Cell::from(a.id.clone()),
+            Cell::from(a.status.clone()),
+            Cell::from(a.tool.clone()),
+        ])
+        .style(style)
+    });
+    f.render_widget(
+        Table::new(
+            approval_rows,
+            [
+                Constraint::Length(16),
+                Constraint::Length(10),
+                Constraint::Length(18),
+            ],
+        )
+        .header(Row::new(vec!["Approval", "Status", "Tool"])),
+        area,
+    );
+}
 async fn run_agent<P: ModelProvider>(
     provider: P,
     provider_kind: ProviderKind,
@@ -1356,6 +2660,32 @@ async fn run_agent<P: ModelProvider>(
     prompt: &str,
     args: &RunArgs,
     paths: &store::StatePaths,
+) -> anyhow::Result<RunExecutionResult> {
+    run_agent_with_ui(
+        provider,
+        provider_kind,
+        base_url,
+        default_model,
+        prompt,
+        args,
+        paths,
+        None,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_agent_with_ui<P: ModelProvider>(
+    provider: P,
+    provider_kind: ProviderKind,
+    base_url: &str,
+    default_model: &str,
+    prompt: &str,
+    args: &RunArgs,
+    paths: &store::StatePaths,
+    external_ui_tx: Option<Sender<Event>>,
+    suppress_stdout_stream: bool,
 ) -> anyhow::Result<RunExecutionResult> {
     let workdir = std::fs::canonicalize(&args.workdir)
         .with_context(|| format!("failed to resolve workdir: {}", args.workdir.display()))?;
@@ -1481,6 +2811,8 @@ async fn run_agent<P: ModelProvider>(
     } else {
         task_memory_message(&session_data.task_memory)
     };
+    let instruction_resolution =
+        resolve_instruction_messages(args, &paths.state_dir, &worker_model)?;
 
     let mcp_config_path = resolved_mcp_config_path(args, &paths.state_dir);
     let mcp_registry = if args.mcp.is_empty() {
@@ -1526,7 +2858,7 @@ async fn run_agent<P: ModelProvider>(
         let (tx, rx) = std::sync::mpsc::channel();
         (Some(tx), Some(rx))
     } else {
-        (None, None)
+        (external_ui_tx, None)
     };
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
     let ui_join = if let Some(rx) = ui_rx {
@@ -1545,7 +2877,13 @@ async fn run_agent<P: ModelProvider>(
     } else {
         None
     };
-    let mut event_sink = build_event_sink(args.stream, args.events.as_deref(), args.tui, ui_tx)?;
+    let mut event_sink = build_event_sink(
+        args.stream,
+        args.events.as_deref(),
+        args.tui,
+        ui_tx,
+        suppress_stdout_stream,
+    )?;
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut planner_record: Option<PlannerRunRecord> = None;
@@ -1652,6 +2990,7 @@ async fn run_agent<P: ModelProvider>(
                         Some(args.planner_max_steps),
                         Some(format!("{:?}", args.planner_output).to_lowercase()),
                         Some(planner_strict_effective),
+                        &instruction_resolution,
                     );
                     let config_fingerprint =
                         build_config_fingerprint(&cli_config, args, &worker_model, paths);
@@ -1796,6 +3135,7 @@ async fn run_agent<P: ModelProvider>(
                     Some(args.planner_max_steps),
                     Some(format!("{:?}", args.planner_output).to_lowercase()),
                     Some(planner_strict_effective),
+                    &instruction_resolution,
                 );
                 let config_fingerprint =
                     build_config_fingerprint(&cli_config, args, &worker_model, paths);
@@ -1883,7 +3223,15 @@ async fn run_agent<P: ModelProvider>(
     };
 
     let outcome = tokio::select! {
-        out = agent.run(prompt, session_messages, merge_injected_messages(task_memory, planner_injected_message)) => out,
+        out = agent.run(
+            prompt,
+            session_messages,
+            merge_injected_messages(
+                instruction_resolution.messages.clone(),
+                task_memory,
+                planner_injected_message,
+            ),
+        ) => out,
         _ = tokio::signal::ctrl_c() => {
             agent::AgentOutcome {
                 run_id: uuid::Uuid::new_v4().to_string(),
@@ -1987,6 +3335,7 @@ async fn run_agent<P: ModelProvider>(
         Some(args.planner_max_steps),
         Some(format!("{:?}", args.planner_output).to_lowercase()),
         Some(planner_strict_effective),
+        &instruction_resolution,
     );
     let config_fingerprint = build_config_fingerprint(&cli_config, args, &worker_model, paths);
     let config_hash_hex = config_hash_hex(&config_fingerprint)?;
@@ -2115,7 +3464,7 @@ async fn run_tasks_graph(
 
     let graph_run_id = uuid::Uuid::new_v4().to_string();
     let graph_started = trust::now_rfc3339();
-    let mut sink = build_event_sink(false, base_run.events.as_deref(), false, None)?;
+    let mut sink = build_event_sink(false, base_run.events.as_deref(), false, None, false)?;
     emit_event(
         &mut sink,
         &graph_run_id,
@@ -2674,15 +4023,17 @@ async fn run_planner_phase<P: ModelProvider>(
 }
 
 fn merge_injected_messages(
+    mut instruction_messages: Vec<Message>,
     task_memory: Option<Message>,
     planner_handoff: Option<Message>,
 ) -> Vec<Message> {
-    match (task_memory, planner_handoff) {
-        (None, None) => Vec::new(),
-        (Some(m), None) => vec![m],
-        (None, Some(m)) => vec![m],
-        (Some(a), Some(b)) => vec![a, b],
+    if let Some(m) = task_memory {
+        instruction_messages.push(m);
     }
+    if let Some(m) = planner_handoff {
+        instruction_messages.push(m);
+    }
+    instruction_messages
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2703,6 +4054,7 @@ fn build_run_cli_config(
     planner_max_steps: Option<u32>,
     planner_output: Option<String>,
     planner_strict: Option<bool>,
+    instructions: &InstructionResolution,
 ) -> RunCliConfig {
     RunCliConfig {
         mode: format!("{:?}", mode).to_lowercase(),
@@ -2781,6 +4133,14 @@ fn build_run_cli_config(
         policy_version,
         includes_resolved,
         mcp_allowlist,
+        instructions_config_path: instructions
+            .config_path
+            .as_ref()
+            .map(|p| stable_path_string(p)),
+        instructions_config_hash_hex: instructions.config_hash_hex.clone(),
+        instruction_model_profile: instructions.selected_model_profile.clone(),
+        instruction_task_profile: instructions.selected_task_profile.clone(),
+        instruction_message_count: instructions.messages.len(),
     }
 }
 
@@ -2888,6 +4248,23 @@ fn build_config_fingerprint(
         policy_version: cli_config.policy_version,
         includes_resolved: cli_config.includes_resolved.clone(),
         mcp_allowlist: cli_config.mcp_allowlist.clone(),
+        instructions_config_path: cli_config
+            .instructions_config_path
+            .clone()
+            .unwrap_or_default(),
+        instructions_config_hash_hex: cli_config
+            .instructions_config_hash_hex
+            .clone()
+            .unwrap_or_default(),
+        instruction_model_profile: cli_config
+            .instruction_model_profile
+            .clone()
+            .unwrap_or_default(),
+        instruction_task_profile: cli_config
+            .instruction_task_profile
+            .clone()
+            .unwrap_or_default(),
+        instruction_message_count: cli_config.instruction_message_count,
     }
 }
 
@@ -2901,6 +4278,38 @@ fn resolved_hooks_config_path(args: &RunArgs, state_dir: &std::path::Path) -> Pa
     args.hooks_config
         .clone()
         .unwrap_or_else(|| state_dir.join("hooks.yaml"))
+}
+
+fn resolved_instructions_config_path(args: &RunArgs, state_dir: &std::path::Path) -> PathBuf {
+    args.instructions_config
+        .clone()
+        .unwrap_or_else(|| instructions::default_config_path(state_dir))
+}
+
+fn resolve_instruction_messages(
+    args: &RunArgs,
+    state_dir: &std::path::Path,
+    model: &str,
+) -> anyhow::Result<InstructionResolution> {
+    let cfg_path = resolved_instructions_config_path(args, state_dir);
+    if !cfg_path.exists() {
+        return Ok(InstructionResolution::empty());
+    }
+    let (cfg, hash_hex) = instructions::load_config(&cfg_path)?;
+    let (messages, selected_model, selected_task) = instructions::resolve_messages(
+        &cfg,
+        model,
+        args.task_kind.as_deref(),
+        args.instruction_model_profile.as_deref(),
+        args.instruction_task_profile.as_deref(),
+    )?;
+    Ok(InstructionResolution {
+        config_path: Some(cfg_path),
+        config_hash_hex: Some(hash_hex),
+        selected_model_profile: selected_model,
+        selected_task_profile: selected_task,
+        messages,
+    })
 }
 
 fn compute_hooks_config_hash_hex(mode: HooksMode, path: &std::path::Path) -> Option<String> {
@@ -3056,9 +4465,10 @@ fn build_event_sink(
     events_path: Option<&std::path::Path>,
     tui_enabled: bool,
     ui_tx: Option<Sender<Event>>,
+    suppress_stdout: bool,
 ) -> anyhow::Result<Option<Box<dyn EventSink>>> {
     let mut multi = MultiSink::new();
-    if stream && !tui_enabled {
+    if stream && !tui_enabled && !suppress_stdout {
         multi.push(Box::new(StdoutSink::new()));
     }
     if let Some(tx) = ui_tx {
@@ -3825,6 +5235,10 @@ rules:
             hooks_timeout_ms: 2000,
             hooks_max_stdout_bytes: 200_000,
             tool_args_strict: crate::tools::ToolArgsStrict::On,
+            instructions_config: None,
+            instruction_model_profile: None,
+            instruction_task_profile: None,
+            task_kind: None,
             taint: crate::taint::TaintToggle::Off,
             taint_mode: crate::taint::TaintMode::Propagate,
             taint_digest_bytes: 4096,

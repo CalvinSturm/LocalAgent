@@ -139,31 +139,32 @@ fn query_param(path: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::FixtureServer;
+    use tokio::time::{sleep, Duration};
+
+    async fn get_text_retry(url: String) -> String {
+        let mut last_err = String::new();
+        for _ in 0..3 {
+            match reqwest::get(&url).await {
+                Ok(resp) => match resp.text().await {
+                    Ok(text) => return text,
+                    Err(e) => last_err = e.to_string(),
+                },
+                Err(e) => last_err = e.to_string(),
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        panic!("failed to fetch {url}: {last_err}");
+    }
 
     #[tokio::test]
     async fn fixture_routes_expose_markers() {
         let server = FixtureServer::start().expect("start");
-        let nav = reqwest::get(format!("{}/nav", server.base_url()))
-            .await
-            .expect("get nav")
-            .text()
-            .await
-            .expect("text nav");
+        let nav = get_text_retry(format!("{}/nav", server.base_url())).await;
         assert!(nav.contains("NAV_FIXTURE_OK"));
-        let page2 = reqwest::get(format!("{}/page2", server.base_url()))
-            .await
-            .expect("get page2")
-            .text()
-            .await
-            .expect("text page2");
+        let page2 = get_text_retry(format!("{}/page2", server.base_url())).await;
         assert!(page2.contains("PAGE2_OK"));
         assert!(page2.contains("alpha"));
-        let inject = reqwest::get(format!("{}/inject", server.base_url()))
-            .await
-            .expect("get inject")
-            .text()
-            .await
-            .expect("text inject");
+        let inject = get_text_retry(format!("{}/inject", server.base_url())).await;
         assert!(inject.contains("INJECT_DATA_OK:42"));
         assert!(inject.contains("rm -rf /"));
     }

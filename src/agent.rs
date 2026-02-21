@@ -18,6 +18,43 @@ use crate::tools::{
 use crate::trust::policy::{McpAllowSummary, Policy};
 use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
 
+pub fn sanitize_user_visible_output(raw: &str) -> String {
+    let without_think = strip_tag_block(raw, "think");
+    let trimmed = without_think.trim();
+    let upper = trimmed.to_uppercase();
+    if let Some(thought_idx) = upper.find("THOUGHT:") {
+        if let Some(response_rel) = upper[thought_idx..].find("RESPONSE:") {
+            let start = thought_idx + response_rel + "RESPONSE:".len();
+            return trimmed[start..].trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn strip_tag_block(input: &str, tag: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut i = 0usize;
+    while i < input.len() {
+        let rest = &input[i..];
+        if rest.starts_with(&open) {
+            if let Some(end_rel) = rest.find(&close) {
+                i += end_rel + close.len();
+                continue;
+            }
+            break;
+        }
+        if let Some(ch) = rest.chars().next() {
+            out.push(ch);
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum AgentExitReason {
     Ok,
@@ -707,7 +744,11 @@ impl<P: ModelProvider> Agent<P> {
                 EventKind::ModelResponseEnd,
                 serde_json::json!({"tool_calls": resp.tool_calls.len()}),
             );
-            messages.push(resp.assistant.clone());
+            let mut assistant = resp.assistant.clone();
+            if let Some(c) = assistant.content.as_deref() {
+                assistant.content = Some(sanitize_user_visible_output(c));
+            }
+            messages.push(assistant.clone());
             if matches!(self.taint_toggle, TaintToggle::On) {
                 let idx = messages.len().saturating_sub(1);
                 taint_state.mark_assistant_context_tainted(idx);
@@ -725,7 +766,7 @@ impl<P: ModelProvider> Agent<P> {
                     started_at,
                     finished_at: crate::trust::now_rfc3339(),
                     exit_reason: AgentExitReason::Ok,
-                    final_output: resp.assistant.content.unwrap_or_default(),
+                    final_output: assistant.content.unwrap_or_default(),
                     error: None,
                     messages,
                     tool_calls: observed_tool_calls,
@@ -1487,12 +1528,12 @@ impl<P: ModelProvider> Agent<P> {
                                     taint_state.last_sources.join("/")
                                 };
                                 format!(
-                                    "Approval required due to tainted content (source: {}). Run: openagent approve {} (or deny) then re-run.",
+                                    "Approval required due to tainted content (source: {}). Run: localagent approve {} (or deny) then re-run.",
                                     src, approval_id
                                 )
                             } else {
                                 format!(
-                                    "Approval required: {} ({}){}. Run: openagent approve {} (or deny) then re-run.",
+                                    "Approval required: {} ({}){}. Run: localagent approve {} (or deny) then re-run.",
                                     approval_id,
                                     reason,
                                     source
@@ -1728,7 +1769,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
 
-    use super::Agent;
+    use super::{sanitize_user_visible_output, Agent};
     use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
     use crate::gate::{ApprovalMode, AutoApproveScope, GateContext, NoGate, ProviderKind};
     use crate::hooks::config::HooksMode;
@@ -1742,6 +1783,12 @@ mod tests {
         generate_calls: Arc<AtomicUsize>,
         stream_calls: Arc<AtomicUsize>,
         seen_messages: Arc<Mutex<Vec<Message>>>,
+    }
+
+    #[test]
+    fn sanitize_hides_thought_and_think_sections() {
+        let s = "<think>internal</think>\nTHOUGHT: hidden\nRESPONSE: visible";
+        assert_eq!(sanitize_user_visible_output(s), "visible");
     }
 
     #[async_trait]

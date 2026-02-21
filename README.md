@@ -1,178 +1,130 @@
-# OpenAgent
+# LocalAgent
 
-Local-runtime agent loop with tool calling, focused on safe defaults and pragmatic control.
+LocalAgent is a local-runtime agent CLI with tool calling, trust controls, and replayable artifacts.
 
-## What It Does
+Primary command is `localagent`. Compatibility alias `openagent` is also available.
 
-- Runs an agent loop against:
-  - LM Studio (OpenAI-compatible API)
-  - llama.cpp server (OpenAI-compatible API)
-  - Ollama
-- Supports built-in tools:
-  - `list_dir`
-  - `read_file`
-  - `shell` (gated)
-  - `write_file` / `apply_patch` (optional + gated)
-- Supports Trust-lite:
-  - policy allow/deny/require_approval
-  - approvals store + CLI
-  - audit log
-- Persists:
-  - sessions
-  - run artifacts
-  - replayable runs
-
-## Safety Defaults
-
-Defaults are intentionally safe:
-
-- `--trust off`
-- `--enable-write-tools` is off
-- `--allow-write` is off
-- `--allow-shell` is off
-- read/shell output truncation limits are on
-
-## Build
+## Quickstart
 
 ```bash
 cargo build
+localagent init
+localagent doctor --provider lmstudio
 ```
 
-## Basic Usage
+## Command Pattern (Important)
+
+Global flags come before subcommands.
 
 ```bash
-openagent --provider ollama --model llama3.2 --prompt "Summarize src/main.rs"
+localagent --provider lmstudio --model essentialai/rnj-1 --prompt "hello" run
+localagent --provider lmstudio --model essentialai/rnj-1 chat --tui
 ```
 
-Provider defaults:
+## Common Commands
 
-- `lmstudio`: `http://localhost:1234/v1`
-- `llamacpp`: `http://localhost:8080/v1`
-- `ollama`: `http://localhost:11434`
-
-## Doctor
-
-Check provider connectivity:
+One-shot run:
 
 ```bash
-openagent doctor --provider ollama
-openagent doctor --provider lmstudio --base-url http://localhost:1234/v1
+localagent --provider ollama --model llama3.2 --prompt "Summarize src/main.rs" run
 ```
 
-## Tool Gating
-
-Enable shell execution:
+Alias:
 
 ```bash
-openagent ... --allow-shell
+localagent --provider ollama --model llama3.2 --prompt "Summarize src/main.rs" exec
 ```
 
-Expose and allow write tools:
+Chat TUI:
 
 ```bash
-openagent ... --enable-write-tools --allow-write
+localagent --provider lmstudio --model essentialai/rnj-1 chat --tui
 ```
 
-## Trust-Lite
+Copy-friendly TUI (no alternate screen):
 
-Trust modes:
+```bash
+localagent --provider lmstudio --model essentialai/rnj-1 chat --tui --plain-tui
+```
+
+Chat TUI controls:
+
+- `Esc` quit
+- `Ctrl+1/2/3` toggle tools/approvals/logs panes
+- `PgUp/PgDn`, `Ctrl+U/Ctrl+D`, mouse wheel: transcript scroll
+- `Ctrl+J/K` select approval, `Ctrl+A` approve, `Ctrl+X` deny, `Ctrl+R` refresh
+- `/` opens slash command dropdown (Up/Down + Enter)
+- `?` opens keybinds dropdown
+
+Auto mode (no args): discovers a local provider and opens chat TUI.
+
+```bash
+localagent
+```
+
+## Providers
+
+- `lmstudio` default: `http://localhost:1234/v1`
+- `llamacpp` default: `http://localhost:8080/v1`
+- `ollama` default: `http://localhost:11434`
+
+## Safety Defaults
 
 - `--trust off`
-- `--trust auto`
-- `--trust on`
+- `--enable-write-tools` off
+- `--allow-write` off
+- `--allow-shell` off
+- output truncation limits on
 
-Approval behavior:
-
-- `--approval-mode interrupt` (default)
-- `--approval-mode fail` (CI-friendly fail-fast)
-- `--approval-mode auto`
-
-Auto-approve scope:
-
-- `--auto-approve-scope run`
-- `--auto-approve-scope session`
-
-Recommended non-interrupting safe flow:
-
-```bash
-openagent ... --trust on --approval-mode auto --auto-approve-scope run
-```
-
-## Approvals Commands
-
-```bash
-openagent approvals list
-openagent approvals prune
-openagent approve <id> [--ttl-hours 24] [--max-uses 10]
-openagent deny <id>
-```
-
-## State Directory
+## State + Templates
 
 Default state dir: `<workdir>/.openagent`
 
-Files:
-
-- `policy.yaml`
-- `approvals.json`
-- `audit.jsonl`
-- `runs/<run_id>.json`
-- `sessions/<name>.json`
-
-Compatibility:
-
-- If `.openagent` does not exist but `.agentloop` does, OpenAgent uses `.agentloop` and prints a warning.
-- Override explicitly with:
-
 ```bash
-openagent ... --state-dir /path/to/state
+localagent init
+localagent init --print
+localagent template list
+localagent template show instructions.yaml
+localagent template write policy.yaml --out .openagent/policy.yaml --force
 ```
 
-## Sessions
+## Instructions Profiles
+
+`localagent init` now scaffolds `.openagent/instructions.yaml`.
+
+Use task/model overlays:
 
 ```bash
-openagent ... --session default
-openagent ... --reset-session
-openagent ... --no-session
-openagent ... --max-session-messages 40
+localagent --provider lmstudio --model essentialai/rnj-1 --task-kind summarize --prompt "read README.md and summarize" run
+localagent --provider lmstudio --model essentialai/rnj-1 --instruction-model-profile essentialai_rnj_tool_discipline --task-kind summarize --prompt "read README.md and summarize" run
 ```
 
-## Runs and Replay
-
-Each run is written to:
-
-- `<state_dir>/runs/<run_id>.json`
-
-Replay:
+## Trust + Approvals
 
 ```bash
-openagent replay <run_id>
+localagent --provider lmstudio --model essentialai/rnj-1 --trust on --approval-mode auto --auto-approve-scope run --prompt "..." run
+localagent approvals list
+localagent approve <id> [--ttl-hours 24] [--max-uses 10]
+localagent deny <id>
 ```
 
-Replay header includes:
-
-- run id, provider, model, exit reason
-- policy hash
-- config hash
-- approval/unsafe mode fields
-
-## VM / Lab Mode
-
-Disable output limits (unsafe):
+## Replay
 
 ```bash
-openagent ... --unsafe --no-limits
-```
-
-Optionally bypass shell/write allow flags (still does not auto-expose write tools):
-
-```bash
-openagent ... --unsafe --unsafe-bypass-allow-flags
+localagent replay <run_id>
+localagent replay verify <run_id>
 ```
 
 ## Help
 
 ```bash
-openagent --help
-openagent approvals --help
+localagent --help
+localagent chat --help
+localagent eval --help
 ```
+
+## Docs
+
+- Install: `docs/INSTALL.md`
+- Templates: `docs/TEMPLATES.md`
+- Release notes: `docs/RELEASE_NOTES_v0.1.0.md`

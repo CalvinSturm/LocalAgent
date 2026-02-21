@@ -180,6 +180,16 @@ pub struct RunCliConfig {
     pub includes_resolved: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_allowlist: Option<McpAllowSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions_config_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions_config_hash_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_model_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_task_profile: Option<String>,
+    #[serde(default)]
+    pub instruction_message_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +271,11 @@ pub struct ConfigFingerprintV1 {
     pub policy_version: Option<u32>,
     pub includes_resolved: Vec<String>,
     pub mcp_allowlist: Option<McpAllowSummary>,
+    pub instructions_config_path: String,
+    pub instructions_config_hash_hex: String,
+    pub instruction_model_profile: String,
+    pub instruction_task_profile: String,
+    pub instruction_message_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -779,6 +794,11 @@ mod tests {
                 policy_version: None,
                 includes_resolved: Vec::new(),
                 mcp_allowlist: None,
+                instructions_config_path: None,
+                instructions_config_hash_hex: None,
+                instruction_model_profile: None,
+                instruction_task_profile: None,
+                instruction_message_count: 0,
             },
             PolicyRecordInfo {
                 source: "none".to_string(),
@@ -920,6 +940,11 @@ mod tests {
                 policy_version: None,
                 includes_resolved: Vec::new(),
                 mcp_allowlist: None,
+                instructions_config_path: None,
+                instructions_config_hash_hex: None,
+                instruction_model_profile: None,
+                instruction_task_profile: None,
+                instruction_message_count: 0,
             },
             resolved_paths: RunResolvedPaths {
                 state_dir: ".".to_string(),
@@ -1039,6 +1064,11 @@ mod tests {
             policy_version: None,
             includes_resolved: Vec::new(),
             mcp_allowlist: None,
+            instructions_config_path: String::new(),
+            instructions_config_hash_hex: String::new(),
+            instruction_model_profile: String::new(),
+            instruction_task_profile: String::new(),
+            instruction_message_count: 0,
         };
         let b = a.clone();
         let ha = config_hash_hex(&a).expect("hash a");

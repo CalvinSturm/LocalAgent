@@ -447,6 +447,12 @@ mod tests {
     use crate::store::ToolCatalogEntry;
     use crate::types::SideEffects;
     use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn snapshot_hash_is_deterministic() {
@@ -489,6 +495,7 @@ mod tests {
 
     #[test]
     fn safe_env_fingerprint_is_stable() {
+        let _guard = env_test_lock().lock().expect("lock");
         let a = env_fingerprint(ReproEnvMode::Safe).expect("fp");
         let b = env_fingerprint(ReproEnvMode::Safe).expect("fp");
         assert_eq!(a, b);
@@ -496,6 +503,7 @@ mod tests {
 
     #[test]
     fn all_env_mode_excludes_secret_keys() {
+        let _guard = env_test_lock().lock().expect("lock");
         std::env::set_var("OPENAGENT_VISIBLE", "1");
         std::env::set_var("MY_SECRET_TOKEN", "x");
         let fp = env_fingerprint(ReproEnvMode::All).expect("fp");
