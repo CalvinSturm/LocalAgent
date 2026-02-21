@@ -2427,6 +2427,7 @@ fn keybinds_overlay_text() -> Option<String> {
 }
 
 fn localagent_banner(_tick: u64) -> String {
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
     let raw = r#"
 ██╗      █████╗  █████╗  █████╗ ██╗      █████╗  ██████╗ ███████╗███╗  ██╗████████╗
 ██║     ██╔══██╗██╔══██╗██╔══██╗██║     ██╔══██╗██╔════╝ ██╔════╝████╗ ██║╚══██╔══╝
@@ -2435,7 +2436,10 @@ fn localagent_banner(_tick: u64) -> String {
 ███████╗╚█████╔╝╚█████╔╝██║  ██║███████╗██║  ██║╚██████╔╝███████╗██║ ╚███║   ██║   
 ╚══════╝ ╚════╝  ╚════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚══╝   ╚═╝   
                                                                             v0.1.0"#;
-    raw.lines().collect::<Vec<_>>().join("\n")
+    raw.replace("v0.1.0", &version)
+        .lines()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[allow(clippy::too_many_arguments)]
