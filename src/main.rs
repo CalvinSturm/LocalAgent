@@ -1618,6 +1618,31 @@ async fn run_startup_bootstrap(
                             error_line = None;
                         }
                         KeyCode::Enter => {
+                            if !custom_menu_open {
+                                let prev_enable_web = selections.enable_web;
+                                match selected_idx {
+                                    0 => apply_startup_preset(&mut selections, StartupPreset::Safe),
+                                    1 => apply_startup_preset(&mut selections, StartupPreset::Coding),
+                                    2 => apply_startup_preset(&mut selections, StartupPreset::Web),
+                                    3 => {
+                                        apply_startup_preset(&mut selections, StartupPreset::Custom);
+                                        custom_menu_open = true;
+                                        selected_idx = 1;
+                                        error_line = None;
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
+                                if selections.enable_web != prev_enable_web {
+                                    if selections.enable_web {
+                                        web_status =
+                                            refresh_startup_web_status(base_run, paths, &selections)
+                                                .await;
+                                    } else {
+                                        web_status = StartupWebStatus::NotRequired;
+                                    }
+                                }
+                            }
                             if selections.enable_web {
                                 if let StartupWebStatus::Error(e) = &web_status {
                                     error_line = Some(format!(
@@ -1953,7 +1978,13 @@ fn draw_startup_bootstrap_frame(
     } else {
         for (idx, (label, desc)) in preset_rows.iter().enumerate() {
             let is_selected = idx == selected_idx;
-            let active = is_selected;
+            let active = matches!(
+                (&selections.preset, idx),
+                (StartupPreset::Safe, 0)
+                    | (StartupPreset::Coding, 1)
+                    | (StartupPreset::Web, 2)
+                    | (StartupPreset::Custom, 3)
+            );
             let row_style = if is_selected {
                 Style::default().fg(Color::Black).bg(Color::Yellow)
             } else {
@@ -2100,30 +2131,42 @@ fn draw_startup_bootstrap_frame(
         conn_inner,
     );
 
-    let enter_hint = if provider_ready {
-        "Start chat"
+    let enter_hint = if custom_menu_open {
+        if provider_ready {
+            "Start chat"
+        } else {
+            "Start disabled: no provider detected"
+        }
+    } else if provider_ready {
+        "Select mode + start chat"
     } else {
-        "Start disabled: no provider detected"
+        "Select mode (start disabled: no provider detected)"
     };
+    let mut footer_line: Vec<Span<'static>> = vec![
+        Span::styled("[↑/↓]", Style::default().fg(Color::White)),
+        Span::raw(" "),
+        Span::styled("Navigate", Style::default().fg(Color::White)),
+        Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+    ];
+    if custom_menu_open {
+        footer_line.extend([
+            Span::styled("[Space]", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Toggle option", Style::default().fg(Color::White)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+        ]);
+    }
+    footer_line.extend([
+        Span::styled("[Enter]", Style::default().fg(Color::White)),
+        Span::raw(" "),
+        Span::styled(enter_hint, Style::default().fg(Color::White)),
+    ]);
     let footer_outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(outer[5]);
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("[↑/↓]", Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled("Navigate", Style::default().fg(Color::White)),
-            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[Space]", Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled("Select", Style::default().fg(Color::White)),
-            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[Enter]", Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled(enter_hint, Style::default().fg(Color::White)),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(footer_line)).alignment(ratatui::layout::Alignment::Center),
         footer_outer[0],
     );
     f.render_widget(
@@ -3938,7 +3981,6 @@ fn draw_chat_frame(
     overlay_hint: Option<String>,
 ) {
     let input_display = format!("> {input}");
-    let input_chars = input.chars().count();
     let input_width = f.area().width.saturating_sub(2).max(1) as usize;
     let input_total_lines = wrapped_line_count(&input_display, input_width);
     let max_input_lines = usize::from(f.area().height.saturating_sub(12)).clamp(1, 8);
@@ -4182,21 +4224,6 @@ fn draw_chat_frame(
         Paragraph::new(horizontal_rule(input_box[2].width))
             .style(Style::default().fg(Color::DarkGray)),
         input_box[2],
-    );
-    let input_count_text = format!("[{input_chars} chars]");
-    let input_count_width = input_count_text.chars().count() as u16;
-    let input_count_x = outer[4]
-        .x
-        .saturating_add(outer[4].width.saturating_sub(input_count_width));
-    let input_count_y = input_box[0].y;
-    f.render_widget(
-        Paragraph::new(input_count_text).style(Style::default().fg(Color::DarkGray)),
-        ratatui::layout::Rect {
-            x: input_count_x,
-            y: input_count_y,
-            width: input_count_width.min(outer[4].width),
-            height: 1,
-        },
     );
 
     let footer_left = format!("cwd: {cwd_label}");
