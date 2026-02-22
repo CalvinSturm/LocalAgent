@@ -2539,9 +2539,9 @@ async fn run_chat_tui(
         .unwrap_or_else(|| default_base_url(provider_kind).to_string());
     let cwd_label = normalize_path_for_display(
         std::fs::canonicalize(&base_run.workdir)
-        .or_else(|_| std::env::current_dir())
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| base_run.workdir.display().to_string()),
+            .or_else(|_| std::env::current_dir())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| base_run.workdir.display().to_string()),
     );
     let mut active_run = base_run.clone();
 
@@ -3611,8 +3611,14 @@ fn keybinds_overlay_text() -> Option<String> {
     let mut lines = vec!["keybinds".to_string()];
     let rows = [
         ("Esc", "quit chat"),
-        ("Ctrl+T / Ctrl+Y / Ctrl+G", "toggle tools / approvals / logs"),
-        ("Ctrl+1 / Ctrl+2 / Ctrl+3", "same toggles (terminal-dependent)"),
+        (
+            "Ctrl+T / Ctrl+Y / Ctrl+G",
+            "toggle tools / approvals / logs",
+        ),
+        (
+            "Ctrl+1 / Ctrl+2 / Ctrl+3",
+            "same toggles (terminal-dependent)",
+        ),
         ("PgUp / PgDn", "scroll transcript"),
         ("Ctrl+U / Ctrl+D", "scroll transcript"),
         ("Mouse wheel", "scroll transcript"),
@@ -3645,9 +3651,7 @@ fn localagent_banner(_tick: u64) -> String {
 ╚══════╝ ╚════╝  ╚════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚══╝   ╚═╝   
                                                                             {version}"#
     );
-    raw.lines()
-        .collect::<Vec<_>>()
-        .join("\n")
+    raw.lines().collect::<Vec<_>>().join("\n")
 }
 
 fn horizontal_rule(width: u16) -> String {
@@ -3710,7 +3714,12 @@ fn normalize_path_for_display(path: String) -> String {
     path
 }
 
-fn rotating_status_word<'a>(words: &'a [&'a str], think_tick: u64, refresh_ms: u64, salt: u64) -> &'a str {
+fn rotating_status_word<'a>(
+    words: &'a [&'a str],
+    think_tick: u64,
+    refresh_ms: u64,
+    salt: u64,
+) -> &'a str {
     if words.is_empty() {
         return "";
     }
@@ -3831,7 +3840,11 @@ fn draw_chat_frame(
     let show_hero_banner = show_banner && transcript.is_empty() && streaming_assistant.is_empty();
     let mut chat_text = String::new();
     if show_hero_banner {
-        chat_text.push_str(&centered_multiline(&localagent_banner(ui_tick), mid[0].width, 0));
+        chat_text.push_str(&centered_multiline(
+            &localagent_banner(ui_tick),
+            mid[0].width,
+            0,
+        ));
         chat_text.push_str("\n\n");
         chat_text.push_str(&centered_left_block(
             "+ Type your message and press enter\n+ /help for a list of commands\n+ /mode to switch between Safe, Coding, Web, and Custom modes",
@@ -3960,10 +3973,15 @@ fn draw_chat_frame(
 
     let input_box = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(outer[4]);
     f.render_widget(
-        Paragraph::new(horizontal_rule(input_box[0].width)).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(horizontal_rule(input_box[0].width))
+            .style(Style::default().fg(Color::DarkGray)),
         input_box[0],
     );
     let input_line = Line::from(vec![
@@ -3973,7 +3991,8 @@ fn draw_chat_frame(
     ]);
     f.render_widget(Paragraph::new(input_line), input_box[1]);
     f.render_widget(
-        Paragraph::new(horizontal_rule(input_box[2].width)).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(horizontal_rule(input_box[2].width))
+            .style(Style::default().fg(Color::DarkGray)),
         input_box[2],
     );
 
