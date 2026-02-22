@@ -392,6 +392,13 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
 
 async fn run_list_dir(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    if !path_is_workdir_scoped(path) && !rt.unsafe_bypass_allow_flags {
+        return failed_exec(
+            rt,
+            SideEffects::FilesystemRead,
+            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+        );
+    }
     let out = rt
         .exec_target
         .list_dir(ListReq {
@@ -404,6 +411,13 @@ async fn run_list_dir(rt: &ToolRuntime, args: &Value) -> ToolExecution {
 
 async fn run_read_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    if !path_is_workdir_scoped(path) && !rt.unsafe_bypass_allow_flags {
+        return failed_exec(
+            rt,
+            SideEffects::FilesystemRead,
+            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+        );
+    }
     let out = rt
         .exec_target
         .read_file(ReadReq {
@@ -473,6 +487,21 @@ fn shell_cwd_is_workdir_scoped(args: &Value) -> bool {
     })
 }
 
+fn path_is_workdir_scoped(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        return false;
+    }
+    !p.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    })
+}
+
 async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     if !rt.allow_write && !rt.unsafe_bypass_allow_flags {
         return failed_exec(
@@ -485,6 +514,13 @@ async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
         .get("path")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    if !path_is_workdir_scoped(path) && !rt.unsafe_bypass_allow_flags {
+        return failed_exec(
+            rt,
+            SideEffects::FilesystemWrite,
+            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+        );
+    }
     let content = args
         .get("content")
         .and_then(|v| v.as_str())
@@ -517,6 +553,13 @@ async fn run_apply_patch(rt: &ToolRuntime, args: &Value) -> ToolExecution {
         .get("path")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    if !path_is_workdir_scoped(path) && !rt.unsafe_bypass_allow_flags {
+        return failed_exec(
+            rt,
+            SideEffects::FilesystemWrite,
+            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+        );
+    }
     let patch_text = args
         .get("patch")
         .and_then(|v| v.as_str())
@@ -767,6 +810,59 @@ mod tests {
         let msg = execute_tool(&rt, &tc).await;
         let content = msg.content.expect("content");
         assert!(content.contains("--allow-shell-in-workdir"));
+        assert!(content.contains("\"ok\":false"));
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_path_traversal() {
+        let tmp = tempdir().expect("tempdir");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_read_escape".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"../secret.txt"}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let content = msg.content.expect("content");
+        assert!(content.contains("path must stay within workdir"));
+        assert!(content.contains("\"ok\":false"));
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_absolute_path() {
+        let tmp = tempdir().expect("tempdir");
+        let absolute = tmp.path().join("outside.txt").display().to_string();
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_write_abs".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path":absolute, "content":"hello"}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let content = msg.content.expect("content");
+        assert!(content.contains("path must stay within workdir"));
         assert!(content.contains("\"ok\":false"));
     }
 }

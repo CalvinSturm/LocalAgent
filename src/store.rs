@@ -464,7 +464,17 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
     let tmp_path = path.with_extension(format!("tmp.{}", Uuid::new_v4()));
     let content = serde_json::to_string_pretty(value)?;
     std::fs::write(&tmp_path, content)?;
-    std::fs::rename(&tmp_path, path)?;
+    if let Err(rename_err) = std::fs::rename(&tmp_path, path) {
+        #[cfg(windows)]
+        {
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+                std::fs::rename(&tmp_path, path)?;
+                return Ok(());
+            }
+        }
+        return Err(rename_err.into());
+    }
     Ok(())
 }
 

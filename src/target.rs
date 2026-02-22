@@ -130,11 +130,19 @@ impl ExecTarget for HostTarget {
         for a in &req.args {
             command.arg(a);
         }
-        let cwd = req
-            .cwd
-            .as_deref()
-            .map(|c| resolve_path(&req.workdir, c))
-            .unwrap_or_else(|| req.workdir.clone());
+        let cwd =
+            match req.cwd.as_deref() {
+                Some(cwd_str) => match resolve_path_scoped(&req.workdir, cwd_str) {
+                    Ok(path) => path,
+                    Err(_) => return TargetResult::failed(
+                        ExecTargetKind::Host,
+                        "shell cwd must stay within workdir (no absolute paths or '..' traversal)"
+                            .to_string(),
+                        None,
+                    ),
+                },
+                None => req.workdir.clone(),
+            };
         command.current_dir(cwd);
         match command.output().await {
             Ok(output) => {
@@ -173,7 +181,16 @@ impl ExecTarget for HostTarget {
     }
 
     async fn read_file(&self, req: ReadReq) -> TargetResult {
-        let full = resolve_path(&req.workdir, &req.path);
+        let full =
+            match resolve_path_scoped(&req.workdir, &req.path) {
+                Ok(path) => path,
+                Err(_) => return TargetResult::failed(
+                    ExecTargetKind::Host,
+                    "read_file path must stay within workdir (no absolute paths or '..' traversal)"
+                        .to_string(),
+                    None,
+                ),
+            };
         match tokio::fs::read(&full).await {
             Ok(bytes) => {
                 let raw = String::from_utf8_lossy(&bytes).to_string();
@@ -206,7 +223,16 @@ impl ExecTarget for HostTarget {
     }
 
     async fn list_dir(&self, req: ListReq) -> TargetResult {
-        let full = resolve_path(&req.workdir, &req.path);
+        let full =
+            match resolve_path_scoped(&req.workdir, &req.path) {
+                Ok(path) => path,
+                Err(_) => return TargetResult::failed(
+                    ExecTargetKind::Host,
+                    "list_dir path must stay within workdir (no absolute paths or '..' traversal)"
+                        .to_string(),
+                    None,
+                ),
+            };
         let mut entries = Vec::new();
         match tokio::fs::read_dir(&full).await {
             Ok(mut rd) => loop {
@@ -252,7 +278,15 @@ impl ExecTarget for HostTarget {
     }
 
     async fn write_file(&self, req: WriteReq) -> TargetResult {
-        let full = resolve_path(&req.workdir, &req.path);
+        let full = match resolve_path_scoped(&req.workdir, &req.path) {
+            Ok(path) => path,
+            Err(_) => return TargetResult::failed(
+                ExecTargetKind::Host,
+                "write_file path must stay within workdir (no absolute paths or '..' traversal)"
+                    .to_string(),
+                None,
+            ),
+        };
         if req.create_parents {
             if let Some(parent) = full.parent() {
                 if let Err(e) = tokio::fs::create_dir_all(parent).await {
@@ -287,7 +321,15 @@ impl ExecTarget for HostTarget {
     }
 
     async fn apply_patch(&self, req: PatchReq) -> TargetResult {
-        let full = resolve_path(&req.workdir, &req.path);
+        let full = match resolve_path_scoped(&req.workdir, &req.path) {
+            Ok(path) => path,
+            Err(_) => return TargetResult::failed(
+                ExecTargetKind::Host,
+                "apply_patch path must stay within workdir (no absolute paths or '..' traversal)"
+                    .to_string(),
+                None,
+            ),
+        };
         let original_bytes = match tokio::fs::read(&full).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -493,6 +535,14 @@ impl ExecTarget for DockerTarget {
             .collect::<Vec<_>>()
             .join(" ");
         let cwd = req.cwd.unwrap_or_else(|| ".".to_string());
+        if !path_is_workdir_scoped(&cwd) {
+            return TargetResult::failed(
+                ExecTargetKind::Docker,
+                "shell cwd must stay within workdir (no absolute paths or '..' traversal)"
+                    .to_string(),
+                Some(self.meta.clone()),
+            );
+        }
         let script = format!(
             "cd {} && {} {}",
             shell_escape(&cwd),
@@ -504,6 +554,14 @@ impl ExecTarget for DockerTarget {
     }
 
     async fn read_file(&self, req: ReadReq) -> TargetResult {
+        if !path_is_workdir_scoped(&req.path) {
+            return TargetResult::failed(
+                ExecTargetKind::Docker,
+                "read_file path must stay within workdir (no absolute paths or '..' traversal)"
+                    .to_string(),
+                Some(self.meta.clone()),
+            );
+        }
         let script = format!("cat -- {}", shell_escape(&req.path));
         let mut out = self
             .run_container(&req.workdir, &script, None, req.max_read_bytes)
@@ -540,6 +598,14 @@ impl ExecTarget for DockerTarget {
     }
 
     async fn list_dir(&self, req: ListReq) -> TargetResult {
+        if !path_is_workdir_scoped(&req.path) {
+            return TargetResult::failed(
+                ExecTargetKind::Docker,
+                "list_dir path must stay within workdir (no absolute paths or '..' traversal)"
+                    .to_string(),
+                Some(self.meta.clone()),
+            );
+        }
         let script = format!(
             "for p in {}/*; do [ -e \"$p\" ] || continue; n=$(basename \"$p\"); if [ -d \"$p\" ]; then d=true; else d=false; fi; l=$(wc -c < \"$p\" 2>/dev/null || echo 0); printf '%s\\t%s\\t%s\\n' \"$n\" \"$d\" \"$l\"; done",
             shell_escape(&req.path)
@@ -583,6 +649,14 @@ impl ExecTarget for DockerTarget {
     }
 
     async fn write_file(&self, req: WriteReq) -> TargetResult {
+        if !path_is_workdir_scoped(&req.path) {
+            return TargetResult::failed(
+                ExecTargetKind::Docker,
+                "write_file path must stay within workdir (no absolute paths or '..' traversal)"
+                    .to_string(),
+                Some(self.meta.clone()),
+            );
+        }
         let prep = if req.create_parents {
             format!(
                 "mkdir -p $(dirname -- {}) && cat > {}",
@@ -604,6 +678,14 @@ impl ExecTarget for DockerTarget {
     }
 
     async fn apply_patch(&self, req: PatchReq) -> TargetResult {
+        if !path_is_workdir_scoped(&req.path) {
+            return TargetResult::failed(
+                ExecTargetKind::Docker,
+                "apply_patch path must stay within workdir (no absolute paths or '..' traversal)"
+                    .to_string(),
+                Some(self.meta.clone()),
+            );
+        }
         let script = format!(
             "patch -u {} <<'OPENAGENT_PATCH'\n{}\nOPENAGENT_PATCH",
             shell_escape(&req.path),
@@ -630,6 +712,30 @@ pub fn resolve_path(workdir: &Path, input: &str) -> PathBuf {
     }
 }
 
+fn resolve_path_scoped(workdir: &Path, input: &str) -> anyhow::Result<PathBuf> {
+    if !path_is_workdir_scoped(input) {
+        return Err(anyhow!(
+            "path must stay within workdir (no absolute paths or '..' traversal)"
+        ));
+    }
+    Ok(resolve_path(workdir, input))
+}
+
+fn path_is_workdir_scoped(path: &str) -> bool {
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        return false;
+    }
+    !p.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    })
+}
+
 fn truncate_utf8_to_bytes(input: &str, max_bytes: usize) -> (String, bool) {
     if max_bytes == 0 {
         return (input.to_string(), false);
@@ -650,12 +756,54 @@ fn shell_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ExecTargetKind;
+    use std::path::PathBuf;
+
+    use super::{resolve_path_scoped, ExecTargetKind, HostTarget, ReadReq, ShellReq};
+    use crate::target::ExecTarget;
     use clap::ValueEnum;
 
     #[test]
     fn exec_target_kind_parse() {
         assert!(ExecTargetKind::from_str("host", true).is_ok());
         assert!(ExecTargetKind::from_str("docker", true).is_ok());
+    }
+
+    #[test]
+    fn resolve_path_scoped_rejects_parent_and_absolute() {
+        let workdir = PathBuf::from("workspace");
+        assert!(resolve_path_scoped(&workdir, "../x").is_err());
+        assert!(resolve_path_scoped(&workdir, "ok/file.txt").is_ok());
+        let abs = if cfg!(windows) { "C:\\x" } else { "/x" };
+        assert!(resolve_path_scoped(&workdir, abs).is_err());
+    }
+
+    #[tokio::test]
+    async fn host_target_rejects_read_path_traversal() {
+        let target = HostTarget;
+        let out = target
+            .read_file(ReadReq {
+                workdir: PathBuf::from("."),
+                path: "../secret.txt".to_string(),
+                max_read_bytes: 200_000,
+            })
+            .await;
+        assert!(!out.ok);
+        assert!(out.content.contains("must stay within workdir"));
+    }
+
+    #[tokio::test]
+    async fn host_target_rejects_shell_cwd_traversal() {
+        let target = HostTarget;
+        let out = target
+            .exec_shell(ShellReq {
+                workdir: PathBuf::from("."),
+                cmd: "echo".to_string(),
+                args: vec!["hi".to_string()],
+                cwd: Some("../".to_string()),
+                max_tool_output_bytes: 200_000,
+            })
+            .await;
+        assert!(!out.ok);
+        assert!(out.content.contains("must stay within workdir"));
     }
 }

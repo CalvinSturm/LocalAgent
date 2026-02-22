@@ -341,7 +341,17 @@ impl ApprovalsStore {
             .with_extension(format!("tmp.{}", Uuid::new_v4().as_hyphenated()));
         let content = serde_json::to_string_pretty(data)?;
         std::fs::write(&tmp_path, content)?;
-        std::fs::rename(&tmp_path, &self.path)?;
+        if let Err(rename_err) = std::fs::rename(&tmp_path, &self.path) {
+            #[cfg(windows)]
+            {
+                if self.path.exists() {
+                    let _ = std::fs::remove_file(&self.path);
+                    std::fs::rename(&tmp_path, &self.path)?;
+                    return Ok(());
+                }
+            }
+            return Err(rename_err.into());
+        }
         Ok(())
     }
 }

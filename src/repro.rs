@@ -257,9 +257,22 @@ fn filtered_env(mode: ReproEnvMode) -> BTreeMap<String, String> {
 
 fn looks_secret_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
-    ["KEY", "TOKEN", "SECRET", "PASS", "PWD"]
-        .iter()
-        .any(|s| upper.contains(s))
+    [
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASS",
+        "PWD",
+        "CREDENTIAL",
+        "COOKIE",
+        "SESSION",
+        "AUTH",
+        "BEARER",
+        "PRIVATE",
+        "_PAT",
+    ]
+    .iter()
+    .any(|s| upper.contains(s))
 }
 
 fn hostname() -> Option<String> {
@@ -441,8 +454,8 @@ pub fn stable_workdir_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_repro_record, env_fingerprint, repro_hash_hex, ReproBuildInput, ReproEnvMode,
-        ReproMode,
+        build_repro_record, env_fingerprint, looks_secret_key, repro_hash_hex, ReproBuildInput,
+        ReproEnvMode, ReproMode,
     };
     use crate::store::ToolCatalogEntry;
     use crate::types::SideEffects;
@@ -508,5 +521,13 @@ mod tests {
         std::env::set_var("MY_SECRET_TOKEN", "x");
         let fp = env_fingerprint(ReproEnvMode::All).expect("fp");
         assert!(fp.is_some());
+    }
+
+    #[test]
+    fn secret_key_detection_covers_more_token_shapes() {
+        assert!(looks_secret_key("DB_CREDENTIAL"));
+        assert!(looks_secret_key("GITHUB_PAT"));
+        assert!(looks_secret_key("SESSION_COOKIE"));
+        assert!(!looks_secret_key("PATH"));
     }
 }

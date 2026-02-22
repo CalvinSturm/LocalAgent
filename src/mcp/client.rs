@@ -31,6 +31,10 @@ impl McpClient {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("failed to open MCP stdout for '{name}'"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("failed to open MCP stderr for '{name}'"))?;
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_reader = Arc::clone(&pending);
@@ -59,6 +63,10 @@ impl McpClient {
                     Err(_) => break,
                 }
             }
+        });
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(_line)) = reader.next_line().await {}
         });
 
         Ok(Self {
@@ -126,10 +134,19 @@ impl McpClient {
             stdin.flush().await.context("failed to flush MCP request")?;
         }
 
-        let msg = tokio::time::timeout(timeout, rx)
-            .await
-            .map_err(|_| anyhow!("MCP call timed out for method '{method}'"))?
-            .map_err(|_| anyhow!("MCP response channel closed for method '{method}'"))?;
+        let msg = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(_)) => {
+                let mut map = self.pending.lock().await;
+                map.remove(&id);
+                return Err(anyhow!("MCP response channel closed for method '{method}'"));
+            }
+            Err(_) => {
+                let mut map = self.pending.lock().await;
+                map.remove(&id);
+                return Err(anyhow!("MCP call timed out for method '{method}'"));
+            }
+        };
 
         if let Some(err) = msg.get("error") {
             return Err(anyhow!("MCP error for method '{}': {}", method, err));
@@ -187,5 +204,44 @@ fn spawn_mcp_process(name: &str, command: &str, args: &[String]) -> anyhow::Resu
 impl Drop for McpClient {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::McpClient;
+
+    #[cfg(windows)]
+    fn sleep_command() -> (String, Vec<String>) {
+        (
+            "powershell".to_string(),
+            vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                "Start-Sleep -Seconds 5".to_string(),
+            ],
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn sleep_command() -> (String, Vec<String>) {
+        (
+            "sh".to_string(),
+            vec!["-c".to_string(), "sleep 5".to_string()],
+        )
+    }
+
+    #[tokio::test]
+    async fn timeout_cleans_pending_request() {
+        let (command, args) = sleep_command();
+        let client = McpClient::spawn("timeout-test", &command, &args)
+            .await
+            .expect("spawn");
+        let result = client.tools_list(Duration::from_millis(25)).await;
+        assert!(result.is_err());
+        let pending_len = client.pending.lock().await.len();
+        assert_eq!(pending_len, 0);
     }
 }
