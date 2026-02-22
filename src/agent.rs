@@ -148,7 +148,7 @@ pub struct Agent<P: ModelProvider> {
     pub tool_rt: ToolRuntime,
     pub gate: Box<dyn ToolGate>,
     pub gate_ctx: GateContext,
-    pub mcp_registry: Option<McpRegistry>,
+    pub mcp_registry: Option<std::sync::Arc<McpRegistry>>,
     pub stream: bool,
     pub event_sink: Option<Box<dyn EventSink>>,
     pub compaction_settings: CompactionSettings,
@@ -1841,6 +1841,7 @@ mod tests {
             tool_rt: ToolRuntime {
                 workdir: std::env::current_dir().expect("cwd"),
                 allow_shell: false,
+                allow_shell_in_workdir_only: false,
                 allow_write: false,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
@@ -1921,6 +1922,7 @@ mod tests {
             tool_rt: ToolRuntime {
                 workdir: std::env::current_dir().expect("cwd"),
                 allow_shell: false,
+                allow_shell_in_workdir_only: false,
                 allow_write: false,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
@@ -2083,6 +2085,7 @@ mod tests {
             tool_rt: ToolRuntime {
                 workdir: tmp.path().to_path_buf(),
                 allow_shell: false,
+                allow_shell_in_workdir_only: false,
                 allow_write: false,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,

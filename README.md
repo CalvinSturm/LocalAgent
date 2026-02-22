@@ -33,6 +33,27 @@ Binary:
 cargo install --path . --force
 ```
 
+### Updating an existing install (Windows users especially)
+
+From the repo root, reinstall with:
+
+```bash
+cargo install --path . --force
+```
+
+If Windows reports a `failed to move ... localagent.exe` error, the previous `localagent.exe` is still running or locked.
+
+- Close any `localagent` sessions (especially TUI windows)
+- Close terminals using `localagent`
+- Run the install command again
+
+Verify the active binary/version:
+
+```powershell
+Get-Command localagent
+localagent version
+```
+
 ### Option 3: GitHub releases
 
 Download the correct `localagent-<OS>-<tag>` asset from Releases and place it on your `PATH`.
@@ -92,6 +113,15 @@ localagent --provider lmstudio --model essentialai/rnj-1 chat --tui
 ```bash
 localagent
 ```
+
+Startup screen controls:
+
+- `↑/↓`: move selection
+- `Space`: select option / toggle custom option
+- `Enter`: start chat when provider is connected
+- `R`: refresh provider detection
+- `D`: toggle provider details
+- `Esc`: quit
 
 ## Providers
 
@@ -167,7 +197,15 @@ In chat TUI:
 - `Ctrl+X`: deny selected request
 - `Ctrl+R`: refresh approvals
 - `/`: open slash-command dropdown
+- `/mode <safe|coding|web|custom>`: switch chat runtime mode
+- `/timeout [seconds|+N|-N]`: show and adjust request/stream idle timeout for slow generations
+- `/dismiss`: dismiss active timeout notification
 - `?`: show keybind help dropdown
+
+Mode naming note:
+
+- Use `/mode coding` in commands.
+- The header label for that mode is shown as `Code`.
 
 ## Sessions and Memory
 
@@ -302,7 +340,7 @@ localagent doctor --provider ollama
 - CLI reference: `docs/CLI_REFERENCE.md`
 - Provider setup: `docs/LLM_SETUP.md`
 - Contributing: `CONTRIBUTING.md`
-- Release notes: `docs/RELEASE_NOTES_v0.1.0.md`
+- Release notes: `docs/RELEASE_NOTES_v0.1.2.md`
 - Changelog: `CHANGELOG.md`
 - Security policy: `SECURITY.md`
 - Code of conduct: `CODE_OF_CONDUCT.md`

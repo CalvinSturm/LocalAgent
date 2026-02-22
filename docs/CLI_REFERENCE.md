@@ -305,6 +305,28 @@ TUI chat:
 localagent --provider lmstudio --model <model> chat --tui
 ```
 
+Chat TUI slash commands:
+
+- `/help`
+- `/mode`
+- `/mode safe`
+- `/mode coding`
+- `/mode web`
+- `/mode custom`
+- `/timeout`
+- `/timeout <seconds|+N|-N>`
+- `/dismiss`
+- `/clear`
+- `/exit`
+- `/hide tools|approvals|logs`
+- `/show tools|approvals|logs|all`
+
+Mode naming note:
+
+- `/mode coding` is the command token.
+- Header label displays as `Code`.
+- `/timeout` updates request and stream-idle timeout together (connect timeout is unchanged).
+
 ---
 
 For provider install/setup walkthroughs, see `docs/LLM_SETUP.md`.

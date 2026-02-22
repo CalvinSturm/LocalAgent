@@ -3,7 +3,7 @@
 ## From Source
 
 ```bash
-cargo install --path .
+cargo install --path . --force
 ```
 
 Then bootstrap state/config:
@@ -13,6 +13,26 @@ localagent init
 ```
 
 Primary command is `localagent`.
+
+## Updating / Reinstalling (Important)
+
+When upgrading between versions, re-install the binary from the repo root:
+
+```bash
+cargo install --path . --force
+```
+
+Windows note:
+
+- If you see a `failed to move ... localagent.exe` error, the old binary is usually still running.
+- Close any `localagent` TUI/chat sessions and terminals using it, then re-run the install command.
+
+You can verify which binary is being used:
+
+```powershell
+Get-Command localagent
+localagent version
+```
 
 ## From GitHub Releases
 

@@ -66,7 +66,8 @@ use providers::ModelProvider;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
 use ratatui::Terminal;
 use repro::{render_verify_report, verify_run_record, ReproEnvMode, ReproMode};
 use reqwest::Client;
@@ -628,6 +629,12 @@ struct RunArgs {
     mcp_config: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     allow_shell: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Allow shell tool only when cwd is omitted or a non-escaping relative path under the current workdir (command content is not sandboxed)"
+    )]
+    allow_shell_in_workdir: bool,
     #[arg(long, default_value_t = false)]
     allow_write: bool,
     #[arg(long, default_value_t = false)]
@@ -1357,20 +1364,7 @@ async fn main() -> anyhow::Result<()> {
         && cli.run.model.is_none()
         && cli.run.prompt.is_none()
     {
-        let (provider, model, base_url) =
-            discover_local_default(http_config_from_run_args(&cli.run)).await?;
-        let mut auto_run = cli.run.clone();
-        auto_run.provider = Some(provider);
-        auto_run.model = Some(model);
-        auto_run.base_url = Some(base_url);
-        auto_run.tui = true;
-        auto_run.stream = false;
-        let chat = ChatArgs {
-            tui: true,
-            plain_tui: false,
-            no_banner: false,
-        };
-        run_chat_tui(&chat, &auto_run, &paths).await?;
+        run_startup_bootstrap(&cli.run, &paths).await?;
         return Ok(());
     }
 
@@ -1470,6 +1464,703 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct StartupDetection {
+    provider: Option<ProviderKind>,
+    model: Option<String>,
+    base_url: Option<String>,
+    status_line: String,
+}
+
+#[derive(Debug, Clone)]
+enum StartupWebStatus {
+    NotRequired,
+    Ready { tool_count: usize },
+    Error(String),
+}
+
+#[derive(Debug, Clone)]
+enum StartupPreset {
+    Safe,
+    Coding,
+    Web,
+    Custom,
+}
+
+#[derive(Debug, Clone)]
+struct StartupSelections {
+    preset: StartupPreset,
+    enable_write_tools: bool,
+    allow_write: bool,
+    allow_shell: bool,
+    enable_web: bool,
+    plain_tui: bool,
+}
+
+impl Default for StartupSelections {
+    fn default() -> Self {
+        Self {
+            preset: StartupPreset::Safe,
+            enable_write_tools: false,
+            allow_write: false,
+            allow_shell: false,
+            enable_web: false,
+            plain_tui: false,
+        }
+    }
+}
+
+async fn run_startup_bootstrap(
+    base_run: &RunArgs,
+    paths: &store::StatePaths,
+) -> anyhow::Result<()> {
+    let mut detection = detect_startup_provider(http_config_from_run_args(base_run)).await;
+    let mut selections = StartupSelections::default();
+    let mut web_status = refresh_startup_web_status(base_run, paths, &selections).await;
+    let mut selected_idx = 0usize;
+    let mut custom_menu_open = false;
+    let mut provider_details_open = false;
+    let mut tick = 0u64;
+    let mut error_line: Option<String> = None;
+
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let run_result: anyhow::Result<Option<(ChatArgs, RunArgs)>> = async {
+        loop {
+            terminal.draw(|f| {
+                draw_startup_bootstrap_frame(
+                    f,
+                    &detection,
+                    &selections,
+                    &web_status,
+                    selected_idx,
+                    custom_menu_open,
+                    provider_details_open,
+                    tick,
+                    error_line.as_deref(),
+                );
+            })?;
+
+            if event::poll(Duration::from_millis(120))? {
+                match event::read()? {
+                    CEvent::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                        KeyCode::Esc => return Ok(None),
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            return Ok(None)
+                        }
+                        KeyCode::Up => selected_idx = selected_idx.saturating_sub(1),
+                        KeyCode::Down => {
+                            let max_idx = if custom_menu_open { 5 } else { 3 };
+                            selected_idx = (selected_idx + 1).min(max_idx);
+                        }
+                        KeyCode::Char(' ') => {
+                            let was_custom_menu_open = custom_menu_open;
+                            let prev_enable_web = selections.enable_web;
+                            if let Some(err) = toggle_startup_selection(
+                                &mut selections,
+                                selected_idx,
+                                &mut custom_menu_open,
+                            ) {
+                                error_line = Some(err);
+                            } else {
+                                if !was_custom_menu_open && custom_menu_open {
+                                    selected_idx = 1;
+                                } else if was_custom_menu_open && !custom_menu_open {
+                                    selected_idx = 3;
+                                } else if custom_menu_open {
+                                    selected_idx = selected_idx.min(5);
+                                } else {
+                                    selected_idx = selected_idx.min(3);
+                                }
+                                if selections.enable_web != prev_enable_web {
+                                    if selections.enable_web {
+                                        web_status = refresh_startup_web_status(
+                                            base_run,
+                                            paths,
+                                            &selections,
+                                        )
+                                        .await;
+                                    } else {
+                                        web_status = StartupWebStatus::NotRequired;
+                                    }
+                                }
+                                error_line = None;
+                            }
+                        }
+                        KeyCode::Char('r') | KeyCode::Char('R') => {
+                            detection = detect_startup_provider(http_config_from_run_args(base_run)).await;
+                            web_status = refresh_startup_web_status(base_run, paths, &selections).await;
+                            error_line = None;
+                        }
+                        KeyCode::Char('d') | KeyCode::Char('D') => {
+                            provider_details_open = !provider_details_open;
+                        }
+                        KeyCode::Char('p') | KeyCode::Char('P') => {
+                            let prev_enable_web = selections.enable_web;
+                            selections.preset = StartupPreset::Custom;
+                            selections.enable_write_tools = true;
+                            selections.allow_write = true;
+                            selections.allow_shell = true;
+                            selections.enable_web = true;
+                            selections.plain_tui = false;
+                            custom_menu_open = true;
+                            selected_idx = 1;
+                            if selections.enable_web != prev_enable_web {
+                                web_status =
+                                    refresh_startup_web_status(base_run, paths, &selections).await;
+                            }
+                            error_line = None;
+                        }
+                        KeyCode::Enter => {
+                            if selections.enable_web {
+                                if let StartupWebStatus::Error(e) = &web_status {
+                                    error_line = Some(format!(
+                                        "Web preset is enabled but Playwright MCP is not ready: {e}"
+                                    ));
+                                    continue;
+                                }
+                            }
+                            let Some(provider) = detection.provider else {
+                                error_line = Some(
+                                    "No local provider detected yet. Start LM Studio/Ollama/llama.cpp, then press R."
+                                        .to_string(),
+                                );
+                                continue;
+                            };
+                            let Some(model) = detection.model.clone() else {
+                                error_line = Some(
+                                    "Provider detected but no model found. Load a model locally, then press R."
+                                        .to_string(),
+                                );
+                                continue;
+                            };
+                            let mut auto_run = base_run.clone();
+                            auto_run.provider = Some(provider);
+                            auto_run.model = Some(model);
+                            auto_run.base_url = detection.base_url.clone();
+                            auto_run.tui = true;
+                            auto_run.stream = false;
+                            auto_run.enable_write_tools = selections.enable_write_tools;
+                            auto_run.allow_write = selections.allow_write;
+                            auto_run.allow_shell = selections.allow_shell;
+                            if selections.enable_web
+                                && !auto_run.mcp.iter().any(|m| m == "playwright")
+                            {
+                                auto_run.mcp.push("playwright".to_string());
+                            }
+                            let chat = ChatArgs {
+                                tui: true,
+                                plain_tui: selections.plain_tui,
+                                no_banner: false,
+                            };
+                            return Ok(Some((chat, auto_run)));
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            tick = tick.saturating_add(1);
+        }
+    }
+    .await;
+
+    let mut cleanup_err: Option<anyhow::Error> = None;
+    if let Err(e) = disable_raw_mode() {
+        cleanup_err = Some(anyhow!(e));
+    }
+    if let Err(e) = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    ) {
+        if cleanup_err.is_none() {
+            cleanup_err = Some(anyhow!(e));
+        }
+    }
+    if let Err(e) = terminal.show_cursor() {
+        if cleanup_err.is_none() {
+            cleanup_err = Some(anyhow!(e));
+        }
+    }
+
+    let next = run_result?;
+    if let Some(e) = cleanup_err {
+        return Err(e);
+    }
+    if let Some((chat, run)) = next {
+        run_chat_tui(&chat, &run, paths).await?;
+    }
+    Ok(())
+}
+
+async fn refresh_startup_web_status(
+    base_run: &RunArgs,
+    paths: &store::StatePaths,
+    selections: &StartupSelections,
+) -> StartupWebStatus {
+    if !selections.enable_web {
+        return StartupWebStatus::NotRequired;
+    }
+    let mut probe_args = base_run.clone();
+    if !probe_args.mcp.iter().any(|m| m == "playwright") {
+        probe_args.mcp.push("playwright".to_string());
+    }
+    let mcp_config_path = resolved_mcp_config_path(&probe_args, &paths.state_dir);
+    match mcp_doctor_server(&mcp_config_path, "playwright").await {
+        Ok(tool_count) => StartupWebStatus::Ready { tool_count },
+        Err(e) => StartupWebStatus::Error(e.to_string()),
+    }
+}
+
+fn apply_startup_preset(selections: &mut StartupSelections, preset: StartupPreset) {
+    selections.preset = preset.clone();
+    match preset {
+        StartupPreset::Safe => {
+            selections.enable_write_tools = false;
+            selections.allow_write = false;
+            selections.allow_shell = false;
+            selections.enable_web = false;
+            selections.plain_tui = false;
+        }
+        StartupPreset::Coding => {
+            selections.enable_write_tools = true;
+            selections.allow_write = true;
+            selections.allow_shell = true;
+            selections.enable_web = false;
+            selections.plain_tui = false;
+        }
+        StartupPreset::Web => {
+            selections.enable_write_tools = false;
+            selections.allow_write = false;
+            selections.allow_shell = false;
+            selections.enable_web = true;
+            selections.plain_tui = false;
+        }
+        StartupPreset::Custom => {}
+    }
+}
+
+fn toggle_startup_selection(
+    selections: &mut StartupSelections,
+    idx: usize,
+    custom_menu_open: &mut bool,
+) -> Option<String> {
+    if *custom_menu_open {
+        match idx {
+            0 => *custom_menu_open = false,
+            1 => selections.enable_write_tools = !selections.enable_write_tools,
+            2 => selections.allow_write = !selections.allow_write,
+            3 => selections.allow_shell = !selections.allow_shell,
+            4 => selections.enable_web = !selections.enable_web,
+            5 => selections.plain_tui = !selections.plain_tui,
+            _ => {}
+        }
+        return None;
+    }
+
+    match idx {
+        0 => apply_startup_preset(selections, StartupPreset::Safe),
+        1 => apply_startup_preset(selections, StartupPreset::Coding),
+        2 => apply_startup_preset(selections, StartupPreset::Web),
+        3 => {
+            apply_startup_preset(selections, StartupPreset::Custom);
+            *custom_menu_open = true;
+        }
+        _ => {}
+    }
+    None
+}
+
+fn draw_startup_bootstrap_frame(
+    f: &mut ratatui::Frame<'_>,
+    detection: &StartupDetection,
+    selections: &StartupSelections,
+    web_status: &StartupWebStatus,
+    selected_idx: usize,
+    custom_menu_open: bool,
+    provider_details_open: bool,
+    tick: u64,
+    error_line: Option<&str>,
+) {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(16),
+            Constraint::Length(1),
+            Constraint::Length(2),
+        ])
+        .split(f.area());
+
+    let provider_name = detection
+        .provider
+        .map(provider_cli_name)
+        .unwrap_or("not detected");
+    let model_name = detection.model.as_deref().unwrap_or("not detected");
+    f.render_widget(
+        Paragraph::new(horizontal_rule(outer[0].width)).style(Style::default().fg(Color::DarkGray)),
+        outer[0],
+    );
+
+    let base_url = detection.base_url.as_deref().unwrap_or("-");
+    let mut detected_text = format!(
+        "Provider: {}\nModel: {}\nBase URL: {}\n{}",
+        provider_name, model_name, base_url, detection.status_line
+    );
+    match web_status {
+        StartupWebStatus::NotRequired => {
+            detected_text.push_str("\nWeb/MCP: not enabled");
+        }
+        StartupWebStatus::Ready { tool_count } => {
+            detected_text.push_str(&format!(
+                "\nWeb/MCP: playwright ready (tool_count={tool_count})"
+            ));
+        }
+        StartupWebStatus::Error(e) => {
+            detected_text.push_str(&format!("\nWeb/MCP: not ready ({e})"));
+        }
+    }
+    if let Some(err) = error_line {
+        detected_text.push_str(&format!("\nError: {err}"));
+    }
+
+    let preset_rows = [
+        ("Safe", "Chat only - tools disabled"),
+        ("Coding", "Tools enabled"),
+        ("Web", "Browsing + tools"),
+        ("Custom", "Choose multiple options manually"),
+    ];
+
+    let provider_ready = detection.provider.is_some() && detection.model.is_some();
+    let web_ready = match web_status {
+        StartupWebStatus::NotRequired | StartupWebStatus::Ready { .. } => true,
+        StartupWebStatus::Error(_) => false,
+    };
+    let all_systems_ready = provider_ready && web_ready && error_line.is_none();
+    let status_color = if all_systems_ready {
+        Color::Green
+    } else if provider_ready {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+    let status_summary = if all_systems_ready {
+        "Ready"
+    } else if provider_ready && !web_ready {
+        "Web MCP Not Ready"
+    } else if provider_ready {
+        "Provider Connected"
+    } else {
+        "Not Connected"
+    };
+    let provider_summary = if provider_ready {
+        "connected"
+    } else {
+        "not connected"
+    };
+    let provider_color = if provider_ready {
+        Color::Green
+    } else {
+        Color::Yellow
+    };
+
+    f.render_widget(
+        Paragraph::new(horizontal_rule(outer[0].width)).style(Style::default().fg(Color::White)),
+        outer[0],
+    );
+    f.render_widget(
+        Paragraph::new(horizontal_rule(outer[2].width)).style(Style::default().fg(Color::White)),
+        outer[2],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("LOCALAGENT", Style::default().fg(Color::Yellow)),
+            Span::raw("  "),
+            Span::styled(
+                format!("v{}", env!("CARGO_PKG_VERSION")),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Provider: ", Style::default().fg(Color::White)),
+            Span::styled(provider_summary, Style::default().fg(provider_color)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Status: ", Style::default().fg(Color::White)),
+            Span::styled(status_summary, Style::default().fg(status_color)),
+        ])),
+        outer[1],
+    );
+
+    let mid = Layout::default()
+        .direction(Direction::Horizontal)
+        .margin(1)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(outer[3]);
+
+    let setup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::White))
+        .title(Line::from(vec![Span::styled(
+            " Mode ",
+            Style::default().fg(Color::White),
+        )]));
+    let setup_inner = setup_block.inner(mid[0]);
+    f.render_widget(setup_block, mid[0]);
+    let mut setup_lines: Vec<Line> = Vec::new();
+    if custom_menu_open {
+        let back_style = if selected_idx == 0 {
+            Style::default().fg(Color::Black).bg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        setup_lines.push(Line::from(vec![
+            Span::styled(if selected_idx == 0 { "▸ " } else { "  " }, back_style),
+            Span::styled("< Back", back_style),
+        ]));
+        setup_lines.push(Line::from(""));
+
+        let custom_rows = [
+            ("write tools", selections.enable_write_tools),
+            ("allow write", selections.allow_write),
+            ("allow shell", selections.allow_shell),
+            ("web (playwright)", selections.enable_web),
+            ("plain tui", selections.plain_tui),
+        ];
+        for (offset, (label, enabled)) in custom_rows.iter().enumerate() {
+            let idx = offset + 1;
+            let sel = idx == selected_idx;
+            let style = if sel {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            setup_lines.push(Line::from(vec![
+                Span::styled(if sel { "▸ " } else { "  " }, style),
+                Span::styled(if *enabled { "[x] " } else { "[ ] " }, style),
+                Span::styled(*label, style),
+            ]));
+        }
+    } else {
+        for (idx, (label, desc)) in preset_rows.iter().enumerate() {
+            let is_selected = idx == selected_idx;
+            let active = is_selected;
+            let row_style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            setup_lines.push(Line::from(vec![
+                Span::styled(if is_selected { "▸ " } else { "  " }, row_style),
+                Span::styled(if active { "◉ " } else { "○ " }, row_style),
+                Span::styled(*label, row_style),
+            ]));
+            setup_lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    *desc,
+                    Style::default().fg(if is_selected {
+                        Color::Yellow
+                    } else {
+                        Color::Cyan
+                    }),
+                ),
+            ]));
+            if idx < preset_rows.len() - 1 {
+                setup_lines.push(Line::from(""));
+            }
+        }
+    }
+    f.render_widget(
+        Paragraph::new(setup_lines).wrap(Wrap { trim: false }),
+        setup_inner,
+    );
+
+    let conn_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::White))
+        .title(Line::from(vec![Span::styled(
+            " Provider ",
+            Style::default().fg(Color::White),
+        )]));
+    let conn_inner = conn_block.inner(mid[1]);
+    f.render_widget(conn_block, mid[1]);
+    let mut conn_lines: Vec<Line> = Vec::new();
+    if !provider_ready && !provider_details_open {
+        let spinner = match tick % 4 {
+            0 => "◴",
+            1 => "◷",
+            2 => "◶",
+            _ => "◵",
+        };
+        conn_lines.push(Line::from(vec![
+            Span::styled(spinner, Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled(
+                "Detecting local providers...",
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+        conn_lines.push(Line::from(""));
+        conn_lines.push(Line::from(vec![Span::styled(
+            "Start LM Studio, Ollama, or llama.cpp.",
+            Style::default().fg(Color::Green),
+        )]));
+        conn_lines.push(Line::from(vec![Span::styled(
+            "I'll connect automatically.",
+            Style::default().fg(Color::Green),
+        )]));
+        conn_lines.push(Line::from(""));
+        conn_lines.push(Line::from(vec![
+            Span::styled("R:", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Refresh", Style::default().fg(Color::Yellow)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("D:", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Details", Style::default().fg(Color::White)),
+        ]));
+    } else {
+        conn_lines.push(Line::from(vec![
+            Span::styled("Provider: ", Style::default().fg(Color::White)),
+            Span::styled(provider_name, Style::default().fg(Color::Cyan)),
+        ]));
+        conn_lines.push(Line::from(vec![
+            Span::styled("Model: ", Style::default().fg(Color::White)),
+            Span::styled(model_name, Style::default().fg(Color::Cyan)),
+        ]));
+        conn_lines.push(Line::from(vec![
+            Span::styled("Base URL: ", Style::default().fg(Color::White)),
+            Span::styled(base_url, Style::default().fg(Color::Cyan)),
+        ]));
+        conn_lines.push(Line::from(vec![
+            Span::styled("Web/MCP: ", Style::default().fg(Color::White)),
+            Span::styled(
+                match web_status {
+                    StartupWebStatus::NotRequired => "Disabled",
+                    StartupWebStatus::Ready { .. } => "Ready",
+                    StartupWebStatus::Error(_) => "Error",
+                },
+                Style::default().fg(match web_status {
+                    StartupWebStatus::Ready { .. } => Color::Green,
+                    StartupWebStatus::Error(_) => Color::Red,
+                    StartupWebStatus::NotRequired => Color::DarkGray,
+                }),
+            ),
+        ]));
+        conn_lines.push(Line::from(""));
+        if let Some(err) = error_line {
+            conn_lines.push(Line::from(vec![Span::styled(
+                format!("Error: {err}"),
+                Style::default().fg(Color::Red),
+            )]));
+        } else {
+            conn_lines.push(Line::from(vec![Span::styled(
+                detection.status_line.clone(),
+                Style::default().fg(Color::Yellow),
+            )]));
+        }
+        if selections.enable_web {
+            match web_status {
+                StartupWebStatus::Ready { tool_count } => {
+                    conn_lines.push(Line::from(vec![Span::styled(
+                        format!("Playwright MCP ready ({tool_count} tools)"),
+                        Style::default().fg(Color::Green),
+                    )]))
+                }
+                StartupWebStatus::Error(_) => conn_lines.push(Line::from(vec![Span::styled(
+                    "Run `localagent mcp doctor playwright`, then press R",
+                    Style::default().fg(Color::Yellow),
+                )])),
+                StartupWebStatus::NotRequired => {}
+            }
+        }
+        conn_lines.push(Line::from(""));
+        conn_lines.push(Line::from(vec![
+            Span::styled("R:", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Refresh", Style::default().fg(Color::Yellow)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("D:", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Hide details", Style::default().fg(Color::White)),
+        ]));
+    }
+    f.render_widget(
+        Paragraph::new(conn_lines).wrap(Wrap { trim: false }),
+        conn_inner,
+    );
+
+    let enter_hint = if provider_ready {
+        "Start chat"
+    } else {
+        "Start disabled: no provider detected"
+    };
+    let footer_outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(outer[5]);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("[↑/↓]", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Navigate", Style::default().fg(Color::White)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("[Space]", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Select", Style::default().fg(Color::White)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("[Enter]", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled(enter_hint, Style::default().fg(Color::White)),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        footer_outer[0],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("[R]", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Refresh", Style::default().fg(Color::White)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("[D]", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Details", Style::default().fg(Color::White)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("[Esc]", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled("Quit", Style::default().fg(Color::White)),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center),
+        footer_outer[1],
+    );
+}
+
+async fn detect_startup_provider(http: HttpConfig) -> StartupDetection {
+    match discover_local_default(http).await {
+        Ok((provider, model, base_url)) => StartupDetection {
+            provider: Some(provider),
+            model: Some(model),
+            base_url: Some(base_url),
+            status_line: "Auto-detected local provider and model.".to_string(),
+        },
+        Err(_) => StartupDetection {
+            provider: None,
+            model: None,
+            base_url: None,
+            status_line:
+                "No local provider detected. Start LM Studio, Ollama, or llama.cpp and press R."
+                    .to_string(),
+        },
+    }
 }
 
 async fn discover_local_default(
@@ -1630,6 +2321,9 @@ async fn run_chat_repl(
         .base_url
         .clone()
         .unwrap_or_else(|| default_base_url(provider_kind).to_string());
+    let mut active_run = base_run.clone();
+    let mut pending_timeout_input = false;
+    let mut timeout_notice_active = false;
 
     println!(
         "LocalAgent chat started (provider={} model={} tui={}).",
@@ -1637,7 +2331,9 @@ async fn run_chat_repl(
         model,
         chat.tui
     );
-    println!("Commands: /help, /exit, /clear");
+    println!(
+        "Commands: /help, /mode <safe|coding|web|custom>, /timeout [seconds|+N|-N], /dismiss, /exit, /clear"
+    );
 
     loop {
         print!("You> ");
@@ -1650,24 +2346,81 @@ async fn run_chat_repl(
         if input.is_empty() {
             continue;
         }
+        if pending_timeout_input && !input.starts_with('/') {
+            if input.eq_ignore_ascii_case("cancel") {
+                pending_timeout_input = false;
+                println!("timeout update cancelled");
+                continue;
+            }
+            match apply_timeout_input(&mut active_run, input) {
+                Ok(msg) => {
+                    pending_timeout_input = false;
+                    println!("{msg}");
+                }
+                Err(msg) => {
+                    println!("{msg}");
+                    println!("enter seconds, +N, -N, or 'cancel'");
+                }
+            }
+            continue;
+        }
         if input.starts_with('/') {
             match input {
                 "/exit" => break,
                 "/help" => {
                     println!("/help  show commands");
+                    println!("/mode  show current mode");
+                    println!("/mode <safe|coding|web|custom>  switch mode");
+                    println!("/timeout  show timeout settings and wait for numeric input");
+                    println!("/timeout <seconds|+N|-N>  set/adjust timeout in seconds");
+                    println!("/dismiss  dismiss timeout notification");
                     println!("/clear clear current session messages");
                     println!("/exit  quit chat");
                 }
+                "/mode" => {
+                    println!(
+                        "current mode: {} (use /mode <safe|coding|web|custom>)",
+                        chat_mode_label(&active_run)
+                    );
+                }
+                "/timeout" => {
+                    pending_timeout_input = true;
+                    println!("{}", timeout_settings_summary(&active_run));
+                    println!("enter seconds, +N, -N, or 'cancel'");
+                }
+                "/dismiss" => {
+                    if timeout_notice_active {
+                        timeout_notice_active = false;
+                        println!("timeout notification dismissed");
+                    } else {
+                        println!("no active timeout notification");
+                    }
+                }
                 "/clear" => {
-                    if base_run.no_session {
+                    if active_run.no_session {
                         println!("sessions are disabled (--no-session), nothing to clear");
                     } else {
                         let session_path = paths
                             .sessions_dir
-                            .join(format!("{}.json", base_run.session));
-                        let store = SessionStore::new(session_path, base_run.session.clone());
+                            .join(format!("{}.json", active_run.session));
+                        let store = SessionStore::new(session_path, active_run.session.clone());
                         store.reset()?;
-                        println!("session '{}' cleared", base_run.session);
+                        println!("session '{}' cleared", active_run.session);
+                    }
+                }
+                _ if input.starts_with("/mode ") => {
+                    let mode = input["/mode ".len()..].trim();
+                    if apply_chat_mode(&mut active_run, mode).is_some() {
+                        println!("mode switched to {}", chat_mode_label(&active_run));
+                    } else {
+                        println!("unknown mode: {mode}. expected safe|coding|web|custom");
+                    }
+                }
+                _ if input.starts_with("/timeout ") => {
+                    let value = input["/timeout ".len()..].trim();
+                    match apply_timeout_input(&mut active_run, value) {
+                        Ok(msg) => println!("{msg}"),
+                        Err(msg) => println!("{msg}"),
                     }
                 }
                 _ => println!("unknown command: {input}"),
@@ -1675,7 +2428,7 @@ async fn run_chat_repl(
             continue;
         }
 
-        let mut turn_args = base_run.clone();
+        let mut turn_args = active_run.clone();
         turn_args.prompt = Some(input.to_string());
         turn_args.tui = chat.tui;
         if !chat.tui && !turn_args.stream {
@@ -1712,6 +2465,10 @@ async fn run_chat_repl(
                         provider_cli_name(provider_kind),
                         default_base_url(provider_kind)
                     );
+                    if is_timeout_error_text(&err) && !timeout_notice_active {
+                        timeout_notice_active = true;
+                        eprintln!("{}", timeout_notice_text(&active_run));
+                    }
                 }
             }
             ProviderKind::Ollama => {
@@ -1740,6 +2497,10 @@ async fn run_chat_repl(
                         provider_cli_name(provider_kind),
                         default_base_url(provider_kind)
                     );
+                    if is_timeout_error_text(&err) && !timeout_notice_active {
+                        timeout_notice_active = true;
+                        eprintln!("{}", timeout_notice_text(&active_run));
+                    }
                 }
             }
             ProviderKind::Mock => {
@@ -1776,6 +2537,13 @@ async fn run_chat_tui(
         .base_url
         .clone()
         .unwrap_or_else(|| default_base_url(provider_kind).to_string());
+    let cwd_label = normalize_path_for_display(
+        std::fs::canonicalize(&base_run.workdir)
+        .or_else(|_| std::env::current_dir())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| base_run.workdir.display().to_string()),
+    );
+    let mut active_run = base_run.clone();
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -1795,6 +2563,7 @@ async fn run_chat_tui(
     let mut logs: Vec<String> = Vec::new();
     let max_logs = base_run.tui_max_log_lines;
     let mut status = "idle".to_string();
+    let mut provider_connected = true;
     let mut think_tick: u64 = 0;
     let mut ui_tick: u64 = 0;
     let mut approvals_selected = 0usize;
@@ -1818,6 +2587,9 @@ async fn run_chat_tui(
     let mut search_query = String::new();
     let mut search_line_cursor = 0usize;
     let mut slash_menu_index: usize = 0;
+    let mut shared_chat_mcp_registry: Option<std::sync::Arc<McpRegistry>> = None;
+    let mut pending_timeout_input = false;
+    let mut timeout_notice_active = false;
     let mut ui_state = UiState::new(max_logs);
     ui_state.provider = provider_cli_name(provider_kind).to_string();
     ui_state.model = model.clone();
@@ -1830,16 +2602,20 @@ async fn run_chat_tui(
             terminal.draw(|f| {
                 draw_chat_frame(
                     f,
+                    chat_mode_label(&active_run),
                     provider_cli_name(provider_kind),
+                    provider_connected,
                     &model,
                     &status,
                     &transcript,
                     &streaming_assistant,
                     &ui_state,
                     approvals_selected,
+                    &cwd_label,
                     &input,
                     &logs,
                     think_tick,
+                    base_run.tui_refresh_ms,
                     show_tools,
                     show_approvals,
                     show_logs,
@@ -2049,6 +2825,15 @@ async fn run_chat_tui(
                             transcript_scroll = transcript_scroll.saturating_add(10);
                             follow_output = false;
                         }
+                        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            show_tools = !show_tools;
+                        }
+                        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            show_approvals = !show_approvals;
+                        }
+                        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            show_logs = !show_logs;
+                        }
                         KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             show_tools = !show_tools;
                         }
@@ -2101,6 +2886,22 @@ async fn run_chat_tui(
                             if line.is_empty() {
                                 continue;
                             }
+                            if pending_timeout_input && !line.starts_with('/') {
+                                if line.eq_ignore_ascii_case("cancel") {
+                                    pending_timeout_input = false;
+                                    logs.push("timeout update cancelled".to_string());
+                                } else {
+                                    match apply_timeout_input(&mut active_run, &line) {
+                                        Ok(msg) => {
+                                            pending_timeout_input = false;
+                                            logs.push(msg);
+                                        }
+                                        Err(msg) => logs.push(msg),
+                                    }
+                                }
+                                show_logs = true;
+                                continue;
+                            }
                             if line.starts_with('/') {
                                 let resolved = selected_slash_command(&line, slash_menu_index)
                                     .or_else(|| resolve_slash_command(&line))
@@ -2109,13 +2910,39 @@ async fn run_chat_tui(
                                     "/exit" => break,
                                     "/help" => {
                                         logs.push(
-                                            "commands: /help /clear /exit /hide tools|approvals|logs /show tools|approvals|logs|all ; slash dropdown: type / then Up/Down + Enter ; panes: Ctrl+1/2/3 ; scroll: PgUp/PgDn, Ctrl+U/Ctrl+D, mouse wheel ; approvals: Ctrl+J/K select, Ctrl+A approve, Ctrl+X deny, Ctrl+R refresh ; history: Up/Down ; Esc quits"
+                                            "commands: /help /mode <safe|coding|web|custom> /timeout [seconds|+N|-N] /dismiss /clear /exit /hide tools|approvals|logs /show tools|approvals|logs|all ; slash dropdown: type / then Up/Down + Enter ; panes: Ctrl+T/Ctrl+Y/Ctrl+G (Ctrl+1/2/3 aliases, terminal-dependent) ; scroll: PgUp/PgDn, Ctrl+U/Ctrl+D, mouse wheel ; approvals: Ctrl+J/K select, Ctrl+A approve, Ctrl+X deny, Ctrl+R refresh ; history: Up/Down ; Esc quits"
                                                 .to_string(),
                                         );
                                         show_logs = true;
                                     }
+                                    "/mode" => {
+                                        logs.push(format!(
+                                            "current mode: {} (use /mode <safe|coding|web|custom>)",
+                                            chat_mode_label(&active_run)
+                                        ));
+                                        show_logs = true;
+                                    }
+                                    "/timeout" => {
+                                        pending_timeout_input = true;
+                                        logs.push(timeout_settings_summary(&active_run));
+                                        logs.push(
+                                            "enter seconds, +N, -N, or 'cancel' on the next line"
+                                                .to_string(),
+                                        );
+                                        show_logs = true;
+                                    }
+                                    "/dismiss" => {
+                                        if timeout_notice_active {
+                                            timeout_notice_active = false;
+                                            logs.retain(|l| !l.starts_with("[timeout-notice]"));
+                                            logs.push("timeout notification dismissed".to_string());
+                                        } else {
+                                            logs.push("no active timeout notification".to_string());
+                                        }
+                                        show_logs = true;
+                                    }
                                     "/clear" => {
-                                        if base_run.no_session {
+                                        if active_run.no_session {
                                             transcript.clear();
                                             ui_state.tool_calls.clear();
                                             streaming_assistant.clear();
@@ -2124,8 +2951,8 @@ async fn run_chat_tui(
                                             logs.push("cleared chat transcript".to_string());
                                         } else {
                                             let session_path =
-                                                paths.sessions_dir.join(format!("{}.json", base_run.session));
-                                            let store = SessionStore::new(session_path, base_run.session.clone());
+                                                paths.sessions_dir.join(format!("{}.json", active_run.session));
+                                            let store = SessionStore::new(session_path, active_run.session.clone());
                                             store.reset()?;
                                             transcript.clear();
                                             ui_state.tool_calls.clear();
@@ -2134,7 +2961,7 @@ async fn run_chat_tui(
                                             follow_output = true;
                                             logs.push(format!(
                                                 "session '{}' and transcript cleared",
-                                                base_run.session
+                                                active_run.session
                                             ));
                                         }
                                     }
@@ -2147,6 +2974,28 @@ async fn run_chat_tui(
                                     "/show all" => {
                                         show_tools = true;
                                         show_approvals = true;
+                                        show_logs = true;
+                                    }
+                                    _ if resolved.starts_with("/mode ") => {
+                                        let mode = resolved["/mode ".len()..].trim();
+                                        if apply_chat_mode(&mut active_run, mode).is_some() {
+                                            logs.push(format!(
+                                                "mode switched to {}",
+                                                chat_mode_label(&active_run)
+                                            ));
+                                        } else {
+                                            logs.push(format!(
+                                                "unknown mode: {mode}. expected safe|coding|web|custom"
+                                            ));
+                                        }
+                                        show_logs = true;
+                                    }
+                                    _ if resolved.starts_with("/timeout ") => {
+                                        let value = resolved["/timeout ".len()..].trim();
+                                        match apply_timeout_input(&mut active_run, value) {
+                                            Ok(msg) => logs.push(msg),
+                                            Err(msg) => logs.push(msg),
+                                        }
                                         show_logs = true;
                                     }
                                     _ => logs.push(format!("unknown command: {}", line)),
@@ -2168,10 +3017,37 @@ async fn run_chat_tui(
                             }
 
                             let (tx, rx) = std::sync::mpsc::channel::<Event>();
-                            let mut turn_args = base_run.clone();
+                            let mut turn_args = active_run.clone();
                             turn_args.prompt = Some(line.clone());
                             turn_args.tui = false;
                             turn_args.stream = true;
+
+                            if !turn_args.mcp.is_empty() && shared_chat_mcp_registry.is_none() {
+                                let mcp_config_path =
+                                    resolved_mcp_config_path(&turn_args, &paths.state_dir);
+                                match McpRegistry::from_config_path(
+                                    &mcp_config_path,
+                                    &turn_args.mcp,
+                                    Duration::from_secs(30),
+                                )
+                                .await
+                                {
+                                    Ok(reg) => {
+                                        shared_chat_mcp_registry = Some(std::sync::Arc::new(reg));
+                                    }
+                                    Err(e) => {
+                                        let msg = format!("failed to initialize MCP session: {e}");
+                                        logs.push(msg.clone());
+                                        show_logs = true;
+                                        transcript.push(("system".to_string(), msg));
+                                        status = "idle".to_string();
+                                        if follow_output {
+                                            transcript_scroll = usize::MAX;
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
 
                             let mut fut: std::pin::Pin<
                                 Box<
@@ -2195,6 +3071,7 @@ async fn run_chat_tui(
                                         &turn_args,
                                         paths,
                                         Some(tx),
+                                        shared_chat_mcp_registry.clone(),
                                         true,
                                     ))
                                 }
@@ -2212,6 +3089,7 @@ async fn run_chat_tui(
                                         &turn_args,
                                         paths,
                                         Some(tx),
+                                        shared_chat_mcp_registry.clone(),
                                         true,
                                     ))
                                 }
@@ -2226,6 +3104,7 @@ async fn run_chat_tui(
                                         &turn_args,
                                         paths,
                                         Some(tx),
+                                        shared_chat_mcp_registry.clone(),
                                         true,
                                     ))
                                 }
@@ -2257,19 +3136,171 @@ async fn run_chat_tui(
                                     }
                                 }
 
+                                while event::poll(Duration::from_millis(0))? {
+                                    match event::read()? {
+                                        CEvent::Mouse(me) => match me.kind {
+                                            MouseEventKind::ScrollUp => {
+                                                transcript_scroll = transcript_scroll.saturating_sub(3);
+                                                follow_output = false;
+                                            }
+                                            MouseEventKind::ScrollDown => {
+                                                transcript_scroll = transcript_scroll.saturating_add(3);
+                                                follow_output = false;
+                                            }
+                                            _ => {}
+                                        },
+                                        CEvent::Key(key)
+                                            if matches!(
+                                                key.kind,
+                                                KeyEventKind::Press | KeyEventKind::Repeat
+                                            ) =>
+                                        {
+                                            match key.code {
+                                                KeyCode::Esc => {
+                                                    let partial = agent::sanitize_user_visible_output(
+                                                        &streaming_assistant,
+                                                    );
+                                                    if !partial.trim().is_empty() {
+                                                        transcript.push((
+                                                            "assistant".to_string(),
+                                                            format!("{partial}\n\n[cancelled]"),
+                                                        ));
+                                                    }
+                                                    logs.push(
+                                                        "run cancelled by user (Esc/Ctrl+C)"
+                                                            .to_string(),
+                                                    );
+                                                    show_logs = true;
+                                                    streaming_assistant.clear();
+                                                    status = "idle".to_string();
+                                                    if follow_output {
+                                                        transcript_scroll = usize::MAX;
+                                                    }
+                                                    break;
+                                                }
+                                                KeyCode::Char('c')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    let partial = agent::sanitize_user_visible_output(
+                                                        &streaming_assistant,
+                                                    );
+                                                    if !partial.trim().is_empty() {
+                                                        transcript.push((
+                                                            "assistant".to_string(),
+                                                            format!("{partial}\n\n[cancelled]"),
+                                                        ));
+                                                    }
+                                                    logs.push(
+                                                        "run cancelled by user (Esc/Ctrl+C)"
+                                                            .to_string(),
+                                                    );
+                                                    show_logs = true;
+                                                    streaming_assistant.clear();
+                                                    status = "idle".to_string();
+                                                    if follow_output {
+                                                        transcript_scroll = usize::MAX;
+                                                    }
+                                                    break;
+                                                }
+                                                KeyCode::PageUp => {
+                                                    transcript_scroll =
+                                                        transcript_scroll.saturating_sub(12);
+                                                    follow_output = false;
+                                                }
+                                                KeyCode::PageDown => {
+                                                    transcript_scroll =
+                                                        transcript_scroll.saturating_add(12);
+                                                    follow_output = false;
+                                                }
+                                                KeyCode::Char('u')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    transcript_scroll =
+                                                        transcript_scroll.saturating_sub(10);
+                                                    follow_output = false;
+                                                }
+                                                KeyCode::Char('d')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    transcript_scroll =
+                                                        transcript_scroll.saturating_add(10);
+                                                    follow_output = false;
+                                                }
+                                                KeyCode::Char('t')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    show_tools = !show_tools;
+                                                }
+                                                KeyCode::Char('y')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    show_approvals = !show_approvals;
+                                                }
+                                                KeyCode::Char('g')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    show_logs = !show_logs;
+                                                }
+                                                KeyCode::Char('1')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    show_tools = !show_tools;
+                                                }
+                                                KeyCode::Char('2')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    show_approvals = !show_approvals;
+                                                }
+                                                KeyCode::Char('3')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    show_logs = !show_logs;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if status == "idle" {
+                                    break;
+                                }
+
                                 terminal.draw(|f| {
                                     draw_chat_frame(
                                         f,
+                                        chat_mode_label(&active_run),
                                         provider_cli_name(provider_kind),
+                                        provider_connected,
                                         &model,
                                         &status,
                                         &transcript,
                                         &streaming_assistant,
                                         &ui_state,
                                         approvals_selected,
+                                        &cwd_label,
                                         &input,
                                         &logs,
                                         think_tick,
+                                        base_run.tui_refresh_ms,
                                         show_tools,
                                         show_approvals,
                                         show_logs,
@@ -2309,7 +3340,19 @@ async fn run_chat_tui(
                                                     .outcome
                                                     .error
                                                     .unwrap_or_else(|| "provider error".to_string());
-                                                logs.push(err);
+                                                provider_connected = false;
+                                                logs.push(err.clone());
+                                                if is_timeout_error_text(&err) && !timeout_notice_active {
+                                                    timeout_notice_active = true;
+                                                    logs.push(timeout_notice_text(&active_run));
+                                                }
+                                                show_logs = true;
+                                                transcript.push((
+                                                    "system".to_string(),
+                                                    format!("Provider error: {err}"),
+                                                ));
+                                            } else {
+                                                provider_connected = true;
                                             }
                                             let final_text = if out.outcome.final_output.is_empty() {
                                                 agent::sanitize_user_visible_output(
@@ -2318,12 +3361,25 @@ async fn run_chat_tui(
                                             } else {
                                                 out.outcome.final_output
                                             };
-                                            transcript.push(("assistant".to_string(), final_text));
+                                            if !final_text.trim().is_empty() {
+                                                transcript.push(("assistant".to_string(), final_text));
+                                            }
                                             if follow_output {
                                                 transcript_scroll = usize::MAX;
                                             }
                                         }
-                                        Err(e) => logs.push(format!("run failed: {e}")),
+                                        Err(e) => {
+                                            let msg = format!("run failed: {e}");
+                                            if is_timeout_error_text(&msg) {
+                                                provider_connected = false;
+                                            }
+                                            logs.push(msg.clone());
+                                            show_logs = true;
+                                            transcript.push(("system".to_string(), msg));
+                                            if follow_output {
+                                                transcript_scroll = usize::MAX;
+                                            }
+                                        }
                                     }
                                     streaming_assistant.clear();
                                     status = "idle".to_string();
@@ -2381,6 +3437,16 @@ fn is_text_input_mods(mods: KeyModifiers) -> bool {
 
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/help", "show shortcuts and slash commands"),
+    ("/mode", "show current mode"),
+    ("/mode safe", "switch mode to safe"),
+    ("/mode coding", "switch mode to coding"),
+    ("/mode web", "switch mode to web"),
+    ("/mode custom", "switch mode to custom"),
+    ("/timeout", "show timeout settings and enter a new value"),
+    ("/timeout 60", "set timeout to 60 seconds"),
+    ("/timeout +30", "increase timeout by 30 seconds"),
+    ("/timeout -10", "decrease timeout by 10 seconds"),
+    ("/dismiss", "dismiss timeout notification"),
     ("/clear", "clear transcript (and session if enabled)"),
     ("/exit", "exit chat"),
     ("/hide tools", "hide tools pane"),
@@ -2391,6 +3457,99 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/show logs", "show logs pane"),
     ("/show all", "show all panes"),
 ];
+
+fn apply_chat_mode(run: &mut RunArgs, mode: &str) -> Option<()> {
+    match mode.to_ascii_lowercase().as_str() {
+        "safe" => {
+            run.enable_write_tools = false;
+            run.allow_write = false;
+            run.allow_shell = false;
+            run.mcp.retain(|m| m != "playwright");
+            Some(())
+        }
+        "coding" | "code" => {
+            run.enable_write_tools = true;
+            run.allow_write = true;
+            run.allow_shell = true;
+            run.mcp.retain(|m| m != "playwright");
+            Some(())
+        }
+        "web" => {
+            run.enable_write_tools = false;
+            run.allow_write = false;
+            run.allow_shell = false;
+            if !run.mcp.iter().any(|m| m == "playwright") {
+                run.mcp.push("playwright".to_string());
+            }
+            Some(())
+        }
+        "custom" => {
+            run.enable_write_tools = true;
+            run.allow_write = true;
+            run.allow_shell = true;
+            if !run.mcp.iter().any(|m| m == "playwright") {
+                run.mcp.push("playwright".to_string());
+            }
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+fn timeout_settings_summary(run: &RunArgs) -> String {
+    format!(
+        "timeouts: request={}s, stream-idle={}s, connect={}s",
+        run.http_timeout_ms / 1000,
+        run.http_stream_idle_timeout_ms / 1000,
+        run.http_connect_timeout_ms / 1000
+    )
+}
+
+fn is_timeout_error_text(msg: &str) -> bool {
+    let lowered = msg.to_ascii_lowercase();
+    lowered.contains("timeout")
+        || lowered.contains("timed out")
+        || lowered.contains("stream idle")
+        || lowered.contains("attempt")
+}
+
+fn timeout_notice_text(run: &RunArgs) -> String {
+    format!(
+        "[timeout-notice] provider timeout detected; try /timeout to increase duration ({}) ; use /dismiss to hide this notice",
+        timeout_settings_summary(run)
+    )
+}
+
+fn apply_timeout_input(run: &mut RunArgs, input: &str) -> Result<String, String> {
+    let value = input.trim();
+    if value.is_empty() {
+        return Err("timeout value is empty".to_string());
+    }
+    let parse_seconds = |s: &str| -> Result<i64, String> {
+        s.parse::<i64>()
+            .map_err(|_| format!("invalid timeout value: {s}"))
+    };
+    let current = (run.http_timeout_ms / 1000) as i64;
+    let next_seconds = if let Some(delta) = value.strip_prefix('+') {
+        current + parse_seconds(delta)?
+    } else if let Some(delta) = value.strip_prefix('-') {
+        current - parse_seconds(delta)?
+    } else {
+        parse_seconds(value)?
+    };
+    if next_seconds <= 0 {
+        return Err("timeout must be at least 1 second".to_string());
+    }
+    let next_ms = (next_seconds as u64) * 1000;
+    run.http_timeout_ms = next_ms;
+    run.http_stream_idle_timeout_ms = next_ms;
+    Ok(format!(
+        "updated {} (request+stream-idle now {}s; connect remains {}s)",
+        timeout_settings_summary(run),
+        next_seconds,
+        run.http_connect_timeout_ms / 1000
+    ))
+}
 
 fn slash_command_matches(input: &str) -> Vec<(&'static str, &'static str)> {
     SLASH_COMMANDS
@@ -2449,55 +3608,154 @@ fn slash_overlay_text(input: &str, selected: usize) -> Option<String> {
 }
 
 fn keybinds_overlay_text() -> Option<String> {
-    Some(
-        [
-            "keybinds",
-            "  Esc                quit chat",
-            "  Ctrl+1 / Ctrl+2 / Ctrl+3   toggle tools / approvals / logs",
-            "  PgUp / PgDn        scroll transcript",
-            "  Ctrl+U / Ctrl+D    scroll transcript",
-            "  Mouse wheel        scroll transcript",
-            "  Ctrl+J / Ctrl+K    approvals selection",
-            "  Ctrl+A / Ctrl+X    approve / deny selected approval",
-            "  Ctrl+R             refresh approvals",
-            "  Ctrl+P             command palette",
-            "  Ctrl+F             search transcript",
-            "  /...               slash commands dropdown",
-            "  ?                  show this keybinds panel",
-        ]
-        .join("\n"),
-    )
+    let mut lines = vec!["keybinds".to_string()];
+    let rows = [
+        ("Esc", "quit chat"),
+        ("Ctrl+T / Ctrl+Y / Ctrl+G", "toggle tools / approvals / logs"),
+        ("Ctrl+1 / Ctrl+2 / Ctrl+3", "same toggles (terminal-dependent)"),
+        ("PgUp / PgDn", "scroll transcript"),
+        ("Ctrl+U / Ctrl+D", "scroll transcript"),
+        ("Mouse wheel", "scroll transcript"),
+        ("Ctrl+J / Ctrl+K", "approvals selection"),
+        ("Ctrl+A / Ctrl+X", "approve / deny selected approval"),
+        ("Ctrl+R", "refresh approvals"),
+        ("Ctrl+P", "command palette"),
+        ("Ctrl+F", "search transcript"),
+        ("/mode <...>", "switch chat mode (safe/coding/web/custom)"),
+        ("/timeout <...>", "adjust request/stream idle timeout"),
+        ("/dismiss", "dismiss timeout notification"),
+        ("/...", "slash commands dropdown"),
+        ("?", "show this keybinds panel"),
+    ];
+    for (lhs, rhs) in rows {
+        lines.push(format!("  {:<26} {}", lhs, rhs));
+    }
+    Some(lines.join("\n"))
 }
 
 fn localagent_banner(_tick: u64) -> String {
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
-    let raw = r#"
+    let raw = format!(
+        r#"
 ██╗      █████╗  █████╗  █████╗ ██╗      █████╗  ██████╗ ███████╗███╗  ██╗████████╗
 ██║     ██╔══██╗██╔══██╗██╔══██╗██║     ██╔══██╗██╔════╝ ██╔════╝████╗ ██║╚══██╔══╝
 ██║     ██║  ██║██║  ╚═╝███████║██║     ███████║██║  ██╗ █████╗  ██╔██╗██║   ██║   
 ██║     ██║  ██║██║  ██╗██╔══██║██║     ██╔══██║██║  ╚██╗██╔══╝  ██║╚████║   ██║   
 ███████╗╚█████╔╝╚█████╔╝██║  ██║███████╗██║  ██║╚██████╔╝███████╗██║ ╚███║   ██║   
 ╚══════╝ ╚════╝  ╚════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚══╝   ╚═╝   
-                                                                            v0.1.0"#;
-    raw.replace("v0.1.0", &version)
-        .lines()
+                                                                            {version}"#
+    );
+    raw.lines()
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn horizontal_rule(width: u16) -> String {
+    "─".repeat(width as usize)
+}
+
+fn centered_multiline(text: &str, width: u16, top_pad: usize) -> String {
+    let width = width as usize;
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for _ in 0..top_pad {
+        out.push('\n');
+    }
+    for (idx, line) in lines.iter().enumerate() {
+        let line_width = line.chars().count();
+        let left_pad = width.saturating_sub(line_width) / 2;
+        out.push_str(&" ".repeat(left_pad));
+        out.push_str(line);
+        if idx + 1 < lines.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn centered_left_block(text: &str, width: u16, top_pad: usize) -> String {
+    let width = width as usize;
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let block_width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let left_pad = width.saturating_sub(block_width) / 2;
+    let mut out = String::new();
+    for _ in 0..top_pad {
+        out.push('\n');
+    }
+    for (idx, line) in lines.iter().enumerate() {
+        out.push_str(&" ".repeat(left_pad));
+        out.push_str(line);
+        if idx + 1 < lines.len() {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn normalize_path_for_display(path: String) -> String {
+    if cfg!(windows) {
+        if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{}", rest);
+        }
+        if let Some(rest) = path.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+    }
+    path
+}
+
+fn rotating_status_word<'a>(words: &'a [&'a str], think_tick: u64, refresh_ms: u64, salt: u64) -> &'a str {
+    if words.is_empty() {
+        return "";
+    }
+    let ticks_per_step = (15_000u64 / refresh_ms.max(1)).max(1);
+    let bucket = think_tick / ticks_per_step;
+    let mut x = bucket ^ salt;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    words[(x as usize) % words.len()]
+}
+
+fn chat_mode_label(run: &RunArgs) -> &'static str {
+    let web_enabled = run.mcp.iter().any(|m| m == "playwright");
+    let is_safe = !web_enabled && !run.enable_write_tools && !run.allow_write && !run.allow_shell;
+    let is_code = !web_enabled && run.enable_write_tools && run.allow_write && run.allow_shell;
+    let is_web = web_enabled && !run.enable_write_tools && !run.allow_write && !run.allow_shell;
+    if is_safe {
+        "Safe"
+    } else if is_code {
+        "Code"
+    } else if is_web {
+        "Web"
+    } else {
+        "Custom"
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn draw_chat_frame(
     f: &mut ratatui::Frame<'_>,
+    mode_label: &str,
     provider_name: &str,
+    provider_connected: bool,
     model: &str,
     status: &str,
     transcript: &[(String, String)],
     streaming_assistant: &str,
     ui_state: &UiState,
     approvals_selected: usize,
+    cwd_label: &str,
     input: &str,
     logs: &[String],
     think_tick: u64,
+    tui_refresh_ms: u64,
     show_tools: bool,
     show_approvals: bool,
     show_logs: bool,
@@ -2507,7 +3765,7 @@ fn draw_chat_frame(
     ui_tick: u64,
     overlay_hint: Option<String>,
 ) {
-    let bottom_height = if overlay_hint.is_some() {
+    let bottom_overlay_height = if overlay_hint.is_some() {
         8
     } else if show_logs {
         4
@@ -2518,19 +3776,43 @@ fn draw_chat_frame(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(8),
             Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Length(1),
-            Constraint::Length(bottom_height),
+            Constraint::Length(bottom_overlay_height),
         ])
         .split(f.area());
 
+    let left_header = format!("{mode_label}  ·  {provider_name}  ·  {model}");
+    let right_header = "?";
+    let header_pad = outer[0]
+        .width
+        .saturating_sub((left_header.chars().count() + right_header.chars().count()) as u16)
+        as usize;
     f.render_widget(
-        Paragraph::new(format!(
-            "chat  provider={}  model={}  status={}  (/help /clear /exit)",
-            provider_name, model, status
-        )),
+        Paragraph::new(Line::from(vec![
+            Span::styled(mode_label, Style::default().fg(Color::Yellow)),
+            Span::raw("  ·  "),
+            Span::styled(
+                provider_name,
+                Style::default().fg(if provider_connected {
+                    Color::Green
+                } else {
+                    Color::Red
+                }),
+            ),
+            Span::raw("  ·  "),
+            Span::styled(model, Style::default().fg(Color::Yellow)),
+            Span::raw(" ".repeat(header_pad)),
+            Span::raw(right_header),
+        ])),
         outer[0],
+    );
+    f.render_widget(
+        Paragraph::new(horizontal_rule(outer[1].width)).style(Style::default().fg(Color::DarkGray)),
+        outer[1],
     );
 
     let has_side = show_tools || show_approvals;
@@ -2538,25 +3820,36 @@ fn draw_chat_frame(
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(72), Constraint::Percentage(28)])
-            .split(outer[1])
+            .split(outer[2])
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(100), Constraint::Percentage(0)])
-            .split(outer[1])
+            .split(outer[2])
     };
 
+    let show_hero_banner = show_banner && transcript.is_empty() && streaming_assistant.is_empty();
     let mut chat_text = String::new();
-    if show_banner {
-        chat_text.push_str(&localagent_banner(ui_tick));
+    if show_hero_banner {
+        chat_text.push_str(&centered_multiline(&localagent_banner(ui_tick), mid[0].width, 0));
         chat_text.push_str("\n\n");
+        chat_text.push_str(&centered_left_block(
+            "+ Type your message and press enter\n+ /help for a list of commands\n+ /mode to switch between Safe, Coding, Web, and Custom modes",
+            mid[0].width,
+            0,
+        ));
     }
     let transcript_text = transcript
         .iter()
         .map(|(role, text)| format!("{}: {}", role.to_uppercase(), text))
         .collect::<Vec<_>>()
         .join("\n\n");
-    chat_text.push_str(&transcript_text);
+    if !transcript_text.is_empty() {
+        if !chat_text.is_empty() {
+            chat_text.push_str("\n\n");
+        }
+        chat_text.push_str(&transcript_text);
+    }
     if !streaming_assistant.is_empty() {
         if !chat_text.is_empty() {
             chat_text.push_str("\n\n");
@@ -2569,8 +3862,14 @@ fn draw_chat_frame(
     } else {
         transcript_scroll.min(max_scroll)
     };
+    let chat_style = if show_hero_banner {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
     f.render_widget(
         Paragraph::new(chat_text)
+            .style(chat_style)
             .wrap(Wrap { trim: false })
             .scroll((scroll as u16, 0)),
         mid[0],
@@ -2592,35 +3891,126 @@ fn draw_chat_frame(
         }
     }
 
-    f.render_widget(Paragraph::new(format!("› {}", input)), outer[2]);
-
     let tools_running = ui_state.tool_calls.iter().any(|t| t.status == "running");
-    let (indicator, style) = if status == "running" {
+    let wave = ["▁", "▂", "▃", "▄", "▅", "▄", "▃", "▂"];
+    let phase = ((think_tick / 3) % wave.len() as u64) as usize;
+    let glow_style = Style::default().fg(match phase {
+        0 | 1 => Color::DarkGray,
+        2 | 3 => Color::Blue,
+        4 | 5 => Color::Cyan,
+        _ => Color::White,
+    });
+    let thinking_words = [
+        "Thinking",
+        "Reasoning",
+        "Deliberating",
+        "Considering",
+        "Reflecting",
+        "Analyzing",
+        "Evaluating",
+        "Inferring",
+        "Planning",
+        "Synthesizing",
+        "Pondering",
+        "Thinkering",
+        "Thought-brewing",
+        "Mind-marinating",
+        "Ruminating",
+        "idea-bombing",
+    ];
+    let working_words = [
+        "Working",
+        "Executing",
+        "Processing",
+        "Applying tools",
+        "Building result",
+        "Finalizing",
+    ];
+    let (status_text, status_style) = if status == "running" {
         if tools_running {
             (
-                "⏺ Running tools...".to_string(),
+                rotating_status_word(&working_words, think_tick, tui_refresh_ms, 0xA5A5_A5A5),
                 Style::default().fg(Color::Yellow),
             )
         } else {
-            let phase = ((think_tick / 4) % 8) as usize;
-            let wave = ["▁", "▂", "▃", "▄", "▅", "▄", "▃", "▂"];
-            let dots = ".".repeat(((think_tick / 6) as usize % 3) + 1);
             (
-                format!("{} Thinking{dots}", wave[phase]),
-                Style::default().fg(match phase {
-                    0 | 1 => Color::DarkGray,
-                    2 | 3 => Color::Blue,
-                    4 | 5 => Color::Cyan,
-                    _ => Color::Blue,
-                }),
+                rotating_status_word(&thinking_words, think_tick, tui_refresh_ms, 0x5A5A_5A5A),
+                Style::default().fg(Color::Cyan),
             )
         }
     } else {
-        ("○ Ready".to_string(), Style::default().fg(Color::DarkGray))
+        ("Ready", Style::default().fg(Color::DarkGray))
     };
-    f.render_widget(Paragraph::new(indicator).style(style), outer[3]);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            if status == "running" {
+                Span::styled(wave[phase], glow_style)
+            } else {
+                Span::styled("●", Style::default().fg(Color::DarkGray))
+            },
+            Span::raw(" "),
+            if status == "running" {
+                Span::styled(format!("{status_text}..."), status_style)
+            } else {
+                Span::styled(status_text, status_style)
+            },
+        ])),
+        outer[3],
+    );
 
-    if bottom_height > 0 {
+    let input_box = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
+        .split(outer[4]);
+    f.render_widget(
+        Paragraph::new(horizontal_rule(input_box[0].width)).style(Style::default().fg(Color::DarkGray)),
+        input_box[0],
+    );
+    let input_line = Line::from(vec![
+        Span::styled(">", Style::default().fg(Color::Yellow)),
+        Span::raw(" "),
+        Span::raw(input),
+    ]);
+    f.render_widget(Paragraph::new(input_line), input_box[1]);
+    f.render_widget(
+        Paragraph::new(horizontal_rule(input_box[2].width)).style(Style::default().fg(Color::DarkGray)),
+        input_box[2],
+    );
+
+    let footer_left = format!("cwd: {cwd_label}");
+    let footer_right = if provider_connected {
+        "Status - Connected"
+    } else {
+        "Status - Disconnected"
+    };
+    let footer_pad = outer[5]
+        .width
+        .saturating_sub((footer_left.chars().count() + footer_right.chars().count()) as u16)
+        as usize;
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("cwd:", Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled(cwd_label, Style::default().fg(Color::Yellow)),
+            Span::raw(" ".repeat(footer_pad)),
+            Span::styled("Status - ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                if provider_connected {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                },
+                Style::default().fg(if provider_connected {
+                    Color::Green
+                } else {
+                    Color::Red
+                }),
+            ),
+        ])),
+        outer[5],
+    );
+
+    if bottom_overlay_height > 0 {
         let logs_text = if let Some(hint) = overlay_hint {
             hint
         } else {
@@ -2628,7 +4018,7 @@ fn draw_chat_frame(
         };
         f.render_widget(
             Paragraph::new(logs_text).wrap(Wrap { trim: false }),
-            outer[4],
+            outer[6],
         );
     }
 }
@@ -2717,6 +4107,7 @@ async fn run_agent<P: ModelProvider>(
         args,
         paths,
         None,
+        None,
         false,
     )
     .await
@@ -2732,6 +4123,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
     args: &RunArgs,
     paths: &store::StatePaths,
     external_ui_tx: Option<Sender<Event>>,
+    shared_mcp_registry: Option<std::sync::Arc<McpRegistry>>,
     suppress_stdout_stream: bool,
 ) -> anyhow::Result<RunExecutionResult> {
     let workdir = std::fs::canonicalize(&args.workdir)
@@ -2758,7 +4150,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
     let _target_desc = exec_target.describe();
     let mut gate_ctx = GateContext {
         workdir: workdir.clone(),
-        allow_shell: args.allow_shell,
+        allow_shell: args.allow_shell || args.allow_shell_in_workdir,
         allow_write: args.allow_write,
         approval_mode: args.approval_mode,
         auto_approve_scope: args.auto_approve_scope,
@@ -2862,13 +4254,15 @@ async fn run_agent_with_ui<P: ModelProvider>(
         resolve_instruction_messages(args, &paths.state_dir, &worker_model)?;
 
     let mcp_config_path = resolved_mcp_config_path(args, &paths.state_dir);
-    let mcp_registry = if args.mcp.is_empty() {
+    let mcp_registry = if let Some(reg) = shared_mcp_registry {
+        Some(reg)
+    } else if args.mcp.is_empty() {
         None
     } else {
-        Some(
+        Some(std::sync::Arc::new(
             McpRegistry::from_config_path(&mcp_config_path, &args.mcp, Duration::from_secs(30))
                 .await?,
-        )
+        ))
     };
 
     let mut all_tools = builtin_tools_enabled(args.enable_write_tools);
@@ -3232,6 +4626,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         tool_rt: ToolRuntime {
             workdir,
             allow_shell: args.allow_shell,
+            allow_shell_in_workdir_only: args.allow_shell_in_workdir,
             allow_write: args.allow_write,
             max_tool_output_bytes: if args.no_limits {
                 0
@@ -5266,6 +6661,7 @@ rules:
             mcp: Vec::new(),
             mcp_config: None,
             allow_shell: false,
+            allow_shell_in_workdir: false,
             allow_write: false,
             enable_write_tools: false,
             exec_target: ExecTargetKind::Host,

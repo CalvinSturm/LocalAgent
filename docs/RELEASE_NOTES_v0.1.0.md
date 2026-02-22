@@ -50,3 +50,22 @@ Date: 2026-02-21
 cargo install --path . --force
 localagent --help
 ```
+
+## Post-v0.1.0 UX Updates
+
+- Startup UI refresh:
+  - compact `Mode` + `Provider` panes
+  - centered footer controls
+  - provider refresh/details controls (`R`, `D`)
+- Chat TUI refresh:
+  - boxed input row above footer
+  - explicit `cwd: <absolute path>` in footer
+  - right-justified footer connection status
+  - mode label shown in header (`Safe`, `Code`, `Web`, `Custom`)
+  - right-justified `?` help marker in header
+- New chat slash command:
+  - `/mode <safe|coding|web|custom>` switches mode in-session
+  - `/timeout [seconds|+N|-N]` adjusts request + stream-idle timeout in-session
+  - `/dismiss` clears active timeout notification
+- Timeout UX:
+  - provider timeout errors now include a hint to use `/timeout`

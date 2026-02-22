@@ -83,6 +83,67 @@ TUI:
 localagent --provider ollama --model qwen3:8b chat --tui
 ```
 
+### Model Recommendations by VRAM (Tool Calling + Reasoning)
+
+These are practical starting points for local agent use. Exact memory needs depend on quantization, context length, and runtime settings.
+
+#### 8 GB VRAM
+
+Good starting points:
+
+- `qwen3:4b`
+- `deepseek-r1:1.5b`
+- `deepseek-r1:7b` (lower context / tighter memory settings)
+
+Tradeoffs:
+
+- More likely to need per-model prompt tuning for reliable tool-call formatting
+- Weaker multi-step planning than larger models
+
+#### 12 GB VRAM
+
+Good starting points:
+
+- `qwen3:8b` (strong default local-agent pick)
+- `deepseek-r1:8b`
+- `deepseek-r1:14b` (depending on quantization/context)
+
+#### 16 GB VRAM
+
+Good starting points:
+
+- `qwen3:14b`
+- `deepseek-r1:14b`
+- `qwen3:8b` with more headroom for context
+
+#### 24 GB VRAM
+
+Good starting points:
+
+- `qwen3:30b`
+- `qwen3:32b`
+- `deepseek-r1:32b`
+
+#### 48 GB+ VRAM / Multi-GPU
+
+Good starting points:
+
+- `deepseek-r1:70b`
+- `qwen3-coder-next` (coding-focused agent workflows)
+
+### Quick Recommendations
+
+- General local agent default: `qwen3:8b`
+- Reasoning/planning focus: `deepseek-r1:8b` or `deepseek-r1:14b`
+- 24 GB class GPU: `qwen3:30b` or `deepseek-r1:32b`
+- Coding-focused agent: `qwen3-coder-next`
+
+### Important Notes for Local Agent Reliability
+
+- Models trained for both tool calling and reasoning usually perform better in MCP-heavy workflows.
+- Smaller models often need model-specific instruction tuning to format tool calls consistently.
+- See `docs/INSTRUCTION_PROFILES.md` for per-model tuning guidance and examples.
+
 ## 3) llama.cpp Server Setup
 
 Start `llama-server` with your model.
@@ -160,6 +221,10 @@ Or install globally:
 cargo install --path . --force
 ```
 
+When upgrading LocalAgent, re-run the same command from the repo root.
+
+Windows note: if `cargo install` fails with a `failed to move ... localagent.exe` error, close any running `localagent` process/TUI and retry.
+
 ### `unexpected argument` errors
 
 Put global flags before subcommands.
@@ -197,6 +262,18 @@ Restart with:
 ```bash
 --jinja
 ```
+
+### Tool calls are inconsistent on smaller local models
+
+This is common and usually improvable.
+
+What to do:
+
+1. Add a per-model profile in `.openagent/instructions.yaml`
+2. Keep instructions short and explicit (tool JSON format, one call at a time, ask before guessing)
+3. Test the same prompt repeatedly and keep only changes that improve consistency
+
+See `docs/INSTRUCTION_PROFILES.md` for examples and a recommended workflow.
 
 ## 7) Optional: MCP Playwright for Browser Tasks
 

@@ -21,15 +21,7 @@ pub struct McpClient {
 
 impl McpClient {
     pub async fn spawn(name: &str, command: &str, args: &[String]) -> anyhow::Result<Self> {
-        let mut child = Command::new(command);
-        child
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = child
-            .spawn()
-            .with_context(|| format!("failed to spawn MCP server '{name}'"))?;
+        let mut child = spawn_mcp_process(name, command, args)?;
 
         let stdin = child
             .stdin
@@ -81,7 +73,7 @@ impl McpClient {
         let params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": { "name": "openagent", "version": "0.1.0" }
+            "clientInfo": { "name": "openagent", "version": env!("CARGO_PKG_VERSION") }
         });
         let _ = self.call("initialize", params, timeout).await?;
         Ok(())
@@ -143,6 +135,52 @@ impl McpClient {
             return Err(anyhow!("MCP error for method '{}': {}", method, err));
         }
         Ok(msg.get("result").cloned().unwrap_or(Value::Null))
+    }
+}
+
+fn spawn_mcp_process(name: &str, command: &str, args: &[String]) -> anyhow::Result<Child> {
+    let build = |cmd: &str| {
+        let mut child = Command::new(cmd);
+        child
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        child
+    };
+
+    match build(command).spawn() {
+        Ok(child) => Ok(child),
+        Err(first_err) => {
+            #[cfg(windows)]
+            {
+                // Common Windows case: `npx` resolves in interactive shells, but spawn needs `npx.cmd`.
+                if std::path::Path::new(command).extension().is_none() {
+                    let cmd_variant = format!("{command}.cmd");
+                    match build(&cmd_variant).spawn() {
+                        Ok(child) => return Ok(child),
+                        Err(second_err) => {
+                            return Err(anyhow!(
+                                "failed to spawn MCP server '{}' (command='{}', args={:?}); also tried '{}' on Windows: first error: {}; second error: {}",
+                                name,
+                                command,
+                                args,
+                                cmd_variant,
+                                first_err,
+                                second_err
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(anyhow!(
+                "failed to spawn MCP server '{}' (command='{}', args={:?}): {}",
+                name,
+                command,
+                args,
+                first_err
+            ))
+        }
     }
 }
 

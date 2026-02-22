@@ -962,10 +962,10 @@ async fn run_single(
     let mcp_registry = if enabled_mcp.is_empty() {
         None
     } else {
-        Some(
+        Some(std::sync::Arc::new(
             McpRegistry::from_config_path(&mcp_config_path, enabled_mcp, Duration::from_secs(30))
                 .await?,
-        )
+        ))
     };
 
     let mut tools = builtin_tools_enabled(config.enable_write_tools);
@@ -1006,6 +1006,7 @@ async fn run_single(
         tool_rt: ToolRuntime {
             workdir: workdir.to_path_buf(),
             allow_shell: config.allow_shell,
+            allow_shell_in_workdir_only: false,
             allow_write: config.allow_write,
             max_tool_output_bytes: if config.no_limits { 0 } else { 200_000 },
             max_read_bytes: if config.no_limits { 0 } else { 200_000 },

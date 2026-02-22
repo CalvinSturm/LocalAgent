@@ -26,6 +26,7 @@ impl ToolArgsStrict {
 pub struct ToolRuntime {
     pub workdir: PathBuf,
     pub allow_shell: bool,
+    pub allow_shell_in_workdir_only: bool,
     pub allow_write: bool,
     pub max_tool_output_bytes: usize,
     pub max_read_bytes: usize,
@@ -415,11 +416,14 @@ async fn run_read_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
 }
 
 async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
-    if !rt.allow_shell && !rt.unsafe_bypass_allow_flags {
+    let shell_allowed =
+        rt.allow_shell || (rt.allow_shell_in_workdir_only && shell_cwd_is_workdir_scoped(args));
+    if !shell_allowed && !rt.unsafe_bypass_allow_flags {
         return failed_exec(
             rt,
             SideEffects::ShellExec,
-            "shell tool is disabled. Re-run with --allow-shell".to_string(),
+            "shell tool is disabled. Re-run with --allow-shell or --allow-shell-in-workdir"
+                .to_string(),
         );
     }
     let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or_default();
@@ -446,6 +450,27 @@ async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
         })
         .await;
     target_to_exec(SideEffects::ShellExec, out)
+}
+
+fn shell_cwd_is_workdir_scoped(args: &Value) -> bool {
+    let Some(cwd) = args.get("cwd") else {
+        return true;
+    };
+    let Some(cwd_str) = cwd.as_str() else {
+        return false;
+    };
+    let path = std::path::Path::new(cwd_str);
+    if path.is_absolute() {
+        return false;
+    }
+    !path.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    })
 }
 
 async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
@@ -597,6 +622,7 @@ mod tests {
         let rt = ToolRuntime {
             workdir: PathBuf::from("."),
             allow_shell: false,
+            allow_shell_in_workdir_only: false,
             allow_write: false,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 200_000,
@@ -622,6 +648,7 @@ mod tests {
         let rt = ToolRuntime {
             workdir: tmp.path().to_path_buf(),
             allow_shell: false,
+            allow_shell_in_workdir_only: false,
             allow_write: true,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 200_000,
@@ -660,6 +687,7 @@ mod tests {
         let rt = ToolRuntime {
             workdir: tmp.path().to_path_buf(),
             allow_shell: false,
+            allow_shell_in_workdir_only: false,
             allow_write: true,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 200_000,
@@ -688,6 +716,7 @@ mod tests {
         let rt = ToolRuntime {
             workdir: tmp.path().to_path_buf(),
             allow_shell: false,
+            allow_shell_in_workdir_only: false,
             allow_write: false,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 5,
@@ -713,5 +742,31 @@ mod tests {
             parsed.get("truncated").and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn shell_in_workdir_flag_rejects_escaping_cwd() {
+        let tmp = tempdir().expect("tempdir");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: true,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_shell".to_string(),
+            name: "shell".to_string(),
+            arguments: json!({"cmd":"echo","args":["hi"],"cwd":"../"}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let content = msg.content.expect("content");
+        assert!(content.contains("--allow-shell-in-workdir"));
+        assert!(content.contains("\"ok\":false"));
     }
 }

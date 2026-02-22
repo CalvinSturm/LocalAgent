@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.2 - 2026-02-22
+
+- Chat TUI:
+  - added `/mode` command support (`safe`, `coding`, `web`, `custom`) to switch runtime mode in-session
+  - added `/timeout` command (`/timeout`, `/timeout <seconds|+N|-N>`) to tune request/stream idle timeout in-session
+  - added `/dismiss` command to clear active timeout notification
+  - provider timeout failures now emit a `/timeout` guidance notice
+  - aligned `?` keybind overlay rows for uniform formatting
+  - updated header/footer presentation (mode label in header, right-justified help marker, cwd + connection status footer)
+  - replaced single-line prompt row with a boxed input area
+- Startup UI:
+  - refreshed layout with compact `Mode` + `Provider` panes and footer controls
+  - added provider details toggle (`D`) and centered footer control rows
+
 ## v0.1.0 - 2026-02-21
 
 - Released LocalAgent v0.1.0 (local-runtime agent CLI).
