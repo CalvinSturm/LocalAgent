@@ -59,6 +59,7 @@ use hooks::protocol::{PreModelCompactionPayload, PreModelPayload, ToolResultPayl
 use hooks::runner::{make_pre_model_input, make_tool_result_input, HookManager, HookRuntimeConfig};
 use instructions::InstructionResolution;
 use providers::http::HttpConfig;
+use providers::mock::MockProvider;
 use providers::ollama::OllamaProvider;
 use providers::openai_compat::OpenAiCompatProvider;
 use providers::ModelProvider;
@@ -1063,6 +1064,7 @@ async fn main() -> anyhow::Result<()> {
                                 let provider = match loaded.profile.provider.as_deref() {
                                     Some("lmstudio") => ProviderKind::Lmstudio,
                                     Some("llamacpp") => ProviderKind::Llamacpp,
+                                    Some("mock") => ProviderKind::Mock,
                                     _ => ProviderKind::Ollama,
                                 };
                                 let base_url = loaded
@@ -1452,6 +1454,19 @@ async fn main() -> anyhow::Result<()> {
                 ));
             }
         }
+        ProviderKind::Mock => {
+            let provider = MockProvider::new();
+            let _ = run_agent(
+                provider,
+                provider_kind,
+                &base_url,
+                &model,
+                &prompt,
+                &cli.run,
+                &paths,
+            )
+            .await?;
+        }
     }
 
     Ok(())
@@ -1498,6 +1513,7 @@ async fn discover_model_for_provider(
         ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
             discover_openai_compat_model(base_url, http).await
         }
+        ProviderKind::Mock => Some("mock-model".to_string()),
     }
 }
 
@@ -1725,6 +1741,19 @@ async fn run_chat_repl(
                         default_base_url(provider_kind)
                     );
                 }
+            }
+            ProviderKind::Mock => {
+                let provider = MockProvider::new();
+                let _ = run_agent(
+                    provider,
+                    provider_kind,
+                    &base_url,
+                    &model,
+                    input,
+                    &turn_args,
+                    paths,
+                )
+                .await?;
             }
         }
     }
@@ -2174,6 +2203,20 @@ async fn run_chat_tui(
                                         base_url.clone(),
                                         http_config_from_run_args(&turn_args),
                                     )?;
+                                    Box::pin(run_agent_with_ui(
+                                        provider,
+                                        provider_kind,
+                                        &base_url,
+                                        &model,
+                                        &line,
+                                        &turn_args,
+                                        paths,
+                                        Some(tx),
+                                        true,
+                                    ))
+                                }
+                                ProviderKind::Mock => {
+                                    let provider = MockProvider::new();
                                     Box::pin(run_agent_with_ui(
                                         provider,
                                         provider_kind,
@@ -3602,6 +3645,19 @@ async fn run_tasks_graph(
                 )
                 .await?
             }
+            ProviderKind::Mock => {
+                let provider = MockProvider::new();
+                run_agent(
+                    provider,
+                    provider_kind,
+                    &base_url,
+                    &model,
+                    &prompt,
+                    &node_args,
+                    paths,
+                )
+                .await?
+            }
         };
         executed = executed.saturating_add(1);
         let exit_reason = result.outcome.exit_reason.as_str().to_string();
@@ -4609,6 +4665,7 @@ async fn doctor_check(args: &DoctorArgs) -> Result<String, String> {
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
     match args.provider {
+        ProviderKind::Mock => Ok(format!("OK: mock provider ready at {}", base_url)),
         ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
             let urls = doctor_probe_urls(args.provider, &base_url);
             let models_url = &urls[0];
@@ -4714,6 +4771,7 @@ fn default_base_url(provider: ProviderKind) -> &'static str {
         ProviderKind::Lmstudio => "http://localhost:1234/v1",
         ProviderKind::Llamacpp => "http://localhost:8080/v1",
         ProviderKind::Ollama => "http://localhost:11434",
+        ProviderKind::Mock => "mock://local",
     }
 }
 
@@ -4768,6 +4826,7 @@ fn apply_eval_profile_overrides(
             args.provider = match v.as_str() {
                 "lmstudio" => ProviderKind::Lmstudio,
                 "llamacpp" => ProviderKind::Llamacpp,
+                "mock" => ProviderKind::Mock,
                 _ => ProviderKind::Ollama,
             };
         }
@@ -4878,6 +4937,7 @@ fn provider_cli_name(provider: ProviderKind) -> &'static str {
         ProviderKind::Lmstudio => "lmstudio",
         ProviderKind::Llamacpp => "llamacpp",
         ProviderKind::Ollama => "ollama",
+        ProviderKind::Mock => "mock",
     }
 }
 
@@ -4888,6 +4948,7 @@ fn doctor_probe_urls(provider: ProviderKind, base_url: &str) -> Vec<String> {
             vec![format!("{trimmed}/models"), trimmed]
         }
         ProviderKind::Ollama => vec![format!("{trimmed}/api/tags")],
+        ProviderKind::Mock => vec![trimmed],
     }
 }
 

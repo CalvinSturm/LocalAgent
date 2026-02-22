@@ -1671,6 +1671,7 @@ fn provider_name(provider: crate::gate::ProviderKind) -> &'static str {
         crate::gate::ProviderKind::Lmstudio => "lmstudio",
         crate::gate::ProviderKind::Llamacpp => "llamacpp",
         crate::gate::ProviderKind::Ollama => "ollama",
+        crate::gate::ProviderKind::Mock => "mock",
     }
 }
 

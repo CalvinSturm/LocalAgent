@@ -20,6 +20,7 @@ pub enum ProviderKind {
     Lmstudio,
     Llamacpp,
     Ollama,
+    Mock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

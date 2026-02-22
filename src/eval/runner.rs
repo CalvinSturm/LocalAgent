@@ -21,6 +21,7 @@ use crate::hooks::runner::{HookManager, HookRuntimeConfig};
 use crate::mcp::registry::{list_servers, McpRegistry};
 use crate::planner::RunMode;
 use crate::providers::http::HttpConfig;
+use crate::providers::mock::MockProvider;
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::providers::ModelProvider;
@@ -1575,6 +1576,7 @@ fn build_gate(trust: TrustMode, paths: &StatePaths) -> anyhow::Result<GateBuild>
 enum EvalProvider {
     OpenAiCompat(OpenAiCompatProvider),
     Ollama(OllamaProvider),
+    Mock(MockProvider),
 }
 
 #[async_trait::async_trait]
@@ -1586,6 +1588,7 @@ impl ModelProvider for EvalProvider {
         match self {
             EvalProvider::OpenAiCompat(p) => p.generate(req).await,
             EvalProvider::Ollama(p) => p.generate(req).await,
+            EvalProvider::Mock(p) => p.generate(req).await,
         }
     }
 }
@@ -1604,6 +1607,7 @@ fn make_provider(
             base_url.to_string(),
             http,
         )?)),
+        ProviderKind::Mock => Ok(EvalProvider::Mock(MockProvider::new())),
     }
 }
 

@@ -516,6 +516,7 @@ pub fn provider_to_string(provider: crate::gate::ProviderKind) -> String {
         crate::gate::ProviderKind::Lmstudio => "lmstudio".to_string(),
         crate::gate::ProviderKind::Llamacpp => "llamacpp".to_string(),
         crate::gate::ProviderKind::Ollama => "ollama".to_string(),
+        crate::gate::ProviderKind::Mock => "mock".to_string(),
     }
 }
 
