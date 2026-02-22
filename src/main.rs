@@ -1778,6 +1778,7 @@ fn toggle_startup_selection(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_startup_bootstrap_frame(
     f: &mut ratatui::Frame<'_>,
     detection: &StartupDetection,
