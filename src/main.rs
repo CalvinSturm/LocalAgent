@@ -458,6 +458,10 @@ struct EvalArgs {
     runs_per_task: usize,
     #[arg(long, default_value_t = 30)]
     max_steps: usize,
+    #[arg(long, default_value_t = 0)]
+    max_wall_time_ms: u64,
+    #[arg(long, default_value_t = 0)]
+    max_mcp_calls: usize,
     #[arg(long, default_value_t = 600)]
     timeout_seconds: u64,
     #[arg(long, default_value_t = 0.0)]
@@ -620,7 +624,11 @@ struct RunArgs {
     #[arg(long, default_value_t = 20)]
     max_steps: usize,
     #[arg(long, default_value_t = 0)]
+    max_wall_time_ms: u64,
+    #[arg(long, default_value_t = 0)]
     max_total_tool_calls: usize,
+    #[arg(long, default_value_t = 0)]
+    max_mcp_calls: usize,
     #[arg(long, default_value_t = 0)]
     max_filesystem_read_calls: usize,
     #[arg(long, default_value_t = 0)]
@@ -1192,6 +1200,8 @@ async fn main() -> anyhow::Result<()> {
                 cost_model_path: args.cost_model.clone(),
                 runs_per_task: args.runs_per_task,
                 max_steps: args.max_steps,
+                max_wall_time_ms: args.max_wall_time_ms,
+                max_mcp_calls: args.max_mcp_calls,
                 timeout_seconds: args.timeout_seconds,
                 trust: args.trust,
                 approval_mode: args.approval_mode,
@@ -5326,7 +5336,13 @@ async fn run_agent_with_ui<P: ModelProvider>(
         plan_tool_enforcement: effective_plan_tool_enforcement,
         plan_step_constraints,
         tool_call_budget: ToolCallBudget {
+            max_wall_time_ms: if args.no_limits {
+                0
+            } else {
+                args.max_wall_time_ms
+            },
             max_total_tool_calls: args.max_total_tool_calls,
+            max_mcp_calls: args.max_mcp_calls,
             max_filesystem_read_calls: args.max_filesystem_read_calls,
             max_filesystem_write_calls: args.max_filesystem_write_calls,
             max_shell_calls: args.max_shell_calls,
@@ -6459,7 +6475,13 @@ fn build_run_cli_config(
         },
         max_tool_output_bytes: args.max_tool_output_bytes,
         max_read_bytes: args.max_read_bytes,
+        max_wall_time_ms: if args.no_limits {
+            0
+        } else {
+            args.max_wall_time_ms
+        },
         max_total_tool_calls: args.max_total_tool_calls,
+        max_mcp_calls: args.max_mcp_calls,
         max_filesystem_read_calls: args.max_filesystem_read_calls,
         max_filesystem_write_calls: args.max_filesystem_write_calls,
         max_shell_calls: args.max_shell_calls,
@@ -6574,7 +6596,13 @@ fn build_config_fingerprint(
         max_steps: args.max_steps,
         max_tool_output_bytes: args.max_tool_output_bytes,
         max_read_bytes: args.max_read_bytes,
+        max_wall_time_ms: if args.no_limits {
+            0
+        } else {
+            args.max_wall_time_ms
+        },
         max_total_tool_calls: args.max_total_tool_calls,
+        max_mcp_calls: args.max_mcp_calls,
         max_filesystem_read_calls: args.max_filesystem_read_calls,
         max_filesystem_write_calls: args.max_filesystem_write_calls,
         max_shell_calls: args.max_shell_calls,
@@ -7653,7 +7681,9 @@ rules:
             api_key: None,
             prompt: None,
             max_steps: 20,
+            max_wall_time_ms: 0,
             max_total_tool_calls: 0,
+            max_mcp_calls: 0,
             max_filesystem_read_calls: 0,
             max_filesystem_write_calls: 0,
             max_shell_calls: 0,

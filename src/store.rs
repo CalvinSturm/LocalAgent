@@ -148,7 +148,11 @@ pub struct RunCliConfig {
     pub max_tool_output_bytes: usize,
     pub max_read_bytes: usize,
     #[serde(default)]
+    pub max_wall_time_ms: u64,
+    #[serde(default)]
     pub max_total_tool_calls: usize,
+    #[serde(default)]
+    pub max_mcp_calls: usize,
     #[serde(default)]
     pub max_filesystem_read_calls: usize,
     #[serde(default)]
@@ -263,7 +267,11 @@ pub struct ConfigFingerprintV1 {
     pub max_tool_output_bytes: usize,
     pub max_read_bytes: usize,
     #[serde(default)]
+    pub max_wall_time_ms: u64,
+    #[serde(default)]
     pub max_total_tool_calls: usize,
+    #[serde(default)]
+    pub max_mcp_calls: usize,
     #[serde(default)]
     pub max_filesystem_read_calls: usize,
     #[serde(default)]
@@ -839,7 +847,9 @@ mod tests {
                 docker_user: None,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
+                max_wall_time_ms: 0,
                 max_total_tool_calls: 0,
+                max_mcp_calls: 0,
                 max_filesystem_read_calls: 0,
                 max_filesystem_write_calls: 0,
                 max_shell_calls: 0,
@@ -1002,7 +1012,9 @@ mod tests {
                 docker_user: None,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
+                max_wall_time_ms: 0,
                 max_total_tool_calls: 0,
+                max_mcp_calls: 0,
                 max_filesystem_read_calls: 0,
                 max_filesystem_write_calls: 0,
                 max_shell_calls: 0,
@@ -1134,7 +1146,9 @@ mod tests {
             max_steps: 20,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 200_000,
+            max_wall_time_ms: 0,
             max_total_tool_calls: 0,
+            max_mcp_calls: 0,
             max_filesystem_read_calls: 0,
             max_filesystem_write_calls: 0,
             max_shell_calls: 0,

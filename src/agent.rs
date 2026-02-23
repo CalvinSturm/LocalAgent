@@ -86,7 +86,9 @@ impl AgentExitReason {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ToolCallBudget {
+    pub max_wall_time_ms: u64,
     pub max_total_tool_calls: usize,
+    pub max_mcp_calls: usize,
     pub max_filesystem_read_calls: usize,
     pub max_filesystem_write_calls: usize,
     pub max_shell_calls: usize,
@@ -247,6 +249,7 @@ pub struct Agent<P: ModelProvider> {
 #[derive(Debug, Default, Clone, Copy)]
 struct ToolCallBudgetUsage {
     total_tool_calls: usize,
+    mcp_calls: usize,
     filesystem_read_calls: usize,
     filesystem_write_calls: usize,
     shell_calls: usize,
@@ -334,6 +337,25 @@ fn check_and_consume_tool_budget(
     None
 }
 
+fn check_and_consume_mcp_budget(
+    budget: &ToolCallBudget,
+    usage: &mut ToolCallBudgetUsage,
+    is_mcp_tool: bool,
+) -> Option<String> {
+    if !is_mcp_tool {
+        return None;
+    }
+    let next_mcp = usage.mcp_calls.saturating_add(1);
+    if budget.max_mcp_calls > 0 && next_mcp > budget.max_mcp_calls {
+        return Some(format!(
+            "runtime budget exceeded: mcp tool calls {} > limit {}",
+            next_mcp, budget.max_mcp_calls
+        ));
+    }
+    usage.mcp_calls = next_mcp;
+    None
+}
+
 impl<P: ModelProvider> Agent<P> {
     fn emit_event(&mut self, run_id: &str, step: u32, kind: EventKind, data: serde_json::Value) {
         if let Some(sink) = &mut self.event_sink {
@@ -414,12 +436,68 @@ impl<P: ModelProvider> Agent<P> {
         let mut schema_repair_attempts: std::collections::BTreeMap<String, u32> =
             std::collections::BTreeMap::new();
         let mut tool_budget_usage = ToolCallBudgetUsage::default();
+        let run_started = std::time::Instant::now();
         let mut announced_plan_step_id: Option<String> = None;
         let expected_mcp_catalog_hash_hex = self
             .mcp_registry
             .as_ref()
             .and_then(|m| m.configured_tool_catalog_hash_hex().ok());
         'agent_steps: for step in 0..self.max_steps {
+            if self.tool_call_budget.max_wall_time_ms > 0 {
+                let elapsed_ms = run_started.elapsed().as_millis() as u64;
+                if elapsed_ms > self.tool_call_budget.max_wall_time_ms {
+                    let reason = format!(
+                        "runtime budget exceeded: wall time {}ms > limit {}ms",
+                        elapsed_ms, self.tool_call_budget.max_wall_time_ms
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "runtime_budget",
+                            "elapsed_ms": elapsed_ms,
+                            "max_wall_time_ms": self.tool_call_budget.max_wall_time_ms
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::RunEnd,
+                        serde_json::json!({"exit_reason":"budget_exceeded"}),
+                    );
+                    let final_prompt_size_chars = context_size_chars(&messages);
+                    return AgentOutcome {
+                        run_id,
+                        started_at,
+                        finished_at: crate::trust::now_rfc3339(),
+                        exit_reason: AgentExitReason::BudgetExceeded,
+                        final_output: reason.clone(),
+                        error: Some(reason),
+                        messages,
+                        tool_calls: observed_tool_calls,
+                        tool_decisions: observed_tool_decisions,
+                        compaction_settings: self.compaction_settings.clone(),
+                        final_prompt_size_chars,
+                        compaction_report: last_compaction_report,
+                        hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                        token_usage: if saw_token_usage {
+                            Some(total_token_usage.clone())
+                        } else {
+                            None
+                        },
+                        taint: taint_record_from_state(
+                            self.taint_toggle,
+                            self.taint_mode,
+                            self.taint_digest_bytes,
+                            &taint_state,
+                        ),
+                    };
+                }
+            }
             if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
                 && !self.plan_step_constraints.is_empty()
                 && active_plan_step_idx < self.plan_step_constraints.len()
@@ -1907,6 +1985,7 @@ impl<P: ModelProvider> Agent<P> {
                                     "side_effects": side_effects,
                                     "budget": {
                                         "max_total_tool_calls": self.tool_call_budget.max_total_tool_calls,
+                                        "max_mcp_calls": self.tool_call_budget.max_mcp_calls,
                                         "max_filesystem_read_calls": self.tool_call_budget.max_filesystem_read_calls,
                                         "max_filesystem_write_calls": self.tool_call_budget.max_filesystem_write_calls,
                                         "max_shell_calls": self.tool_call_budget.max_shell_calls,
@@ -1961,6 +2040,63 @@ impl<P: ModelProvider> Agent<P> {
                                 step as u32,
                                 EventKind::Error,
                                 serde_json::json!({"error": reason.clone()}),
+                            );
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::RunEnd,
+                                serde_json::json!({"exit_reason":"budget_exceeded"}),
+                            );
+                            return AgentOutcome {
+                                run_id,
+                                started_at,
+                                finished_at: crate::trust::now_rfc3339(),
+                                exit_reason: AgentExitReason::BudgetExceeded,
+                                final_output: reason.clone(),
+                                error: Some(reason),
+                                messages,
+                                tool_calls: observed_tool_calls,
+                                tool_decisions: observed_tool_decisions,
+                                compaction_settings: self.compaction_settings.clone(),
+                                final_prompt_size_chars: request_context_chars,
+                                compaction_report: last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                                token_usage: if saw_token_usage {
+                                    Some(total_token_usage.clone())
+                                } else {
+                                    None
+                                },
+                                taint: taint_record_from_state(
+                                    self.taint_toggle,
+                                    self.taint_mode,
+                                    self.taint_digest_bytes,
+                                    &taint_state,
+                                ),
+                            };
+                        }
+                        if let Some(reason) = check_and_consume_mcp_budget(
+                            &self.tool_call_budget,
+                            &mut tool_budget_usage,
+                            tc.name.starts_with("mcp."),
+                        ) {
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::ToolDecision,
+                                serde_json::json!({
+                                    "tool_call_id": tc.id,
+                                    "name": tc.name,
+                                    "decision": "deny",
+                                    "reason": reason.clone(),
+                                    "source": "runtime_budget",
+                                    "side_effects": side_effects,
+                                    "budget": {
+                                        "max_total_tool_calls": self.tool_call_budget.max_total_tool_calls,
+                                        "max_mcp_calls": self.tool_call_budget.max_mcp_calls
+                                    }
+                                }),
                             );
                             self.emit_event(
                                 &run_id,
@@ -2182,6 +2318,58 @@ impl<P: ModelProvider> Agent<P> {
                                         step as u32,
                                         EventKind::Error,
                                         serde_json::json!({"error": reason.clone()}),
+                                    );
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::RunEnd,
+                                        serde_json::json!({"exit_reason":"budget_exceeded"}),
+                                    );
+                                    return AgentOutcome {
+                                        run_id,
+                                        started_at,
+                                        finished_at: crate::trust::now_rfc3339(),
+                                        exit_reason: AgentExitReason::BudgetExceeded,
+                                        final_output: reason.clone(),
+                                        error: Some(reason),
+                                        messages,
+                                        tool_calls: observed_tool_calls,
+                                        tool_decisions: observed_tool_decisions,
+                                        compaction_settings: self.compaction_settings.clone(),
+                                        final_prompt_size_chars: request_context_chars,
+                                        compaction_report: last_compaction_report,
+                                        hook_invocations,
+                                        provider_retry_count,
+                                        provider_error_count,
+                                        token_usage: if saw_token_usage {
+                                            Some(total_token_usage.clone())
+                                        } else {
+                                            None
+                                        },
+                                        taint: taint_record_from_state(
+                                            self.taint_toggle,
+                                            self.taint_mode,
+                                            self.taint_digest_bytes,
+                                            &taint_state,
+                                        ),
+                                    };
+                                }
+                                if let Some(reason) = check_and_consume_mcp_budget(
+                                    &self.tool_call_budget,
+                                    &mut tool_budget_usage,
+                                    tc.name.starts_with("mcp."),
+                                ) {
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::Error,
+                                        serde_json::json!({
+                                            "error": reason.clone(),
+                                            "source": "runtime_budget",
+                                            "budget": {
+                                                "max_mcp_calls": self.tool_call_budget.max_mcp_calls
+                                            }
+                                        }),
                                     );
                                     self.emit_event(
                                         &run_id,

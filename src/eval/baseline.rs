@@ -43,6 +43,8 @@ pub struct SummaryExpectation {
     pub max_avg_tool_failures_by_class: BTreeMap<String, f64>,
     #[serde(default)]
     pub max_avg_step_invariant_violations: Option<f64>,
+    #[serde(default)]
+    pub max_exit_reason_rates: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +149,7 @@ pub fn create_baseline_from_results(
             max_avg_tool_retries: Some(avg_tool_retries(&results)),
             max_avg_tool_failures_by_class: avg_tool_failures_by_class(&results),
             max_avg_step_invariant_violations: Some(avg_step_invariant_violations(&results)),
+            max_exit_reason_rates: avg_exit_reason_rates(&results),
         },
         task_expectations,
     };
@@ -217,6 +220,20 @@ pub fn compare_results(baseline: &EvalBaseline, results: &EvalResults) -> Regres
                 key: "avg_step_invariant_violations".to_string(),
                 expected: format!("<= {max_avg:.4}"),
                 actual: format!("{avg:.4}"),
+            });
+        }
+    }
+    for (reason, max_rate) in &baseline.summary_expectations.max_exit_reason_rates {
+        let rate = avg_exit_reason_rates(results)
+            .get(reason)
+            .copied()
+            .unwrap_or(0.0);
+        if rate > *max_rate {
+            failures.push(RegressionFailure {
+                scope: "summary".to_string(),
+                key: format!("exit_reason_rate.{reason}"),
+                expected: format!("<= {max_rate:.4}"),
+                actual: format!("{rate:.4}"),
             });
         }
     }
@@ -343,6 +360,26 @@ pub fn avg_step_invariant_violations(results: &EvalResults) -> f64 {
     } else {
         total as f64 / count as f64
     }
+}
+
+pub fn avg_exit_reason_rates(results: &EvalResults) -> BTreeMap<String, f64> {
+    let mut totals: BTreeMap<String, u64> = BTreeMap::new();
+    let mut count = 0u64;
+    for run in &results.runs {
+        if run.status == "skipped" {
+            continue;
+        }
+        count = count.saturating_add(1);
+        let entry = totals.entry(run.exit_reason.clone()).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+    if count == 0 {
+        return BTreeMap::new();
+    }
+    totals
+        .into_iter()
+        .map(|(reason, total)| (reason, total as f64 / count as f64))
+        .collect()
 }
 
 fn dominant_tool_sequence_for_task(results: &EvalResults, task: &str) -> Vec<String> {
@@ -610,11 +647,10 @@ mod tests {
         });
         let reg = compare_results(&bl, &current);
         assert!(!reg.passed);
-        assert!(
-            reg.failures
-                .iter()
-                .any(|f| f.key == "avg_step_invariant_violations")
-        );
+        assert!(reg
+            .failures
+            .iter()
+            .any(|f| f.key == "avg_step_invariant_violations"));
     }
 
     #[test]
@@ -653,10 +689,36 @@ mod tests {
         });
         let reg = compare_results(&bl, &current);
         assert!(!reg.passed);
-        assert!(
-            reg.failures
-                .iter()
-                .any(|f| f.key == "C1.avg_tool_sequence_distance")
-        );
+        assert!(reg
+            .failures
+            .iter()
+            .any(|f| f.key == "C1.avg_tool_sequence_distance"));
+    }
+
+    #[test]
+    fn compare_results_flags_exit_reason_rate_regression() {
+        let baseline_results = sample_results();
+        let td = tempfile::tempdir().expect("tempdir");
+        let rp = td.path().join("results.json");
+        fs::write(
+            &rp,
+            serde_json::to_vec_pretty(&baseline_results).expect("serialize"),
+        )
+        .expect("write");
+        let _ = create_baseline_from_results(td.path(), "b1", &rp).expect("create");
+        let mut bl = load_baseline(td.path(), "b1").expect("load");
+        bl.summary_expectations
+            .max_exit_reason_rates
+            .insert("budget_exceeded".to_string(), 0.0);
+
+        let mut current = baseline_results;
+        current.runs[0].exit_reason = "budget_exceeded".to_string();
+        current.runs[1].exit_reason = "budget_exceeded".to_string();
+        let reg = compare_results(&bl, &current);
+        assert!(!reg.passed);
+        assert!(reg
+            .failures
+            .iter()
+            .any(|f| f.key == "exit_reason_rate.budget_exceeded"));
     }
 }
