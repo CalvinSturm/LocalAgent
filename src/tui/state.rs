@@ -36,6 +36,7 @@ pub struct UiState {
     pub caps_source: String,
     pub policy_hash: String,
     pub mcp_catalog_hash: String,
+    pub mcp_lifecycle: String,
     pub net_status: String,
     pub assistant_text: String,
     pub tool_calls: Vec<ToolRow>,
@@ -72,6 +73,7 @@ impl UiState {
             caps_source: String::new(),
             policy_hash: String::new(),
             mcp_catalog_hash: String::new(),
+            mcp_lifecycle: "IDLE".to_string(),
             net_status: "OK".to_string(),
             assistant_text: String::new(),
             tool_calls: Vec::new(),
@@ -118,13 +120,31 @@ impl UiState {
                     self.enforce_plan_tools_effective = mode.to_string();
                 }
                 self.net_status = "OK".to_string();
+                self.mcp_lifecycle = "IDLE".to_string();
             }
             EventKind::RunEnd => {
-                self.exit_reason = ev
+                let exit_reason = ev
                     .data
                     .get("exit_reason")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                self.exit_reason = exit_reason.clone();
+                if exit_reason.as_deref() == Some("cancelled") {
+                    if self
+                        .tool_calls
+                        .iter()
+                        .any(|t| is_mcp_tool(&t.tool_name) && t.status == "running")
+                    {
+                        self.mcp_lifecycle = "CANCELLED".to_string();
+                    }
+                    for row in &mut self.tool_calls {
+                        if is_mcp_tool(&row.tool_name) && row.status == "running" {
+                            row.status = "CANCEL:user".to_string();
+                            row.reason_token = "user".to_string();
+                            row.ok = Some(false);
+                        }
+                    }
+                }
                 self.next_hint = "done".to_string();
             }
             EventKind::ModelDelta => {
@@ -196,6 +216,7 @@ impl UiState {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
+                let is_mcp = is_mcp_tool(&name);
                 let is_deny = decision == "deny";
                 let is_pending = decision == "require_approval";
                 {
@@ -225,6 +246,13 @@ impl UiState {
                 } else if is_pending {
                     self.next_hint = "pending_approval".to_string();
                 }
+                if is_mcp {
+                    if is_pending {
+                        self.mcp_lifecycle = "WAIT:APPROVAL".to_string();
+                    } else if is_deny {
+                        self.mcp_lifecycle = "DENY".to_string();
+                    }
+                }
             }
             EventKind::ToolExecStart => {
                 let id = ev
@@ -246,6 +274,14 @@ impl UiState {
                     .unwrap_or_default()
                     .to_string();
                 let _ = self.upsert_tool(id, name, side, "running");
+                if is_mcp_tool(
+                    ev.data
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                ) {
+                    self.mcp_lifecycle = "RUNNING".to_string();
+                }
             }
             EventKind::ToolExecEnd => {
                 let id = ev
@@ -284,6 +320,21 @@ impl UiState {
                 if matches!(ok, Some(true)) {
                     self.bump_usage(&side_effects);
                     self.next_hint = "continue".to_string();
+                    if is_mcp_tool(
+                        ev.data
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default(),
+                    ) {
+                        self.mcp_lifecycle = "DONE".to_string();
+                    }
+                } else if is_mcp_tool(
+                    ev.data
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                ) {
+                    self.mcp_lifecycle = "FAIL".to_string();
                 }
                 self.last_tool_retry_count = ev
                     .data
@@ -370,6 +421,13 @@ impl UiState {
                     .unwrap_or("stop");
                 if class == "E_SCHEMA" && action == "repair" {
                     self.schema_repair_seen = true;
+                }
+                if is_mcp_tool(tool) {
+                    if action == "retry" {
+                        self.mcp_lifecycle = "WAIT:RETRY".to_string();
+                    } else if action == "stop" {
+                        self.mcp_lifecycle = "FAIL".to_string();
+                    }
                 }
                 self.last_failure_class = class.to_string();
                 self.last_tool_retry_count = attempt;
@@ -573,6 +631,18 @@ impl UiState {
     pub fn mcp_hash_short(&self) -> String {
         short_hash(&self.mcp_catalog_hash)
     }
+
+    pub fn mcp_status_compact(&self) -> String {
+        if self.mcp_catalog_hash.is_empty() {
+            "-".to_string()
+        } else {
+            format!("{}:{}", self.mcp_hash_short(), self.mcp_lifecycle)
+        }
+    }
+}
+
+fn is_mcp_tool(name: &str) -> bool {
+    name.starts_with("mcp.")
 }
 
 fn truncate_chars(input: &str, max_chars: usize) -> String {
@@ -690,5 +760,53 @@ mod tests {
         store.approve(&id, None, None).expect("approve");
         s.refresh_approvals(&path).expect("refresh2");
         assert_eq!(s.pending_approvals[0].status, "approved");
+    }
+
+    #[test]
+    fn mcp_lifecycle_running_retry_done() {
+        let mut s = UiState::new(10);
+        s.mcp_catalog_hash = "abcdef123456".to_string();
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecStart,
+            serde_json::json!({"tool_call_id":"tc1","name":"mcp.playwright.browser_snapshot","side_effects":"browser"}),
+        ));
+        assert_eq!(s.mcp_lifecycle, "RUNNING");
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolRetry,
+            serde_json::json!({"name":"mcp.playwright.browser_snapshot","attempt":1,"max_retries":1,"failure_class":"E_TIMEOUT_TRANSIENT","action":"retry"}),
+        ));
+        assert_eq!(s.mcp_lifecycle, "WAIT:RETRY");
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecEnd,
+            serde_json::json!({"tool_call_id":"tc1","name":"mcp.playwright.browser_snapshot","ok":true,"content":"ok","retry_count":1,"failure_class":null}),
+        ));
+        assert_eq!(s.mcp_lifecycle, "DONE");
+        assert!(s.mcp_status_compact().contains("DONE"));
+    }
+
+    #[test]
+    fn mcp_running_tool_marked_cancelled_on_run_cancel() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecStart,
+            serde_json::json!({"tool_call_id":"tc1","name":"mcp.playwright.browser_snapshot","side_effects":"browser"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::RunEnd,
+            serde_json::json!({"exit_reason":"cancelled"}),
+        ));
+        assert_eq!(s.mcp_lifecycle, "CANCELLED");
+        assert_eq!(s.tool_calls[0].status, "CANCEL:user");
+        assert_eq!(s.tool_calls[0].reason_token, "user");
     }
 }

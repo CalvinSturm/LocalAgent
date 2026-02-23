@@ -25,7 +25,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
         state.total_tool_execs,
         state.filesystem_write_execs,
         state.pending_approvals.len(),
-        state.mcp_hash_short(),
+        state.mcp_status_compact(),
         if state.schema_repair_seen { "FIX" } else { "OK" },
         state.net_status,
         if state.run_id.is_empty() { "-" } else { &state.run_id },
