@@ -43,6 +43,8 @@ pub struct UiState {
     pub next_hint: String,
     pub enforce_plan_tools_effective: String,
     pub schema_repair_seen: bool,
+    pub last_failure_class: String,
+    pub last_tool_retry_count: u64,
     pub total_tool_execs: u64,
     pub filesystem_read_execs: u64,
     pub filesystem_write_execs: u64,
@@ -73,6 +75,8 @@ impl UiState {
             next_hint: "-".to_string(),
             enforce_plan_tools_effective: "-".to_string(),
             schema_repair_seen: false,
+            last_failure_class: "-".to_string(),
+            last_tool_retry_count: 0,
             total_tool_execs: 0,
             filesystem_read_execs: 0,
             filesystem_write_execs: 0,
@@ -259,6 +263,18 @@ impl UiState {
                     self.bump_usage(&side_effects);
                     self.next_hint = "continue".to_string();
                 }
+                self.last_tool_retry_count = ev
+                    .data
+                    .get("retry_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                self.last_failure_class = ev
+                    .data
+                    .get("failure_class")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("-")
+                    .to_string();
             }
             EventKind::PolicyLoaded => {
                 if let Some(hash) = ev.data.get("policy_hash_hex").and_then(|v| v.as_str()) {
@@ -331,6 +347,8 @@ impl UiState {
                 if class == "E_SCHEMA" && action == "repair" {
                     self.schema_repair_seen = true;
                 }
+                self.last_failure_class = class.to_string();
+                self.last_tool_retry_count = attempt;
                 self.push_log(format!(
                     "tool_retry: {tool} class={class} attempt={attempt}/{max_retries} action={action}"
                 ));
@@ -547,6 +565,28 @@ mod tests {
             serde_json::json!({"name":"read_file","attempt":1,"max_retries":1,"failure_class":"E_SCHEMA","action":"repair"}),
         ));
         assert!(s.schema_repair_seen);
+        assert_eq!(s.last_failure_class, "E_SCHEMA");
+        assert_eq!(s.last_tool_retry_count, 1);
+    }
+
+    #[test]
+    fn failure_class_and_retry_count_are_captured_on_tool_exec_end() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecEnd,
+            serde_json::json!({
+                "tool_call_id":"tc1",
+                "name":"read_file",
+                "ok":false,
+                "content":"error",
+                "retry_count":1,
+                "failure_class":"E_TIMEOUT_TRANSIENT"
+            }),
+        ));
+        assert_eq!(s.last_failure_class, "E_TIMEOUT_TRANSIENT");
+        assert_eq!(s.last_tool_retry_count, 1);
     }
 
     #[test]

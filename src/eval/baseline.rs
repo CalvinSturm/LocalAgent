@@ -35,6 +35,8 @@ pub struct SummaryExpectation {
     pub max_avg_steps: Option<f64>,
     #[serde(default)]
     pub max_avg_tool_retries: Option<f64>,
+    #[serde(default)]
+    pub max_avg_tool_failures_by_class: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +135,7 @@ pub fn create_baseline_from_results(
             min_pass_rate: Some(results.summary.pass_rate),
             max_avg_steps: Some(avg_steps(&results)),
             max_avg_tool_retries: Some(avg_tool_retries(&results)),
+            max_avg_tool_failures_by_class: avg_tool_failures_by_class(&results),
         },
         task_expectations,
     };
@@ -173,6 +176,20 @@ pub fn compare_results(baseline: &EvalBaseline, results: &EvalResults) -> Regres
             failures.push(RegressionFailure {
                 scope: "summary".to_string(),
                 key: "avg_tool_retries".to_string(),
+                expected: format!("<= {max_avg:.4}"),
+                actual: format!("{avg:.4}"),
+            });
+        }
+    }
+    for (class, max_avg) in &baseline.summary_expectations.max_avg_tool_failures_by_class {
+        let avg = avg_tool_failures_by_class(results)
+            .get(class)
+            .copied()
+            .unwrap_or(0.0);
+        if avg > *max_avg {
+            failures.push(RegressionFailure {
+                scope: "summary".to_string(),
+                key: format!("avg_tool_failures_by_class.{class}"),
                 expected: format!("<= {max_avg:.4}"),
                 actual: format!("{avg:.4}"),
             });
@@ -246,6 +263,30 @@ pub fn avg_tool_retries(results: &EvalResults) -> f64 {
     }
 }
 
+pub fn avg_tool_failures_by_class(results: &EvalResults) -> BTreeMap<String, f64> {
+    let mut totals: BTreeMap<String, u64> = BTreeMap::new();
+    let mut count = 0u64;
+    for run in &results.runs {
+        if run.status == "skipped" {
+            continue;
+        }
+        count = count.saturating_add(1);
+        if let Some(metrics) = &run.metrics {
+            for (class, value) in &metrics.tool_failures_by_class {
+                let entry = totals.entry(class.clone()).or_insert(0);
+                *entry = (*entry).saturating_add(*value as u64);
+            }
+        }
+    }
+    if count == 0 {
+        return BTreeMap::new();
+    }
+    totals
+        .into_iter()
+        .map(|(class, total)| (class, total as f64 / count as f64))
+        .collect()
+}
+
 fn aggregate_task_rates(results: &EvalResults) -> BTreeMap<String, (f64, f64)> {
     let mut counts: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new(); // pass, fail, total_non_skip
     for run in &results.runs {
@@ -278,7 +319,7 @@ mod tests {
     use std::fs;
 
     use crate::eval::runner::{
-        EvalResults, EvalResultsConfig, EvalRunRow, EvalRunStats, EvalSummary,
+        EvalResults, EvalResultsConfig, EvalRunMetrics, EvalRunRow, EvalRunStats, EvalSummary,
     };
 
     use super::{compare_results, create_baseline_from_results, load_baseline, RegressionResult};
@@ -361,5 +402,47 @@ mod tests {
         assert_eq!(bl.schema_version, "openagent.eval_baseline.v1");
         let reg: RegressionResult = compare_results(&bl, &sample_results());
         assert!(reg.passed);
+    }
+
+    #[test]
+    fn compare_results_flags_failure_class_regression() {
+        let mut baseline_results = sample_results();
+        baseline_results.runs[0].metrics = Some(EvalRunMetrics {
+            tool_failures_by_class: BTreeMap::from([(String::from("E_TIMEOUT_TRANSIENT"), 1)]),
+            ..Default::default()
+        });
+        baseline_results.runs[1].metrics = Some(EvalRunMetrics {
+            tool_failures_by_class: BTreeMap::new(),
+            ..Default::default()
+        });
+
+        let td = tempfile::tempdir().expect("tempdir");
+        let rp = td.path().join("results.json");
+        fs::write(
+            &rp,
+            serde_json::to_vec_pretty(&baseline_results).expect("serialize"),
+        )
+        .expect("write");
+        let _ = create_baseline_from_results(td.path(), "b1", &rp).expect("create");
+        let mut bl = load_baseline(td.path(), "b1").expect("load");
+        bl.summary_expectations
+            .max_avg_tool_failures_by_class
+            .insert("E_TIMEOUT_TRANSIENT".to_string(), 0.1);
+
+        let mut current = baseline_results.clone();
+        current.runs[0].metrics = Some(EvalRunMetrics {
+            tool_failures_by_class: BTreeMap::from([(String::from("E_TIMEOUT_TRANSIENT"), 2)]),
+            ..Default::default()
+        });
+        current.runs[1].metrics = Some(EvalRunMetrics {
+            tool_failures_by_class: BTreeMap::from([(String::from("E_TIMEOUT_TRANSIENT"), 2)]),
+            ..Default::default()
+        });
+        let reg = compare_results(&bl, &current);
+        assert!(!reg.passed);
+        assert!(reg
+            .failures
+            .iter()
+            .any(|f| f.key == "avg_tool_failures_by_class.E_TIMEOUT_TRANSIENT"));
     }
 }

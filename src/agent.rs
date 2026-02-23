@@ -199,7 +199,16 @@ impl ToolFailureClass {
         }
     }
 
-    fn retry_limit(self) -> u32 {
+    fn retry_limit_for(self, side_effects: SideEffects) -> u32 {
+        if matches!(
+            side_effects,
+            SideEffects::FilesystemWrite
+                | SideEffects::ShellExec
+                | SideEffects::Network
+                | SideEffects::Browser
+        ) {
+            return 0;
+        }
         match self {
             Self::Schema => 1,
             Self::TimeoutTransient => 1,
@@ -1674,7 +1683,7 @@ impl<P: ModelProvider> Agent<P> {
                                     break;
                                 }
                                 let class = classify_tool_failure(tc, &current_content, false);
-                                let max_retries = class.retry_limit();
+                                let max_retries = class.retry_limit_for(side_effects);
                                 if tool_retry_count >= max_retries {
                                     self.emit_event(
                                         &run_id,
@@ -3115,6 +3124,25 @@ mod tests {
         assert_eq!(
             super::classify_tool_failure(&tc_mcp, &net_msg, false).as_str(),
             "E_NETWORK_TRANSIENT"
+        );
+    }
+
+    #[test]
+    fn retry_policy_disables_blind_retries_for_side_effectful_tools() {
+        assert_eq!(
+            super::ToolFailureClass::TimeoutTransient
+                .retry_limit_for(crate::types::SideEffects::FilesystemRead),
+            1
+        );
+        assert_eq!(
+            super::ToolFailureClass::TimeoutTransient
+                .retry_limit_for(crate::types::SideEffects::ShellExec),
+            0
+        );
+        assert_eq!(
+            super::ToolFailureClass::NetworkTransient
+                .retry_limit_for(crate::types::SideEffects::Browser),
+            0
         );
     }
 

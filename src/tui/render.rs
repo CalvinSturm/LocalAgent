@@ -87,13 +87,15 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
 
     if state.show_details {
         let diag = format!(
-            "effective_plan_enf={}\nschema_repair={}\nlast_tool={}\nstep_allowed={}",
+            "effective_plan_enf={}\nschema_repair={}\nlast_failure_class={}\nlast_retry_count={}\nlast_tool={}\nstep_allowed={}",
             state.enforce_plan_tools_effective,
             if state.schema_repair_seen {
                 "on"
             } else {
                 "off"
             },
+            state.last_failure_class,
+            state.last_tool_retry_count,
             state.last_tool_summary(),
             state.step_allowed_tools_compact()
         );
