@@ -415,6 +415,10 @@ impl<P: ModelProvider> Agent<P> {
             std::collections::BTreeMap::new();
         let mut tool_budget_usage = ToolCallBudgetUsage::default();
         let mut announced_plan_step_id: Option<String> = None;
+        let expected_mcp_catalog_hash_hex = self
+            .mcp_registry
+            .as_ref()
+            .and_then(|m| m.configured_tool_catalog_hash_hex().ok());
         'agent_steps: for step in 0..self.max_steps {
             if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
                 && !self.plan_step_constraints.is_empty()
@@ -1437,6 +1441,187 @@ impl<P: ModelProvider> Agent<P> {
                         "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                     }),
                 );
+                if tc.name.starts_with("mcp.") {
+                    if let (Some(registry), Some(expected_hash)) = (
+                        self.mcp_registry.as_ref(),
+                        expected_mcp_catalog_hash_hex.as_ref(),
+                    ) {
+                        match registry.live_tool_catalog_hash_hex().await {
+                            Ok(actual_hash) if actual_hash != *expected_hash => {
+                                let reason = format!(
+                                    "MCP_DRIFT detected: tool catalog hash changed during run (expected {}, got {})",
+                                    expected_hash, actual_hash
+                                );
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::McpDrift,
+                                    serde_json::json!({
+                                        "tool_call_id": tc.id,
+                                        "name": tc.name,
+                                        "expected_hash_hex": expected_hash,
+                                        "actual_hash_hex": actual_hash
+                                    }),
+                                );
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::StepBlocked,
+                                    serde_json::json!({
+                                        "tool_call_id": tc.id,
+                                        "name": tc.name,
+                                        "reason": "mcp_drift"
+                                    }),
+                                );
+                                observed_tool_decisions.push(ToolDecisionRecord {
+                                    step: step as u32,
+                                    tool_call_id: tc.id.clone(),
+                                    tool: tc.name.clone(),
+                                    decision: "deny".to_string(),
+                                    reason: Some(reason.clone()),
+                                    source: Some("mcp_drift".to_string()),
+                                    taint_overall: Some(taint_state.overall_str().to_string()),
+                                    taint_enforced: false,
+                                    escalated: false,
+                                    escalation_reason: None,
+                                });
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::ToolDecision,
+                                    serde_json::json!({
+                                        "tool_call_id": tc.id,
+                                        "name": tc.name,
+                                        "decision": "deny",
+                                        "reason": reason,
+                                        "source": "mcp_drift",
+                                        "side_effects": tool_side_effects(&tc.name)
+                                    }),
+                                );
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::RunEnd,
+                                    serde_json::json!({"exit_reason":"denied"}),
+                                );
+                                return AgentOutcome {
+                                    run_id,
+                                    started_at,
+                                    finished_at: crate::trust::now_rfc3339(),
+                                    exit_reason: AgentExitReason::Denied,
+                                    final_output: reason.clone(),
+                                    error: Some(reason),
+                                    messages,
+                                    tool_calls: observed_tool_calls,
+                                    tool_decisions: observed_tool_decisions,
+                                    compaction_settings: self.compaction_settings.clone(),
+                                    final_prompt_size_chars: request_context_chars,
+                                    compaction_report: last_compaction_report,
+                                    hook_invocations,
+                                    provider_retry_count,
+                                    provider_error_count,
+                                    token_usage: if saw_token_usage {
+                                        Some(total_token_usage.clone())
+                                    } else {
+                                        None
+                                    },
+                                    taint: taint_record_from_state(
+                                        self.taint_toggle,
+                                        self.taint_mode,
+                                        self.taint_digest_bytes,
+                                        &taint_state,
+                                    ),
+                                };
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                let reason = format!(
+                                    "MCP_DRIFT verification failed: unable to probe live tool catalog ({e})"
+                                );
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::McpDrift,
+                                    serde_json::json!({
+                                        "tool_call_id": tc.id,
+                                        "name": tc.name,
+                                        "expected_hash_hex": expected_hash,
+                                        "error": e.to_string()
+                                    }),
+                                );
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::StepBlocked,
+                                    serde_json::json!({
+                                        "tool_call_id": tc.id,
+                                        "name": tc.name,
+                                        "reason": "mcp_drift_probe_failed"
+                                    }),
+                                );
+                                observed_tool_decisions.push(ToolDecisionRecord {
+                                    step: step as u32,
+                                    tool_call_id: tc.id.clone(),
+                                    tool: tc.name.clone(),
+                                    decision: "deny".to_string(),
+                                    reason: Some(reason.clone()),
+                                    source: Some("mcp_drift".to_string()),
+                                    taint_overall: Some(taint_state.overall_str().to_string()),
+                                    taint_enforced: false,
+                                    escalated: false,
+                                    escalation_reason: None,
+                                });
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::ToolDecision,
+                                    serde_json::json!({
+                                        "tool_call_id": tc.id,
+                                        "name": tc.name,
+                                        "decision": "deny",
+                                        "reason": reason,
+                                        "source": "mcp_drift",
+                                        "side_effects": tool_side_effects(&tc.name)
+                                    }),
+                                );
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::RunEnd,
+                                    serde_json::json!({"exit_reason":"denied"}),
+                                );
+                                return AgentOutcome {
+                                    run_id,
+                                    started_at,
+                                    finished_at: crate::trust::now_rfc3339(),
+                                    exit_reason: AgentExitReason::Denied,
+                                    final_output: reason.clone(),
+                                    error: Some(reason),
+                                    messages,
+                                    tool_calls: observed_tool_calls,
+                                    tool_decisions: observed_tool_decisions,
+                                    compaction_settings: self.compaction_settings.clone(),
+                                    final_prompt_size_chars: request_context_chars,
+                                    compaction_report: last_compaction_report,
+                                    hook_invocations,
+                                    provider_retry_count,
+                                    provider_error_count,
+                                    token_usage: if saw_token_usage {
+                                        Some(total_token_usage.clone())
+                                    } else {
+                                        None
+                                    },
+                                    taint: taint_record_from_state(
+                                        self.taint_toggle,
+                                        self.taint_mode,
+                                        self.taint_digest_bytes,
+                                        &taint_state,
+                                    ),
+                                };
+                            }
+                        }
+                    }
+                }
                 let plan_constraint = self
                     .plan_step_constraints
                     .get(active_plan_step_idx)

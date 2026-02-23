@@ -7,6 +7,7 @@ use serde_json::json;
 
 use crate::mcp::client::McpClient;
 use crate::mcp::types::{McpConfigFile, McpServerConfig};
+use crate::store::{mcp_tool_snapshot_hash_hex, McpToolSnapshotEntry};
 use crate::tools::{
     envelope_to_message, to_tool_result_envelope, tool_side_effects, validate_schema_args,
     ToolArgsStrict, ToolResultMeta,
@@ -79,6 +80,35 @@ impl McpRegistry {
     ) -> Result<(), String> {
         let schema = self.tool_schema_map.get(&tc.name).and_then(|s| s.as_ref());
         validate_schema_args(&tc.arguments, schema, strict)
+    }
+
+    pub fn configured_tool_catalog_hash_hex(&self) -> anyhow::Result<String> {
+        let snapshot = self
+            .tool_defs
+            .iter()
+            .map(|t| McpToolSnapshotEntry {
+                name: t.name.clone(),
+                parameters: t.parameters.clone(),
+            })
+            .collect::<Vec<_>>();
+        mcp_tool_snapshot_hash_hex(&snapshot)
+    }
+
+    pub async fn live_tool_catalog_hash_hex(&self) -> anyhow::Result<String> {
+        let mut snapshot: Vec<McpToolSnapshotEntry> = Vec::new();
+        for (server, client) in &self.clients {
+            let tools = client.tools_list(self.timeout).await?;
+            for tool in tools {
+                snapshot.push(McpToolSnapshotEntry {
+                    name: format!("mcp.{}.{}", server, tool.name),
+                    parameters: tool
+                        .input_schema
+                        .clone()
+                        .unwrap_or_else(|| json!({"type":"object"})),
+                });
+            }
+        }
+        mcp_tool_snapshot_hash_hex(&snapshot)
     }
 
     pub async fn call_namespaced_tool(
@@ -198,6 +228,8 @@ pub fn list_servers(path: &Path) -> anyhow::Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
     use crate::mcp::types::McpTool;
@@ -225,5 +257,32 @@ mod tests {
         };
         let out = tool_def_from_mcp("stub", &t);
         assert_eq!(out.name, "mcp.stub.echo");
+    }
+
+    #[test]
+    fn configured_catalog_hash_is_stable_for_same_defs() {
+        let defs = vec![ToolDef {
+            name: "mcp.stub.echo".to_string(),
+            description: "Echo".to_string(),
+            parameters: json!({"type":"object","properties":{"x":{"type":"string"}}}),
+            side_effects: SideEffects::Network,
+        }];
+        let reg_a = super::McpRegistry {
+            clients: BTreeMap::new(),
+            tool_map: BTreeMap::new(),
+            tool_schema_map: BTreeMap::new(),
+            tool_defs: defs.clone(),
+            timeout: std::time::Duration::from_secs(1),
+        };
+        let reg_b = super::McpRegistry {
+            clients: BTreeMap::new(),
+            tool_map: BTreeMap::new(),
+            tool_schema_map: BTreeMap::new(),
+            tool_defs: defs,
+            timeout: std::time::Duration::from_secs(1),
+        };
+        let a = reg_a.configured_tool_catalog_hash_hex().expect("hash a");
+        let b = reg_b.configured_tool_catalog_hash_hex().expect("hash b");
+        assert_eq!(a, b);
     }
 }

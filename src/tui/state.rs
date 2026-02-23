@@ -471,6 +471,30 @@ impl UiState {
                     "tool_retry: {tool} class={class} attempt={attempt}/{max_retries} action={action}"
                 ));
             }
+            EventKind::McpDrift => {
+                let expected = ev
+                    .data
+                    .get("expected_hash_hex")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                let actual = ev
+                    .data
+                    .get("actual_hash_hex")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                self.mcp_lifecycle = "DRIFT".to_string();
+                self.mcp_stalled = false;
+                self.mcp_running_for_ms = 0;
+                self.push_log(format!(
+                    "mcp_drift: expected={} actual={} tool={}",
+                    truncate_chars(expected, 12),
+                    truncate_chars(actual, 12),
+                    ev.data
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("mcp.tool")
+                ));
+            }
             EventKind::Error => {
                 let msg = ev
                     .data
@@ -956,5 +980,21 @@ mod tests {
         assert!(s.mcp_stalled);
         assert!(s.mcp_running_for_ms >= 12_000);
         assert_eq!(s.tool_calls[0].status, "STALL");
+    }
+
+    #[test]
+    fn mcp_drift_event_sets_drift_lifecycle() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::McpDrift,
+            serde_json::json!({
+                "name":"mcp.playwright.browser_snapshot",
+                "expected_hash_hex":"abc",
+                "actual_hash_hex":"def"
+            }),
+        ));
+        assert_eq!(s.mcp_lifecycle, "DRIFT");
     }
 }
