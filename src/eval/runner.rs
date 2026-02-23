@@ -1090,6 +1090,7 @@ async fn run_single(
             max_network_calls: 0,
             max_browser_calls: 0,
         },
+        mcp_runtime_trace: Vec::new(),
     };
     let session_messages = Vec::new();
     let outcome = agent.run(&prompt, session_messages, Vec::new()).await;
@@ -1418,6 +1419,7 @@ fn write_run_artifact_for_eval(
         hooks_config_hash_hex,
         Some(fingerprint.clone()),
         None,
+        Vec::new(),
     )?;
     Ok(())
 }

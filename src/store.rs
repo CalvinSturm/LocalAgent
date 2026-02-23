@@ -59,6 +59,8 @@ pub struct RunRecord {
     pub hook_report: Vec<crate::hooks::protocol::HookInvocationReport>,
     #[serde(default)]
     pub tool_catalog: Vec<ToolCatalogEntry>,
+    #[serde(default)]
+    pub mcp_runtime_trace: Vec<crate::agent::McpRuntimeTraceEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub taint: Option<crate::agent::AgentTaintRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -405,6 +407,7 @@ pub fn write_run_record(
     hooks_config_hash_hex: Option<String>,
     config_fingerprint: Option<ConfigFingerprintV1>,
     repro: Option<crate::repro::RunReproRecord>,
+    mcp_runtime_trace: Vec<crate::agent::McpRuntimeTraceEntry>,
 ) -> anyhow::Result<PathBuf> {
     ensure_dir(&paths.runs_dir)?;
     let run_path = paths.runs_dir.join(format!("{}.json", outcome.run_id));
@@ -445,6 +448,7 @@ pub fn write_run_record(
         }),
         hook_report: outcome.hook_invocations.clone(),
         tool_catalog,
+        mcp_runtime_trace,
         taint: outcome.taint.clone(),
         repro,
         final_output: outcome.final_output.clone(),
@@ -927,6 +931,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
         )
         .expect("write run");
         let loaded = load_run_record(&paths.state_dir, "run_1").expect("load run");
@@ -1097,6 +1102,7 @@ mod tests {
             compaction: None,
             hook_report: Vec::new(),
             tool_catalog: Vec::new(),
+            mcp_runtime_trace: Vec::new(),
             taint: None,
             repro: None,
             final_output: String::new(),

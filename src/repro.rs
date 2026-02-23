@@ -426,6 +426,8 @@ pub fn verify_run_record(record: &RunRecord, strict: bool) -> anyhow::Result<Rep
         });
     }
 
+    checks.push(verify_mcp_runtime_trace_continuity(record));
+
     let has_error_fail = checks.iter().any(|c| !c.ok && c.severity == "error");
     let has_warn_fail = checks.iter().any(|c| !c.ok && c.severity == "warn");
     let status = if strict {
@@ -458,6 +460,97 @@ fn unavailable_check(name: &str, note: &str) -> ReplayVerifyCheck {
         ok: false,
         severity: "warn".to_string(),
         note: Some(note.to_string()),
+    }
+}
+
+fn verify_mcp_runtime_trace_continuity(record: &RunRecord) -> ReplayVerifyCheck {
+    if record.mcp_runtime_trace.is_empty() {
+        return ReplayVerifyCheck {
+            name: "mcp_runtime_trace_continuity".to_string(),
+            expected: "continuous transitions with terminal lifecycle".to_string(),
+            actual: "unavailable".to_string(),
+            ok: false,
+            severity: "warn".to_string(),
+            note: Some("run record has no MCP runtime trace entries".to_string()),
+        };
+    }
+
+    let mut last_by_tool_call = BTreeMap::<String, String>::new();
+    let mut terminal_by_tool_call = BTreeMap::<String, bool>::new();
+    let mut violations = Vec::<String>::new();
+
+    for entry in &record.mcp_runtime_trace {
+        let Some(tool_call_id) = entry.tool_call_id.as_ref() else {
+            continue;
+        };
+        let lifecycle = entry.lifecycle.as_str();
+        let prev = last_by_tool_call.get(tool_call_id).map(String::as_str);
+        let valid = match prev {
+            None => matches!(lifecycle, "running" | "wait_task" | "wait_retry"),
+            Some("running") => matches!(
+                lifecycle,
+                "running" | "wait_task" | "wait_retry" | "done" | "fail" | "cancelled" | "drift"
+            ),
+            Some("wait_task") => matches!(
+                lifecycle,
+                "wait_task" | "wait_retry" | "running" | "done" | "fail" | "cancelled" | "drift"
+            ),
+            Some("wait_retry") => matches!(
+                lifecycle,
+                "wait_retry" | "running" | "wait_task" | "done" | "fail" | "cancelled" | "drift"
+            ),
+            Some("done" | "fail" | "cancelled" | "drift") => false,
+            Some(_) => false,
+        };
+
+        if !valid {
+            violations.push(format!(
+                "{tool_call_id}:{prev}->{lifecycle}",
+                prev = prev.unwrap_or("none")
+            ));
+            continue;
+        }
+
+        if matches!(lifecycle, "done" | "fail" | "cancelled" | "drift") {
+            terminal_by_tool_call.insert(tool_call_id.clone(), true);
+        }
+        last_by_tool_call.insert(tool_call_id.clone(), lifecycle.to_string());
+    }
+
+    for tool_call_id in last_by_tool_call.keys() {
+        if !terminal_by_tool_call
+            .get(tool_call_id)
+            .copied()
+            .unwrap_or(false)
+        {
+            violations.push(format!("{tool_call_id}:missing_terminal"));
+        }
+    }
+
+    let actual = format!(
+        "tool_calls={} violations={}",
+        last_by_tool_call.len(),
+        violations.len()
+    );
+    ReplayVerifyCheck {
+        name: "mcp_runtime_trace_continuity".to_string(),
+        expected: "continuous transitions with terminal lifecycle".to_string(),
+        actual,
+        ok: violations.is_empty(),
+        severity: "warn".to_string(),
+        note: if violations.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "sample={}",
+                violations
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+        },
     }
 }
 

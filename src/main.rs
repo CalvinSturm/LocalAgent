@@ -5095,6 +5095,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
                         hooks_config_hash_hex.clone(),
                         Some(config_fingerprint.clone()),
                         None,
+                        Vec::new(),
                     ) {
                         Ok(p) => Some(p),
                         Err(write_err) => {
@@ -5271,6 +5272,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
                     hooks_config_hash_hex.clone(),
                     Some(config_fingerprint.clone()),
                     None,
+                    Vec::new(),
                 ) {
                     Ok(p) => Some(p),
                     Err(write_err) => {
@@ -5349,6 +5351,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
             max_network_calls: args.max_network_calls,
             max_browser_calls: args.max_browser_calls,
         },
+        mcp_runtime_trace: Vec::new(),
     };
 
     let base_instruction_messages = instruction_resolution.messages.clone();
@@ -5782,6 +5785,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         hooks_config_hash_hex,
         Some(config_fingerprint.clone()),
         repro_record,
+        agent.mcp_runtime_trace.clone(),
     ) {
         Ok(p) => Some(p),
         Err(e) => {
