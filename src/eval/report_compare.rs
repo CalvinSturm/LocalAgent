@@ -19,6 +19,7 @@ pub struct MetricDelta {
     pub pass_rate_delta: f64,
     pub avg_steps_delta: f64,
     pub avg_tool_calls_delta: f64,
+    pub avg_tool_retries_delta: f64,
     pub avg_wall_time_ms_delta: f64,
 }
 
@@ -117,6 +118,7 @@ fn delta(a: &EvalAggregateMetrics, b: &EvalAggregateMetrics) -> MetricDelta {
         pass_rate_delta: b.pass_rate - a.pass_rate,
         avg_steps_delta: b.avg_steps - a.avg_steps,
         avg_tool_calls_delta: b.avg_tool_calls - a.avg_tool_calls,
+        avg_tool_retries_delta: b.avg_tool_retries - a.avg_tool_retries,
         avg_wall_time_ms_delta: b.avg_wall_time_ms - a.avg_wall_time_ms,
     }
 }
@@ -126,17 +128,18 @@ fn render_markdown(rep: &CompareReport) -> String {
     md.push_str("# Eval Compare Report\n\n");
     md.push_str("## Summary delta (B - A)\n\n");
     md.push_str(&format!(
-        "- pass_rate: {:+.4}\n- avg_steps: {:+.4}\n- avg_tool_calls: {:+.4}\n- avg_wall_time_ms: {:+.4}\n\n",
+        "- pass_rate: {:+.4}\n- avg_steps: {:+.4}\n- avg_tool_calls: {:+.4}\n- avg_tool_retries: {:+.4}\n- avg_wall_time_ms: {:+.4}\n\n",
         rep.summary_delta.pass_rate_delta,
         rep.summary_delta.avg_steps_delta,
         rep.summary_delta.avg_tool_calls_delta,
+        rep.summary_delta.avg_tool_retries_delta,
         rep.summary_delta.avg_wall_time_ms_delta
     ));
     md.push_str("## Per model\n\n");
     for (model, d) in &rep.per_model {
         md.push_str(&format!(
-            "- {}: pass_rate {:+.4}, avg_steps {:+.4}, avg_tool_calls {:+.4}, avg_wall_time_ms {:+.4}\n",
-            model, d.pass_rate_delta, d.avg_steps_delta, d.avg_tool_calls_delta, d.avg_wall_time_ms_delta
+            "- {}: pass_rate {:+.4}, avg_steps {:+.4}, avg_tool_calls {:+.4}, avg_tool_retries {:+.4}, avg_wall_time_ms {:+.4}\n",
+            model, d.pass_rate_delta, d.avg_steps_delta, d.avg_tool_calls_delta, d.avg_tool_retries_delta, d.avg_wall_time_ms_delta
         ));
     }
     md.push_str("\n## Top task regressions\n\n");

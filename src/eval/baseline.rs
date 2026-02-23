@@ -33,6 +33,8 @@ pub struct SummaryExpectation {
     pub min_pass_rate: Option<f64>,
     #[serde(default)]
     pub max_avg_steps: Option<f64>,
+    #[serde(default)]
+    pub max_avg_tool_retries: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +132,7 @@ pub fn create_baseline_from_results(
         summary_expectations: SummaryExpectation {
             min_pass_rate: Some(results.summary.pass_rate),
             max_avg_steps: Some(avg_steps(&results)),
+            max_avg_tool_retries: Some(avg_tool_retries(&results)),
         },
         task_expectations,
     };
@@ -159,6 +162,17 @@ pub fn compare_results(baseline: &EvalBaseline, results: &EvalResults) -> Regres
             failures.push(RegressionFailure {
                 scope: "summary".to_string(),
                 key: "avg_steps".to_string(),
+                expected: format!("<= {max_avg:.4}"),
+                actual: format!("{avg:.4}"),
+            });
+        }
+    }
+    if let Some(max_avg) = baseline.summary_expectations.max_avg_tool_retries {
+        let avg = avg_tool_retries(results);
+        if avg > max_avg {
+            failures.push(RegressionFailure {
+                scope: "summary".to_string(),
+                key: "avg_tool_retries".to_string(),
                 expected: format!("<= {max_avg:.4}"),
                 actual: format!("{avg:.4}"),
             });
@@ -210,6 +224,25 @@ pub fn avg_steps(results: &EvalResults) -> f64 {
         0.0
     } else {
         total_steps as f64 / count as f64
+    }
+}
+
+pub fn avg_tool_retries(results: &EvalResults) -> f64 {
+    let mut total = 0u64;
+    let mut count = 0u64;
+    for run in &results.runs {
+        if run.status == "skipped" {
+            continue;
+        }
+        count = count.saturating_add(1);
+        if let Some(metrics) = &run.metrics {
+            total = total.saturating_add(metrics.tool_retries as u64);
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        total as f64 / count as f64
     }
 }
 

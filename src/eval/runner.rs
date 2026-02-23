@@ -12,6 +12,7 @@ use crate::eval::assert::evaluate_assertions;
 use crate::eval::cost::{estimate_cost_usd, load_cost_model, CostModel};
 use crate::eval::fixtures::FixtureServer;
 use crate::eval::tasks::{tasks_for_pack, EvalPack, EvalTask, Fixture, VerifierSpec};
+use crate::events::{Event, EventKind, EventSink};
 use crate::gate::{
     compute_policy_hash_hex, ApprovalKeyVersion, ApprovalMode, AutoApproveScope, GateContext,
     NoGate, ProviderKind, ToolGate, TrustGate, TrustMode,
@@ -326,6 +327,9 @@ pub struct EvalRunMetrics {
     pub wall_time_ms: u64,
     pub verifier_time_ms: u64,
     pub provider: EvalProviderMetrics,
+    pub tool_retries: u32,
+    #[serde(default)]
+    pub tool_failures_by_class: BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -361,6 +365,18 @@ pub struct EvalAggregateMetrics {
     pub fail_rate: f64,
     pub skip_rate: f64,
     pub avg_provider_retries: f64,
+    pub avg_tool_retries: f64,
+}
+
+struct EvalEventCaptureSink {
+    events: std::sync::Arc<std::sync::Mutex<Vec<Event>>>,
+}
+
+impl EventSink for EvalEventCaptureSink {
+    fn emit(&mut self, event: Event) -> anyhow::Result<()> {
+        self.events.lock().expect("event lock").push(event);
+        Ok(())
+    }
 }
 
 pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf> {
@@ -998,6 +1014,7 @@ async fn run_single(
         config.api_key.clone(),
         config.http,
     )?;
+    let captured_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Event>::new()));
     let mut agent = Agent {
         provider,
         model: model.to_string(),
@@ -1023,7 +1040,9 @@ async fn run_single(
         },
         mcp_registry,
         stream: false,
-        event_sink: None,
+        event_sink: Some(Box::new(EvalEventCaptureSink {
+            events: captured_events.clone(),
+        })),
         compaction_settings: CompactionSettings {
             max_context_chars: config.max_context_chars,
             mode: config.compaction_mode,
@@ -1065,6 +1084,8 @@ async fn run_single(
         .count();
     let tool_calls = outcome.tool_calls.len();
     let tool_calls_by_side_effects = count_tool_calls_by_side_effects(&outcome.tool_calls);
+    let (tool_retries, tool_failures_by_class) =
+        derive_tool_retry_metrics(&captured_events.lock().expect("event lock"));
     let (bytes_read, bytes_written) = derive_io_bytes_from_messages(&outcome.messages);
     let tokens = Some(match outcome.token_usage.clone() {
         Some(t) => EvalTokenMetrics {
@@ -1096,6 +1117,8 @@ async fn run_single(
             http_retries: outcome.provider_retry_count,
             provider_errors: outcome.provider_error_count,
         },
+        tool_retries,
+        tool_failures_by_class,
     };
 
     write_run_artifact_for_eval(
@@ -1376,6 +1399,34 @@ fn count_tool_calls_by_side_effects(
     out
 }
 
+fn derive_tool_retry_metrics(events: &[Event]) -> (u32, BTreeMap<String, u32>) {
+    let mut retries = 0u32;
+    let mut failures_by_class: BTreeMap<String, u32> = BTreeMap::new();
+    for ev in events {
+        match ev.kind {
+            EventKind::ToolRetry => {
+                if ev.data.get("action").and_then(|v| v.as_str()) == Some("retry") {
+                    retries = retries.saturating_add(1);
+                }
+            }
+            EventKind::ToolExecEnd => {
+                let ok = ev.data.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+                if !ok {
+                    let class = ev
+                        .data
+                        .get("failure_class")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("E_OTHER")
+                        .to_string();
+                    *failures_by_class.entry(class).or_insert(0) += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    (retries, failures_by_class)
+}
+
 fn derive_io_bytes_from_messages(messages: &[crate::types::Message]) -> (u64, u64) {
     let mut bytes_read = 0u64;
     let mut bytes_written = 0u64;
@@ -1445,6 +1496,7 @@ fn aggregate_rows(rows: &[&EvalRunRow]) -> EvalAggregateMetrics {
     let mut tools_sum = 0f64;
     let mut wall_sum = 0f64;
     let mut retry_sum = 0f64;
+    let mut tool_retry_sum = 0f64;
     let mut non_skip = 0usize;
     for r in rows {
         match r.status.as_str() {
@@ -1459,6 +1511,7 @@ fn aggregate_rows(rows: &[&EvalRunRow]) -> EvalAggregateMetrics {
                 tools_sum += m.tool_calls as f64;
                 wall_sum += m.wall_time_ms as f64;
                 retry_sum += m.provider.http_retries as f64;
+                tool_retry_sum += m.tool_retries as f64;
             } else {
                 steps_sum += r.stats.steps as f64;
                 tools_sum += r.stats.tool_calls as f64;
@@ -1475,6 +1528,7 @@ fn aggregate_rows(rows: &[&EvalRunRow]) -> EvalAggregateMetrics {
         fail_rate: fail as f64 / total,
         skip_rate: skip as f64 / total,
         avg_provider_retries: retry_sum / denom,
+        avg_tool_retries: tool_retry_sum / denom,
     }
 }
 
@@ -1694,7 +1748,7 @@ fn write_summary_md(path: &Path, results: &EvalResults) -> anyhow::Result<()> {
             .cloned()
             .unwrap_or_default();
         md.push_str(&format!(
-            "- {}: passed {}, failed {}, skipped {}, pass {:.2}%, avg_steps {:.2}, avg_tool_calls {:.2}, avg_provider_retries {:.2}\n",
+            "- {}: passed {}, failed {}, skipped {}, pass {:.2}%, avg_steps {:.2}, avg_tool_calls {:.2}, avg_provider_retries {:.2}, avg_tool_retries {:.2}\n",
             model,
             stats.passed,
             stats.failed,
@@ -1702,7 +1756,8 @@ fn write_summary_md(path: &Path, results: &EvalResults) -> anyhow::Result<()> {
             stats.pass_rate * 100.0,
             metrics.avg_steps,
             metrics.avg_tool_calls,
-            metrics.avg_provider_retries
+            metrics.avg_provider_retries,
+            metrics.avg_tool_retries
         ));
     }
     let total_cost = results
@@ -1870,6 +1925,8 @@ mod tests {
                     wall_time_ms: 30,
                     verifier_time_ms: 0,
                     provider: Default::default(),
+                    tool_retries: 0,
+                    tool_failures_by_class: BTreeMap::new(),
                 }),
                 tokens: None,
                 estimated_cost_usd: None,
