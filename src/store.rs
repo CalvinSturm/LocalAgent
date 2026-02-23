@@ -141,6 +141,18 @@ pub struct RunCliConfig {
     pub docker_user: Option<String>,
     pub max_tool_output_bytes: usize,
     pub max_read_bytes: usize,
+    #[serde(default)]
+    pub max_total_tool_calls: usize,
+    #[serde(default)]
+    pub max_filesystem_read_calls: usize,
+    #[serde(default)]
+    pub max_filesystem_write_calls: usize,
+    #[serde(default)]
+    pub max_shell_calls: usize,
+    #[serde(default)]
+    pub max_network_calls: usize,
+    #[serde(default)]
+    pub max_browser_calls: usize,
     pub approval_mode: String,
     pub auto_approve_scope: String,
     pub approval_key: String,
@@ -236,6 +248,18 @@ pub struct ConfigFingerprintV1 {
     pub max_steps: usize,
     pub max_tool_output_bytes: usize,
     pub max_read_bytes: usize,
+    #[serde(default)]
+    pub max_total_tool_calls: usize,
+    #[serde(default)]
+    pub max_filesystem_read_calls: usize,
+    #[serde(default)]
+    pub max_filesystem_write_calls: usize,
+    #[serde(default)]
+    pub max_shell_calls: usize,
+    #[serde(default)]
+    pub max_network_calls: usize,
+    #[serde(default)]
+    pub max_browser_calls: usize,
     pub session_name: String,
     pub no_session: bool,
     pub max_session_messages: usize,
@@ -787,6 +811,12 @@ mod tests {
                 docker_user: None,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
+                max_total_tool_calls: 0,
+                max_filesystem_read_calls: 0,
+                max_filesystem_write_calls: 0,
+                max_shell_calls: 0,
+                max_network_calls: 0,
+                max_browser_calls: 0,
                 approval_mode: "interrupt".to_string(),
                 auto_approve_scope: "run".to_string(),
                 approval_key: "v1".to_string(),
@@ -940,6 +970,12 @@ mod tests {
                 docker_user: None,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
+                max_total_tool_calls: 0,
+                max_filesystem_read_calls: 0,
+                max_filesystem_write_calls: 0,
+                max_shell_calls: 0,
+                max_network_calls: 0,
+                max_browser_calls: 0,
                 approval_mode: "interrupt".to_string(),
                 auto_approve_scope: "run".to_string(),
                 approval_key: "v1".to_string(),
@@ -1062,6 +1098,12 @@ mod tests {
             max_steps: 20,
             max_tool_output_bytes: 200_000,
             max_read_bytes: 200_000,
+            max_total_tool_calls: 0,
+            max_filesystem_read_calls: 0,
+            max_filesystem_write_calls: 0,
+            max_shell_calls: 0,
+            max_network_calls: 0,
+            max_browser_calls: 0,
             session_name: "default".to_string(),
             no_session: false,
             max_session_messages: 40,

@@ -16,7 +16,7 @@ use crate::tools::{
     validate_builtin_tool_args, ToolResultMeta, ToolRuntime,
 };
 use crate::trust::policy::{McpAllowSummary, Policy};
-use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
+use crate::types::{GenerateRequest, Message, Role, SideEffects, TokenUsage, ToolCall, ToolDef};
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     let without_think = strip_tag_block(raw, "think");
@@ -64,6 +64,7 @@ pub enum AgentExitReason {
     ApprovalRequired,
     HookAborted,
     MaxSteps,
+    BudgetExceeded,
     Cancelled,
 }
 
@@ -77,9 +78,20 @@ impl AgentExitReason {
             AgentExitReason::ApprovalRequired => "approval_required",
             AgentExitReason::HookAborted => "hook_aborted",
             AgentExitReason::MaxSteps => "max_steps",
+            AgentExitReason::BudgetExceeded => "budget_exceeded",
             AgentExitReason::Cancelled => "cancelled",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ToolCallBudget {
+    pub max_total_tool_calls: usize,
+    pub max_filesystem_read_calls: usize,
+    pub max_filesystem_write_calls: usize,
+    pub max_shell_calls: usize,
+    pub max_network_calls: usize,
+    pub max_browser_calls: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +232,97 @@ pub struct Agent<P: ModelProvider> {
     pub omit_tools_field_when_empty: bool,
     pub plan_tool_enforcement: PlanToolEnforcementMode,
     pub plan_step_constraints: Vec<PlanStepConstraint>,
+    pub tool_call_budget: ToolCallBudget,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ToolCallBudgetUsage {
+    total_tool_calls: usize,
+    filesystem_read_calls: usize,
+    filesystem_write_calls: usize,
+    shell_calls: usize,
+    network_calls: usize,
+    browser_calls: usize,
+}
+
+fn side_effect_limit_label(side_effects: SideEffects) -> &'static str {
+    match side_effects {
+        SideEffects::FilesystemRead => "filesystem_read",
+        SideEffects::FilesystemWrite => "filesystem_write",
+        SideEffects::ShellExec => "shell",
+        SideEffects::Network => "network",
+        SideEffects::Browser => "browser",
+        SideEffects::None => "none",
+    }
+}
+
+fn budget_limit_for_side_effects(budget: &ToolCallBudget, side_effects: SideEffects) -> usize {
+    match side_effects {
+        SideEffects::FilesystemRead => budget.max_filesystem_read_calls,
+        SideEffects::FilesystemWrite => budget.max_filesystem_write_calls,
+        SideEffects::ShellExec => budget.max_shell_calls,
+        SideEffects::Network => budget.max_network_calls,
+        SideEffects::Browser => budget.max_browser_calls,
+        SideEffects::None => 0,
+    }
+}
+
+fn budget_usage_for_side_effects(usage: &ToolCallBudgetUsage, side_effects: SideEffects) -> usize {
+    match side_effects {
+        SideEffects::FilesystemRead => usage.filesystem_read_calls,
+        SideEffects::FilesystemWrite => usage.filesystem_write_calls,
+        SideEffects::ShellExec => usage.shell_calls,
+        SideEffects::Network => usage.network_calls,
+        SideEffects::Browser => usage.browser_calls,
+        SideEffects::None => 0,
+    }
+}
+
+fn increment_budget_usage(usage: &mut ToolCallBudgetUsage, side_effects: SideEffects) {
+    usage.total_tool_calls = usage.total_tool_calls.saturating_add(1);
+    match side_effects {
+        SideEffects::FilesystemRead => {
+            usage.filesystem_read_calls = usage.filesystem_read_calls.saturating_add(1)
+        }
+        SideEffects::FilesystemWrite => {
+            usage.filesystem_write_calls = usage.filesystem_write_calls.saturating_add(1)
+        }
+        SideEffects::ShellExec => usage.shell_calls = usage.shell_calls.saturating_add(1),
+        SideEffects::Network => usage.network_calls = usage.network_calls.saturating_add(1),
+        SideEffects::Browser => usage.browser_calls = usage.browser_calls.saturating_add(1),
+        SideEffects::None => {}
+    }
+}
+
+fn check_and_consume_tool_budget(
+    budget: &ToolCallBudget,
+    usage: &mut ToolCallBudgetUsage,
+    side_effects: SideEffects,
+) -> Option<String> {
+    let next_total = usage.total_tool_calls.saturating_add(1);
+    if budget.max_total_tool_calls > 0 && next_total > budget.max_total_tool_calls {
+        return Some(format!(
+            "runtime budget exceeded: total tool calls {} > limit {}",
+            next_total, budget.max_total_tool_calls
+        ));
+    }
+
+    let side_effect_limit = budget_limit_for_side_effects(budget, side_effects);
+    if side_effect_limit > 0 {
+        let next_side_effect_count =
+            budget_usage_for_side_effects(usage, side_effects).saturating_add(1);
+        if next_side_effect_count > side_effect_limit {
+            return Some(format!(
+                "runtime budget exceeded: {} tool calls {} > limit {}",
+                side_effect_limit_label(side_effects),
+                next_side_effect_count,
+                side_effect_limit
+            ));
+        }
+    }
+
+    increment_budget_usage(usage, side_effects);
+    None
 }
 
 impl<P: ModelProvider> Agent<P> {
@@ -299,6 +402,7 @@ impl<P: ModelProvider> Agent<P> {
         let mut blocked_halt_count: u32 = 0;
         let mut step_retry_counts: std::collections::BTreeMap<String, u32> =
             std::collections::BTreeMap::new();
+        let mut tool_budget_usage = ToolCallBudgetUsage::default();
         for step in 0..self.max_steps {
             let compacted = match maybe_compact(&messages, &self.compaction_settings) {
                 Ok(c) => c,
@@ -1359,6 +1463,115 @@ impl<P: ModelProvider> Agent<P> {
                         escalated,
                         escalation_reason,
                     } => {
+                        let side_effects = tool_side_effects(&tc.name);
+                        if let Some(reason) = check_and_consume_tool_budget(
+                            &self.tool_call_budget,
+                            &mut tool_budget_usage,
+                            side_effects,
+                        ) {
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::ToolDecision,
+                                serde_json::json!({
+                                    "tool_call_id": tc.id,
+                                    "name": tc.name,
+                                    "decision": "deny",
+                                    "reason": reason.clone(),
+                                    "source": "runtime_budget",
+                                    "side_effects": side_effects,
+                                    "budget": {
+                                        "max_total_tool_calls": self.tool_call_budget.max_total_tool_calls,
+                                        "max_filesystem_read_calls": self.tool_call_budget.max_filesystem_read_calls,
+                                        "max_filesystem_write_calls": self.tool_call_budget.max_filesystem_write_calls,
+                                        "max_shell_calls": self.tool_call_budget.max_shell_calls,
+                                        "max_network_calls": self.tool_call_budget.max_network_calls,
+                                        "max_browser_calls": self.tool_call_budget.max_browser_calls
+                                    }
+                                }),
+                            );
+                            self.gate.record(GateEvent {
+                                run_id: run_id.clone(),
+                                step: step as u32,
+                                tool_call_id: tc.id.clone(),
+                                tool: tc.name.clone(),
+                                arguments: tc.arguments.clone(),
+                                decision: "deny".to_string(),
+                                decision_reason: Some(reason.clone()),
+                                decision_source: Some("runtime_budget".to_string()),
+                                approval_id: None,
+                                approval_key: None,
+                                approval_mode: approval_mode_meta.clone(),
+                                auto_approve_scope: auto_scope_meta.clone(),
+                                approval_key_version: approval_key_version_meta.clone(),
+                                tool_schema_hash_hex: tool_schema_hash_hex.clone(),
+                                hooks_config_hash_hex: hooks_config_hash_hex.clone(),
+                                planner_hash_hex: planner_hash_hex.clone(),
+                                exec_target: decision_exec_target.clone(),
+                                taint_overall: Some(taint_state.overall_str().to_string()),
+                                taint_enforced: false,
+                                escalated: false,
+                                escalation_reason: None,
+                                result_ok: false,
+                                result_content: reason.clone(),
+                                result_input_digest: None,
+                                result_output_digest: None,
+                                result_input_len: None,
+                                result_output_len: None,
+                            });
+                            observed_tool_decisions.push(ToolDecisionRecord {
+                                step: step as u32,
+                                tool_call_id: tc.id.clone(),
+                                tool: tc.name.clone(),
+                                decision: "deny".to_string(),
+                                reason: Some(reason.clone()),
+                                source: Some("runtime_budget".to_string()),
+                                taint_overall: Some(taint_state.overall_str().to_string()),
+                                taint_enforced: false,
+                                escalated: false,
+                                escalation_reason: None,
+                            });
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::Error,
+                                serde_json::json!({"error": reason.clone()}),
+                            );
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::RunEnd,
+                                serde_json::json!({"exit_reason":"budget_exceeded"}),
+                            );
+                            return AgentOutcome {
+                                run_id,
+                                started_at,
+                                finished_at: crate::trust::now_rfc3339(),
+                                exit_reason: AgentExitReason::BudgetExceeded,
+                                final_output: reason.clone(),
+                                error: Some(reason),
+                                messages,
+                                tool_calls: observed_tool_calls,
+                                tool_decisions: observed_tool_decisions,
+                                compaction_settings: self.compaction_settings.clone(),
+                                final_prompt_size_chars: request_context_chars,
+                                compaction_report: last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                                token_usage: if saw_token_usage {
+                                    Some(total_token_usage.clone())
+                                } else {
+                                    None
+                                },
+                                taint: taint_record_from_state(
+                                    self.taint_toggle,
+                                    self.taint_mode,
+                                    self.taint_digest_bytes,
+                                    &taint_state,
+                                ),
+                            };
+                        }
                         self.emit_event(
                             &run_id,
                             step as u32,
@@ -1449,6 +1662,106 @@ impl<P: ModelProvider> Agent<P> {
                                     }),
                                 );
                                 tool_retry_count = tool_retry_count.saturating_add(1);
+                                if let Some(reason) = check_and_consume_tool_budget(
+                                    &self.tool_call_budget,
+                                    &mut tool_budget_usage,
+                                    side_effects,
+                                ) {
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::ToolDecision,
+                                        serde_json::json!({
+                                            "tool_call_id": tc.id,
+                                            "name": tc.name,
+                                            "decision": "deny",
+                                            "reason": reason.clone(),
+                                            "source": "runtime_budget",
+                                            "side_effects": side_effects
+                                        }),
+                                    );
+                                    self.gate.record(GateEvent {
+                                        run_id: run_id.clone(),
+                                        step: step as u32,
+                                        tool_call_id: tc.id.clone(),
+                                        tool: tc.name.clone(),
+                                        arguments: tc.arguments.clone(),
+                                        decision: "deny".to_string(),
+                                        decision_reason: Some(reason.clone()),
+                                        decision_source: Some("runtime_budget".to_string()),
+                                        approval_id: None,
+                                        approval_key: None,
+                                        approval_mode: approval_mode_meta.clone(),
+                                        auto_approve_scope: auto_scope_meta.clone(),
+                                        approval_key_version: approval_key_version_meta.clone(),
+                                        tool_schema_hash_hex: tool_schema_hash_hex.clone(),
+                                        hooks_config_hash_hex: hooks_config_hash_hex.clone(),
+                                        planner_hash_hex: planner_hash_hex.clone(),
+                                        exec_target: decision_exec_target.clone(),
+                                        taint_overall: Some(taint_state.overall_str().to_string()),
+                                        taint_enforced: false,
+                                        escalated: false,
+                                        escalation_reason: None,
+                                        result_ok: false,
+                                        result_content: reason.clone(),
+                                        result_input_digest: None,
+                                        result_output_digest: None,
+                                        result_input_len: None,
+                                        result_output_len: None,
+                                    });
+                                    observed_tool_decisions.push(ToolDecisionRecord {
+                                        step: step as u32,
+                                        tool_call_id: tc.id.clone(),
+                                        tool: tc.name.clone(),
+                                        decision: "deny".to_string(),
+                                        reason: Some(reason.clone()),
+                                        source: Some("runtime_budget".to_string()),
+                                        taint_overall: Some(taint_state.overall_str().to_string()),
+                                        taint_enforced: false,
+                                        escalated: false,
+                                        escalation_reason: None,
+                                    });
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::Error,
+                                        serde_json::json!({"error": reason.clone()}),
+                                    );
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::RunEnd,
+                                        serde_json::json!({"exit_reason":"budget_exceeded"}),
+                                    );
+                                    return AgentOutcome {
+                                        run_id,
+                                        started_at,
+                                        finished_at: crate::trust::now_rfc3339(),
+                                        exit_reason: AgentExitReason::BudgetExceeded,
+                                        final_output: reason.clone(),
+                                        error: Some(reason),
+                                        messages,
+                                        tool_calls: observed_tool_calls,
+                                        tool_decisions: observed_tool_decisions,
+                                        compaction_settings: self.compaction_settings.clone(),
+                                        final_prompt_size_chars: request_context_chars,
+                                        compaction_report: last_compaction_report,
+                                        hook_invocations,
+                                        provider_retry_count,
+                                        provider_error_count,
+                                        token_usage: if saw_token_usage {
+                                            Some(total_token_usage.clone())
+                                        } else {
+                                            None
+                                        },
+                                        taint: taint_record_from_state(
+                                            self.taint_toggle,
+                                            self.taint_mode,
+                                            self.taint_digest_bytes,
+                                            &taint_state,
+                                        ),
+                                    };
+                                }
                                 tool_msg =
                                     run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref())
                                         .await;
@@ -2466,7 +2779,7 @@ mod tests {
 
     use super::{
         sanitize_user_visible_output, Agent, AgentExitReason, PlanStepConstraint,
-        PlanToolEnforcementMode,
+        PlanToolEnforcementMode, ToolCallBudget,
     };
     use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
     use crate::gate::{ApprovalMode, AutoApproveScope, GateContext, NoGate, ProviderKind};
@@ -2598,6 +2911,7 @@ mod tests {
             omit_tools_field_when_empty: false,
             plan_tool_enforcement: PlanToolEnforcementMode::Off,
             plan_step_constraints: Vec::new(),
+            tool_call_budget: ToolCallBudget::default(),
         };
         let out = agent.run("hi", vec![], Vec::new()).await;
         assert_eq!(out.final_output, "done");
@@ -2681,6 +2995,7 @@ mod tests {
             omit_tools_field_when_empty: false,
             plan_tool_enforcement: PlanToolEnforcementMode::Off,
             plan_step_constraints: Vec::new(),
+            tool_call_budget: ToolCallBudget::default(),
         };
         let mem_msg = Message {
             role: Role::Developer,
@@ -2817,6 +3132,36 @@ mod tests {
         }
     }
 
+    struct DualToolProvider;
+
+    #[async_trait]
+    impl ModelProvider for DualToolProvider {
+        async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+            Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![
+                    crate::types::ToolCall {
+                        id: "tc1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: serde_json::json!({"path":"a.txt"}),
+                    },
+                    crate::types::ToolCall {
+                        id: "tc2".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: serde_json::json!({"path":"a.txt"}),
+                    },
+                ],
+                usage: None,
+            })
+        }
+    }
+
     struct StaticContentProvider {
         content: String,
     }
@@ -2923,6 +3268,7 @@ mod tests {
             omit_tools_field_when_empty: false,
             plan_tool_enforcement: PlanToolEnforcementMode::Off,
             plan_step_constraints: Vec::new(),
+            tool_call_budget: ToolCallBudget::default(),
         };
         let out = agent.run("hi", vec![], Vec::new()).await;
         assert_eq!(out.final_output, "done");
@@ -3019,6 +3365,7 @@ mod tests {
                 step_id: "S1".to_string(),
                 intended_tools: vec!["list_dir".to_string()],
             }],
+            tool_call_budget: ToolCallBudget::default(),
         };
         let out = agent.run("hi", vec![], Vec::new()).await;
         assert!(matches!(out.exit_reason, AgentExitReason::Denied));
@@ -3107,10 +3454,103 @@ mod tests {
                 step_id: "S1".to_string(),
                 intended_tools: vec!["read_file".to_string()],
             }],
+            tool_call_budget: ToolCallBudget::default(),
         };
         let out = agent.run("hi", vec![], Vec::new()).await;
         assert!(matches!(out.exit_reason, AgentExitReason::PlannerError));
         assert!(out.error.as_deref().unwrap_or_default().contains("halt"));
+    }
+
+    #[tokio::test]
+    async fn tool_budget_exceeded_returns_deterministic_exit() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        tokio::fs::write(tmp.path().join("a.txt"), "x")
+            .await
+            .expect("write");
+        let mut agent = Agent {
+            provider: DualToolProvider,
+            model: "m".to_string(),
+            tools: vec![crate::types::ToolDef {
+                name: "read_file".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({"type":"object"}),
+                side_effects: crate::types::SideEffects::FilesystemRead,
+            }],
+            max_steps: 1,
+            tool_rt: ToolRuntime {
+                workdir: tmp.path().to_path_buf(),
+                allow_shell: false,
+                allow_shell_in_workdir_only: false,
+                allow_write: false,
+                max_tool_output_bytes: 200_000,
+                max_read_bytes: 200_000,
+                unsafe_bypass_allow_flags: false,
+                tool_args_strict: ToolArgsStrict::On,
+                exec_target_kind: ExecTargetKind::Host,
+                exec_target: std::sync::Arc::new(HostTarget),
+            },
+            gate: Box::new(NoGate::new()),
+            gate_ctx: GateContext {
+                workdir: tmp.path().to_path_buf(),
+                allow_shell: false,
+                allow_write: false,
+                approval_mode: ApprovalMode::Interrupt,
+                auto_approve_scope: AutoApproveScope::Run,
+                unsafe_mode: false,
+                unsafe_bypass_allow_flags: false,
+                run_id: None,
+                enable_write_tools: false,
+                max_tool_output_bytes: 200_000,
+                max_read_bytes: 200_000,
+                provider: ProviderKind::Ollama,
+                model: "m".to_string(),
+                exec_target: ExecTargetKind::Host,
+                approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+                tool_schema_hashes: std::collections::BTreeMap::new(),
+                hooks_config_hash_hex: None,
+                planner_hash_hex: None,
+                taint_enabled: false,
+                taint_mode: crate::taint::TaintMode::Propagate,
+                taint_overall: crate::taint::TaintLevel::Clean,
+                taint_sources: Vec::new(),
+            },
+            mcp_registry: None,
+            stream: false,
+            event_sink: None,
+            compaction_settings: CompactionSettings {
+                max_context_chars: 0,
+                mode: CompactionMode::Off,
+                keep_last: 20,
+                tool_result_persist: ToolResultPersist::Digest,
+            },
+            hooks: HookManager::build(HookRuntimeConfig {
+                mode: HooksMode::Off,
+                config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+                strict: false,
+                timeout_ms: 1000,
+                max_stdout_bytes: 200_000,
+            })
+            .expect("hooks"),
+            policy_loaded: None,
+            policy_for_taint: None,
+            taint_toggle: crate::taint::TaintToggle::Off,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_digest_bytes: 4096,
+            run_id_override: None,
+            omit_tools_field_when_empty: false,
+            plan_tool_enforcement: PlanToolEnforcementMode::Off,
+            plan_step_constraints: Vec::new(),
+            tool_call_budget: ToolCallBudget {
+                max_total_tool_calls: 1,
+                ..ToolCallBudget::default()
+            },
+        };
+        let out = agent.run("hi", vec![], Vec::new()).await;
+        assert!(matches!(out.exit_reason, AgentExitReason::BudgetExceeded));
+        assert!(out
+            .tool_decisions
+            .iter()
+            .any(|d| d.source.as_deref() == Some("runtime_budget")));
     }
 
     #[tokio::test]
@@ -3199,6 +3639,7 @@ mod tests {
                     intended_tools: Vec::new(),
                 },
             ],
+            tool_call_budget: ToolCallBudget::default(),
         };
         let out = agent.run("hi", vec![], Vec::new()).await;
         assert!(matches!(out.exit_reason, AgentExitReason::PlannerError));

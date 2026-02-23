@@ -28,7 +28,7 @@ use std::time::Duration;
 use crate::mcp::registry::{
     doctor_server as mcp_doctor_server, list_servers as mcp_list_servers, McpRegistry,
 };
-use agent::{Agent, AgentExitReason, PlanToolEnforcementMode, PolicyLoadedInfo};
+use agent::{Agent, AgentExitReason, PlanToolEnforcementMode, PolicyLoadedInfo, ToolCallBudget};
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand, ValueEnum};
 use compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
@@ -619,6 +619,18 @@ struct RunArgs {
     prompt: Option<String>,
     #[arg(long, default_value_t = 20)]
     max_steps: usize,
+    #[arg(long, default_value_t = 0)]
+    max_total_tool_calls: usize,
+    #[arg(long, default_value_t = 0)]
+    max_filesystem_read_calls: usize,
+    #[arg(long, default_value_t = 0)]
+    max_filesystem_write_calls: usize,
+    #[arg(long, default_value_t = 0)]
+    max_shell_calls: usize,
+    #[arg(long, default_value_t = 0)]
+    max_network_calls: usize,
+    #[arg(long, default_value_t = 0)]
+    max_browser_calls: usize,
     #[arg(long, default_value = ".")]
     workdir: PathBuf,
     #[arg(long)]
@@ -5274,6 +5286,14 @@ async fn run_agent_with_ui<P: ModelProvider>(
         omit_tools_field_when_empty: false,
         plan_tool_enforcement: args.enforce_plan_tools,
         plan_step_constraints,
+        tool_call_budget: ToolCallBudget {
+            max_total_tool_calls: args.max_total_tool_calls,
+            max_filesystem_read_calls: args.max_filesystem_read_calls,
+            max_filesystem_write_calls: args.max_filesystem_write_calls,
+            max_shell_calls: args.max_shell_calls,
+            max_network_calls: args.max_network_calls,
+            max_browser_calls: args.max_browser_calls,
+        },
     };
 
     let base_instruction_messages = instruction_resolution.messages.clone();
@@ -6393,6 +6413,12 @@ fn build_run_cli_config(
         },
         max_tool_output_bytes: args.max_tool_output_bytes,
         max_read_bytes: args.max_read_bytes,
+        max_total_tool_calls: args.max_total_tool_calls,
+        max_filesystem_read_calls: args.max_filesystem_read_calls,
+        max_filesystem_write_calls: args.max_filesystem_write_calls,
+        max_shell_calls: args.max_shell_calls,
+        max_network_calls: args.max_network_calls,
+        max_browser_calls: args.max_browser_calls,
         approval_mode: format!("{:?}", args.approval_mode).to_lowercase(),
         auto_approve_scope: format!("{:?}", args.auto_approve_scope).to_lowercase(),
         approval_key: args.approval_key.as_str().to_string(),
@@ -6494,6 +6520,12 @@ fn build_config_fingerprint(
         max_steps: args.max_steps,
         max_tool_output_bytes: args.max_tool_output_bytes,
         max_read_bytes: args.max_read_bytes,
+        max_total_tool_calls: args.max_total_tool_calls,
+        max_filesystem_read_calls: args.max_filesystem_read_calls,
+        max_filesystem_write_calls: args.max_filesystem_write_calls,
+        max_shell_calls: args.max_shell_calls,
+        max_network_calls: args.max_network_calls,
+        max_browser_calls: args.max_browser_calls,
         session_name: if args.no_session {
             String::new()
         } else {
@@ -7502,6 +7534,12 @@ rules:
             api_key: None,
             prompt: None,
             max_steps: 20,
+            max_total_tool_calls: 0,
+            max_filesystem_read_calls: 0,
+            max_filesystem_write_calls: 0,
+            max_shell_calls: 0,
+            max_network_calls: 0,
+            max_browser_calls: 0,
             workdir: std::path::PathBuf::from("."),
             state_dir: None,
             mcp: Vec::new(),

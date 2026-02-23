@@ -6,7 +6,7 @@ use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::agent::{Agent, AgentExitReason, AgentOutcome, PolicyLoadedInfo};
+use crate::agent::{Agent, AgentExitReason, AgentOutcome, PolicyLoadedInfo, ToolCallBudget};
 use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
 use crate::eval::assert::evaluate_assertions;
 use crate::eval::cost::{estimate_cost_usd, load_cost_model, CostModel};
@@ -1065,6 +1065,7 @@ async fn run_single(
         omit_tools_field_when_empty: false,
         plan_tool_enforcement: crate::agent::PlanToolEnforcementMode::Off,
         plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
     };
     let session_messages = Vec::new();
     let outcome = agent.run(&prompt, session_messages, Vec::new()).await;
@@ -1195,6 +1196,12 @@ fn write_run_artifact_for_eval(
         docker_user: None,
         max_tool_output_bytes: if config.no_limits { 0 } else { 200_000 },
         max_read_bytes: if config.no_limits { 0 } else { 200_000 },
+        max_total_tool_calls: 0,
+        max_filesystem_read_calls: 0,
+        max_filesystem_write_calls: 0,
+        max_shell_calls: 0,
+        max_network_calls: 0,
+        max_browser_calls: 0,
         approval_mode: format!("{:?}", config.approval_mode).to_lowercase(),
         auto_approve_scope: format!("{:?}", config.auto_approve_scope).to_lowercase(),
         approval_key: config.approval_key.as_str().to_string(),
@@ -1279,6 +1286,12 @@ fn write_run_artifact_for_eval(
         max_steps: config.max_steps,
         max_tool_output_bytes: if config.no_limits { 0 } else { 200_000 },
         max_read_bytes: if config.no_limits { 0 } else { 200_000 },
+        max_total_tool_calls: 0,
+        max_filesystem_read_calls: 0,
+        max_filesystem_write_calls: 0,
+        max_shell_calls: 0,
+        max_network_calls: 0,
+        max_browser_calls: 0,
         session_name: if config.no_session {
             String::new()
         } else {
