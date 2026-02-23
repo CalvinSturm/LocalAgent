@@ -36,6 +36,14 @@ pub struct UiState {
     pub pending_approvals: Vec<ApprovalRow>,
     pub logs: Vec<String>,
     pub exit_reason: Option<String>,
+    pub enforce_plan_tools_effective: String,
+    pub schema_repair_seen: bool,
+    pub total_tool_execs: u64,
+    pub filesystem_read_execs: u64,
+    pub filesystem_write_execs: u64,
+    pub shell_execs: u64,
+    pub network_execs: u64,
+    pub browser_execs: u64,
     max_log_lines: usize,
 }
 
@@ -53,6 +61,14 @@ impl UiState {
             pending_approvals: Vec::new(),
             logs: Vec::new(),
             exit_reason: None,
+            enforce_plan_tools_effective: "-".to_string(),
+            schema_repair_seen: false,
+            total_tool_execs: 0,
+            filesystem_read_execs: 0,
+            filesystem_write_execs: 0,
+            shell_execs: 0,
+            network_execs: 0,
+            browser_execs: 0,
             max_log_lines,
         }
     }
@@ -70,6 +86,13 @@ impl UiState {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
+                if let Some(mode) = ev
+                    .data
+                    .get("enforce_plan_tools_effective")
+                    .and_then(|v| v.as_str())
+                {
+                    self.enforce_plan_tools_effective = mode.to_string();
+                }
             }
             EventKind::RunEnd => {
                 self.exit_reason = ev
@@ -141,9 +164,20 @@ impl UiState {
                     .get("reason")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let source = ev
+                    .data
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
                 let row = self.upsert_tool(id, name, side, "decided");
                 row.decision = Some(decision);
                 row.decision_reason = reason;
+                if row.decision.as_deref() == Some("deny") {
+                    row.status = format!("deny:{}", badge_source(&source));
+                } else if row.decision.as_deref() == Some("require_approval") {
+                    row.status = "pending:approval".to_string();
+                }
             }
             EventKind::ToolExecStart => {
                 let id = ev
@@ -185,13 +219,28 @@ impl UiState {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                let row = self.upsert_tool(id, name, String::new(), "done");
-                row.ok = ok;
-                row.short_result = truncate_chars(result, 200);
+                let side_effects = {
+                    let row = self.upsert_tool(id, name, String::new(), "done");
+                    row.ok = ok;
+                    row.short_result = truncate_chars(result, 200);
+                    row.side_effects.clone()
+                };
+                if matches!(ok, Some(true)) {
+                    self.bump_usage(&side_effects);
+                }
             }
             EventKind::PolicyLoaded => {
                 if let Some(hash) = ev.data.get("policy_hash_hex").and_then(|v| v.as_str()) {
                     self.policy_hash = hash.to_string();
+                }
+            }
+            EventKind::PlannerStart | EventKind::WorkerStart => {
+                if let Some(mode) = ev
+                    .data
+                    .get("enforce_plan_tools_effective")
+                    .and_then(|v| v.as_str())
+                {
+                    self.enforce_plan_tools_effective = mode.to_string();
                 }
             }
             EventKind::ProviderError => {
@@ -245,6 +294,9 @@ impl UiState {
                     .get("action")
                     .and_then(|v| v.as_str())
                     .unwrap_or("stop");
+                if class == "E_SCHEMA" && action == "repair" {
+                    self.schema_repair_seen = true;
+                }
                 self.push_log(format!(
                     "tool_retry: {tool} class={class} attempt={attempt}/{max_retries} action={action}"
                 ));
@@ -262,6 +314,22 @@ impl UiState {
                     self.push_log("compaction performed".to_string());
                 }
             }
+        }
+    }
+
+    fn bump_usage(&mut self, side_effects: &str) {
+        self.total_tool_execs = self.total_tool_execs.saturating_add(1);
+        match side_effects {
+            "filesystem_read" => {
+                self.filesystem_read_execs = self.filesystem_read_execs.saturating_add(1)
+            }
+            "filesystem_write" => {
+                self.filesystem_write_execs = self.filesystem_write_execs.saturating_add(1)
+            }
+            "shell_exec" => self.shell_execs = self.shell_execs.saturating_add(1),
+            "network" => self.network_execs = self.network_execs.saturating_add(1),
+            "browser" => self.browser_execs = self.browser_execs.saturating_add(1),
+            _ => {}
         }
     }
 
@@ -332,6 +400,16 @@ impl UiState {
     }
 }
 
+fn badge_source(source: &str) -> &str {
+    match source {
+        "plan_step_constraint" => "plan",
+        "runtime_budget" => "budget",
+        "policy" => "policy",
+        "approval_store" => "approval",
+        _ => "other",
+    }
+}
+
 fn truncate_chars(input: &str, max_chars: usize) -> String {
     if input.chars().count() <= max_chars {
         return input.to_string();
@@ -385,6 +463,20 @@ mod tests {
         assert_eq!(s.tool_calls[0].decision.as_deref(), Some("allow"));
         assert_eq!(s.tool_calls[0].ok, Some(true));
         assert_eq!(s.tool_calls[0].short_result, "abc");
+        assert_eq!(s.total_tool_execs, 1);
+        assert_eq!(s.filesystem_read_execs, 1);
+    }
+
+    #[test]
+    fn schema_repair_flag_turns_on_from_retry_event() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolRetry,
+            serde_json::json!({"name":"read_file","attempt":1,"max_retries":1,"failure_class":"E_SCHEMA","action":"repair"}),
+        ));
+        assert!(s.schema_repair_seen);
     }
 
     #[test]

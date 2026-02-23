@@ -17,7 +17,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
         .split(frame.area());
 
     let top = Line::from(format!(
-        "run={} step={} provider={} model={} caps={} policy={} exit={}",
+        "run={} step={} provider={} model={} caps={} policy={} plan={} schema_repair={} tools={} r={} w={} sh={} net={} br={} exit={}",
         state.run_id,
         state.step,
         state.provider,
@@ -32,6 +32,14 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
         } else {
             &state.policy_hash
         },
+        state.enforce_plan_tools_effective.as_str(),
+        if state.schema_repair_seen { "on" } else { "off" },
+        state.total_tool_execs,
+        state.filesystem_read_execs,
+        state.filesystem_write_execs,
+        state.shell_execs,
+        state.network_execs,
+        state.browser_execs,
         state.exit_reason.as_deref().unwrap_or("-")
     ));
     frame.render_widget(Paragraph::new(top), outer[0]);
@@ -62,21 +70,23 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
                     .to_string(),
             ),
             Cell::from(t.side_effects.clone()),
+            Cell::from(t.decision_reason.clone().unwrap_or_default()),
         ])
     });
     frame.render_widget(
         Table::new(
             rows,
             [
-                Constraint::Length(20),
-                Constraint::Length(10),
-                Constraint::Length(10),
-                Constraint::Length(6),
                 Constraint::Length(18),
+                Constraint::Length(10),
+                Constraint::Length(16),
+                Constraint::Length(6),
+                Constraint::Length(14),
+                Constraint::Min(20),
             ],
         )
         .header(Row::new(vec![
-            "Tool", "Status", "Decision", "OK", "Effects",
+            "Tool", "Status", "Decision", "OK", "Effects", "Reason",
         ]))
         .block(Block::default().title("Tools").borders(Borders::ALL)),
         right[0],
