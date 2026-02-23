@@ -156,6 +156,13 @@ pub struct PlanStepConstraint {
     pub intended_tools: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct WorkerStepStatus {
+    step_id: String,
+    status: String,
+    next_step_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolFailureClass {
     Schema,
@@ -290,6 +297,8 @@ impl<P: ModelProvider> Agent<P> {
         let mut taint_state = TaintState::new();
         let mut active_plan_step_idx: usize = 0;
         let mut blocked_halt_count: u32 = 0;
+        let mut step_retry_counts: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
         for step in 0..self.max_steps {
             let compacted = match maybe_compact(&messages, &self.compaction_settings) {
                 Ok(c) => c,
@@ -804,6 +813,205 @@ impl<P: ModelProvider> Agent<P> {
                 assistant.content = Some(sanitize_user_visible_output(c));
             }
             messages.push(assistant.clone());
+            let worker_step_status =
+                if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
+                    && !self.plan_step_constraints.is_empty()
+                {
+                    parse_worker_step_status(
+                        assistant.content.as_deref().unwrap_or_default(),
+                        &self.plan_step_constraints,
+                    )
+                } else {
+                    None
+                };
+            if let Some(step_status) = worker_step_status.as_ref() {
+                let current_step_id = self
+                    .plan_step_constraints
+                    .get(active_plan_step_idx)
+                    .map(|s| s.step_id.clone())
+                    .unwrap_or_default();
+                match step_status.status.as_str() {
+                    "done" => {
+                        if step_status.step_id != current_step_id {
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::RunEnd,
+                                serde_json::json!({"exit_reason":"planner_error"}),
+                            );
+                            return AgentOutcome {
+                                run_id,
+                                started_at,
+                                finished_at: crate::trust::now_rfc3339(),
+                                exit_reason: AgentExitReason::PlannerError,
+                                final_output: String::new(),
+                                error: Some(format!(
+                                    "invalid step completion transition: got done for {}, expected {}",
+                                    step_status.step_id, current_step_id
+                                )),
+                                messages,
+                                tool_calls: observed_tool_calls,
+                                tool_decisions: observed_tool_decisions,
+                                compaction_settings: self.compaction_settings.clone(),
+                                final_prompt_size_chars: request_context_chars,
+                                compaction_report: last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                                token_usage: if saw_token_usage {
+                                    Some(total_token_usage.clone())
+                                } else {
+                                    None
+                                },
+                                taint: taint_record_from_state(
+                                    self.taint_toggle,
+                                    self.taint_mode,
+                                    self.taint_digest_bytes,
+                                    &taint_state,
+                                ),
+                            };
+                        }
+                        blocked_halt_count = 0;
+                        step_retry_counts.remove(&current_step_id);
+                        if let Some(next) = &step_status.next_step_id {
+                            if next == "final" {
+                                active_plan_step_idx = self.plan_step_constraints.len();
+                            } else if let Some(next_idx) = self
+                                .plan_step_constraints
+                                .iter()
+                                .position(|s| s.step_id == *next)
+                            {
+                                active_plan_step_idx = next_idx;
+                            } else {
+                                self.emit_event(
+                                    &run_id,
+                                    step as u32,
+                                    EventKind::RunEnd,
+                                    serde_json::json!({"exit_reason":"planner_error"}),
+                                );
+                                return AgentOutcome {
+                                    run_id,
+                                    started_at,
+                                    finished_at: crate::trust::now_rfc3339(),
+                                    exit_reason: AgentExitReason::PlannerError,
+                                    final_output: String::new(),
+                                    error: Some(format!(
+                                        "invalid next_step_id in worker status: {}",
+                                        next
+                                    )),
+                                    messages,
+                                    tool_calls: observed_tool_calls,
+                                    tool_decisions: observed_tool_decisions,
+                                    compaction_settings: self.compaction_settings.clone(),
+                                    final_prompt_size_chars: request_context_chars,
+                                    compaction_report: last_compaction_report,
+                                    hook_invocations,
+                                    provider_retry_count,
+                                    provider_error_count,
+                                    token_usage: if saw_token_usage {
+                                        Some(total_token_usage.clone())
+                                    } else {
+                                        None
+                                    },
+                                    taint: taint_record_from_state(
+                                        self.taint_toggle,
+                                        self.taint_mode,
+                                        self.taint_digest_bytes,
+                                        &taint_state,
+                                    ),
+                                };
+                            }
+                        } else if active_plan_step_idx < self.plan_step_constraints.len() {
+                            active_plan_step_idx = active_plan_step_idx.saturating_add(1);
+                        }
+                    }
+                    "retry" => {
+                        let entry = step_retry_counts
+                            .entry(step_status.step_id.clone())
+                            .or_insert(0);
+                        *entry = entry.saturating_add(1);
+                        if *entry > 2 {
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::RunEnd,
+                                serde_json::json!({"exit_reason":"planner_error"}),
+                            );
+                            return AgentOutcome {
+                                run_id,
+                                started_at,
+                                finished_at: crate::trust::now_rfc3339(),
+                                exit_reason: AgentExitReason::PlannerError,
+                                final_output: String::new(),
+                                error: Some(format!(
+                                    "step {} exceeded retry transition limit",
+                                    step_status.step_id
+                                )),
+                                messages,
+                                tool_calls: observed_tool_calls,
+                                tool_decisions: observed_tool_decisions,
+                                compaction_settings: self.compaction_settings.clone(),
+                                final_prompt_size_chars: request_context_chars,
+                                compaction_report: last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                                token_usage: if saw_token_usage {
+                                    Some(total_token_usage.clone())
+                                } else {
+                                    None
+                                },
+                                taint: taint_record_from_state(
+                                    self.taint_toggle,
+                                    self.taint_mode,
+                                    self.taint_digest_bytes,
+                                    &taint_state,
+                                ),
+                            };
+                        }
+                    }
+                    "replan" | "fail" => {
+                        self.emit_event(
+                            &run_id,
+                            step as u32,
+                            EventKind::RunEnd,
+                            serde_json::json!({"exit_reason":"planner_error"}),
+                        );
+                        return AgentOutcome {
+                            run_id,
+                            started_at,
+                            finished_at: crate::trust::now_rfc3339(),
+                            exit_reason: AgentExitReason::PlannerError,
+                            final_output: String::new(),
+                            error: Some(format!(
+                                "worker requested {} transition for step {}",
+                                step_status.status, step_status.step_id
+                            )),
+                            messages,
+                            tool_calls: observed_tool_calls,
+                            tool_decisions: observed_tool_decisions,
+                            compaction_settings: self.compaction_settings.clone(),
+                            final_prompt_size_chars: request_context_chars,
+                            compaction_report: last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            token_usage: if saw_token_usage {
+                                Some(total_token_usage.clone())
+                            } else {
+                                None
+                            },
+                            taint: taint_record_from_state(
+                                self.taint_toggle,
+                                self.taint_mode,
+                                self.taint_digest_bytes,
+                                &taint_state,
+                            ),
+                        };
+                    }
+                    _ => {}
+                }
+            }
             if matches!(self.taint_toggle, TaintToggle::On) {
                 let idx = messages.len().saturating_sub(1);
                 taint_state.mark_assistant_context_tainted(idx);
@@ -923,7 +1131,6 @@ impl<P: ModelProvider> Agent<P> {
                 };
             }
 
-            let mut saw_plan_violation = false;
             for tc in &resp.tool_calls {
                 observed_tool_calls.push(tc.clone());
                 self.emit_event(
@@ -997,7 +1204,6 @@ impl<P: ModelProvider> Agent<P> {
                     .to_string(),
                 );
                 if !plan_tool_allowed {
-                    saw_plan_violation = true;
                     let step_id = plan_constraint
                         .as_ref()
                         .map(|c| c.step_id.clone())
@@ -1872,13 +2078,6 @@ impl<P: ModelProvider> Agent<P> {
                     }
                 }
             }
-            if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-                && !saw_plan_violation
-                && !resp.tool_calls.is_empty()
-                && active_plan_step_idx + 1 < self.plan_step_constraints.len()
-            {
-                active_plan_step_idx += 1;
-            }
         }
 
         self.emit_event(
@@ -1967,6 +2166,80 @@ async fn run_tool_once(
     } else {
         execute_tool(tool_rt, tc).await
     }
+}
+
+fn parse_worker_step_status(
+    raw: &str,
+    constraints: &[PlanStepConstraint],
+) -> Option<WorkerStepStatus> {
+    let value = parse_jsonish(raw)?;
+    let obj = value.as_object()?;
+    let schema = obj.get("schema_version").and_then(|v| v.as_str())?;
+    if schema != crate::planner::STEP_RESULT_SCHEMA_VERSION {
+        return None;
+    }
+    let step_id = obj.get("step_id").and_then(|v| v.as_str())?.to_string();
+    if step_id != "final" && !constraints.iter().any(|s| s.step_id == step_id) {
+        return None;
+    }
+    let status = obj.get("status").and_then(|v| v.as_str())?.to_string();
+    if !matches!(status.as_str(), "done" | "retry" | "replan" | "fail") {
+        return None;
+    }
+    let next_step_id = obj
+        .get("next_step_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some(WorkerStepStatus {
+        step_id,
+        status,
+        next_step_id,
+    })
+}
+
+fn parse_jsonish(raw: &str) -> Option<serde_json::Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return Some(v);
+    }
+    if let Some(candidate) = fenced_json_candidate(trimmed) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
+            return Some(v);
+        }
+    }
+    if let Some((start, end)) = find_json_bounds(trimmed) {
+        let candidate = &trimmed[start..=end];
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn fenced_json_candidate(s: &str) -> Option<String> {
+    if !s.starts_with("```") {
+        return None;
+    }
+    let lines = s.lines().collect::<Vec<_>>();
+    if lines.len() < 3 {
+        return None;
+    }
+    if !lines.first()?.starts_with("```") || !lines.last()?.starts_with("```") {
+        return None;
+    }
+    Some(lines[1..lines.len() - 1].join("\n"))
+}
+
+fn find_json_bounds(s: &str) -> Option<(usize, usize)> {
+    let start = s.find('{')?;
+    let end = s.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some((start, end))
 }
 
 fn classify_tool_failure(
@@ -2544,6 +2817,27 @@ mod tests {
         }
     }
 
+    struct StaticContentProvider {
+        content: String,
+    }
+
+    #[async_trait]
+    impl ModelProvider for StaticContentProvider {
+        async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+            Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(self.content.clone()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            })
+        }
+    }
+
     #[tokio::test]
     async fn emits_tool_exec_target_before_exec_start() {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -2817,6 +3111,102 @@ mod tests {
         let out = agent.run("hi", vec![], Vec::new()).await;
         assert!(matches!(out.exit_reason, AgentExitReason::PlannerError));
         assert!(out.error.as_deref().unwrap_or_default().contains("halt"));
+    }
+
+    #[tokio::test]
+    async fn invalid_done_transition_fails_with_planner_error() {
+        let content = serde_json::json!({
+            "schema_version": crate::planner::STEP_RESULT_SCHEMA_VERSION,
+            "step_id": "S2",
+            "status": "done",
+            "evidence": ["ok"]
+        })
+        .to_string();
+        let mut agent = Agent {
+            provider: StaticContentProvider { content },
+            model: "m".to_string(),
+            tools: Vec::new(),
+            max_steps: 1,
+            tool_rt: ToolRuntime {
+                workdir: std::env::current_dir().expect("cwd"),
+                allow_shell: false,
+                allow_shell_in_workdir_only: false,
+                allow_write: false,
+                max_tool_output_bytes: 200_000,
+                max_read_bytes: 200_000,
+                unsafe_bypass_allow_flags: false,
+                tool_args_strict: ToolArgsStrict::On,
+                exec_target_kind: ExecTargetKind::Host,
+                exec_target: std::sync::Arc::new(HostTarget),
+            },
+            gate: Box::new(NoGate::new()),
+            gate_ctx: GateContext {
+                workdir: std::env::current_dir().expect("cwd"),
+                allow_shell: false,
+                allow_write: false,
+                approval_mode: ApprovalMode::Interrupt,
+                auto_approve_scope: AutoApproveScope::Run,
+                unsafe_mode: false,
+                unsafe_bypass_allow_flags: false,
+                run_id: None,
+                enable_write_tools: false,
+                max_tool_output_bytes: 200_000,
+                max_read_bytes: 200_000,
+                provider: ProviderKind::Ollama,
+                model: "m".to_string(),
+                exec_target: ExecTargetKind::Host,
+                approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+                tool_schema_hashes: std::collections::BTreeMap::new(),
+                hooks_config_hash_hex: None,
+                planner_hash_hex: Some("plan123".to_string()),
+                taint_enabled: false,
+                taint_mode: crate::taint::TaintMode::Propagate,
+                taint_overall: crate::taint::TaintLevel::Clean,
+                taint_sources: Vec::new(),
+            },
+            mcp_registry: None,
+            stream: false,
+            event_sink: None,
+            compaction_settings: CompactionSettings {
+                max_context_chars: 0,
+                mode: CompactionMode::Off,
+                keep_last: 20,
+                tool_result_persist: ToolResultPersist::Digest,
+            },
+            hooks: HookManager::build(HookRuntimeConfig {
+                mode: HooksMode::Off,
+                config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+                strict: false,
+                timeout_ms: 1000,
+                max_stdout_bytes: 200_000,
+            })
+            .expect("hooks"),
+            policy_loaded: None,
+            policy_for_taint: None,
+            taint_toggle: crate::taint::TaintToggle::Off,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_digest_bytes: 4096,
+            run_id_override: None,
+            omit_tools_field_when_empty: false,
+            plan_tool_enforcement: PlanToolEnforcementMode::Hard,
+            plan_step_constraints: vec![
+                PlanStepConstraint {
+                    step_id: "S1".to_string(),
+                    intended_tools: Vec::new(),
+                },
+                PlanStepConstraint {
+                    step_id: "S2".to_string(),
+                    intended_tools: Vec::new(),
+                },
+            ],
+        };
+        let out = agent.run("hi", vec![], Vec::new()).await;
+        assert!(matches!(out.exit_reason, AgentExitReason::PlannerError));
+        assert!(out
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("invalid step completion transition"));
     }
 
     #[test]
