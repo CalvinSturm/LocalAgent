@@ -4967,6 +4967,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
             } else {
                 "VETO".to_string()
             },
+            mcp_pin_enforcement: mcp_pin_enforcement.to_ascii_uppercase(),
             caps_source: format!("{:?}", resolved_settings.caps_mode).to_lowercase(),
             policy_hash: policy_hash_hex.clone().unwrap_or_default(),
             mcp_catalog_hash: mcp_tool_catalog_hash_hex.clone().unwrap_or_default(),

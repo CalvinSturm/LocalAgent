@@ -3733,8 +3733,7 @@ mod tests {
 
     use super::{
         sanitize_user_visible_output, Agent, AgentExitReason, McpPinEnforcementMode,
-        PlanStepConstraint,
-        PlanToolEnforcementMode, ToolCallBudget,
+        PlanStepConstraint, PlanToolEnforcementMode, ToolCallBudget,
     };
     use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
     use crate::gate::{ApprovalMode, AutoApproveScope, GateContext, NoGate, ProviderKind};

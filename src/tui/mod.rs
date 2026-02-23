@@ -46,6 +46,7 @@ pub struct TuiConfig {
     pub model: String,
     pub mode_label: String,
     pub authority_label: String,
+    pub mcp_pin_enforcement: String,
     pub caps_source: String,
     pub policy_hash: String,
     pub mcp_catalog_hash: String,
@@ -68,6 +69,7 @@ pub fn run_live(
     state.model = cfg.model;
     state.mode_label = cfg.mode_label;
     state.authority_label = cfg.authority_label;
+    state.mcp_pin_enforcement = cfg.mcp_pin_enforcement;
     state.caps_source = cfg.caps_source;
     state.policy_hash = cfg.policy_hash;
     state.mcp_catalog_hash = cfg.mcp_catalog_hash;

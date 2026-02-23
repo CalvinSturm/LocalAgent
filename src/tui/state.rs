@@ -36,6 +36,7 @@ pub struct UiState {
     pub model: String,
     pub mode_label: String,
     pub authority_label: String,
+    pub mcp_pin_enforcement: String,
     pub caps_source: String,
     pub policy_hash: String,
     pub mcp_catalog_hash: String,
@@ -78,6 +79,7 @@ impl UiState {
             model: String::new(),
             mode_label: "SAFE".to_string(),
             authority_label: "VETO".to_string(),
+            mcp_pin_enforcement: "HARD".to_string(),
             caps_source: String::new(),
             policy_hash: String::new(),
             mcp_catalog_hash: String::new(),
@@ -545,6 +547,9 @@ impl UiState {
                 ));
             }
             EventKind::McpPinned => {
+                if let Some(enforcement) = ev.data.get("enforcement").and_then(|v| v.as_str()) {
+                    self.mcp_pin_enforcement = enforcement.to_ascii_uppercase();
+                }
                 let pinned = ev
                     .data
                     .get("pinned")
@@ -1077,12 +1082,14 @@ mod tests {
             1,
             EventKind::McpPinned,
             serde_json::json!({
+                "enforcement":"warn",
                 "configured_hash_hex":"abc",
                 "startup_live_hash_hex":"abc",
                 "pinned":true
             }),
         ));
         assert_eq!(s.mcp_pin_state, "PINNED");
+        assert_eq!(s.mcp_pin_enforcement, "WARN");
     }
 
     #[test]
