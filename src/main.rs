@@ -806,6 +806,34 @@ struct DoctorArgs {
     api_key: Option<String>,
 }
 
+fn should_auto_init_state(command: &Option<Commands>) -> bool {
+    !matches!(
+        command,
+        Some(Commands::Version(_)) | Some(Commands::Init(_)) | Some(Commands::Template(_))
+    )
+}
+
+fn maybe_auto_init_state(
+    cli: &Cli,
+    workdir: &std::path::Path,
+    paths: &store::StatePaths,
+) -> anyhow::Result<()> {
+    if !should_auto_init_state(&cli.command) || paths.state_dir.exists() {
+        return Ok(());
+    }
+    let _ = scaffold::run_init(&InitOptions {
+        workdir: workdir.to_path_buf(),
+        state_dir_override: cli.run.state_dir.clone(),
+        force: false,
+        print_only: false,
+    })?;
+    eprintln!(
+        "INFO: initialized LocalAgent state at {}",
+        paths.state_dir.display()
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -830,6 +858,7 @@ async fn main() -> anyhow::Result<()> {
             paths.state_dir.display()
         );
     }
+    maybe_auto_init_state(&cli, &workdir, &paths)?;
 
     match &cli.command {
         Some(Commands::Run) | Some(Commands::Exec) => {}
