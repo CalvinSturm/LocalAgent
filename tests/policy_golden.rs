@@ -28,4 +28,3 @@ fn policy_golden_cases_are_stable() {
         "expected all policy golden cases to pass"
     );
 }
-
