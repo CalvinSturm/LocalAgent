@@ -4432,9 +4432,9 @@ fn draw_chat_frame(
     let input_section_height = (input_visible_lines as u16).saturating_add(2);
 
     let bottom_overlay_height = if overlay_hint.is_some() {
-        8
+        9
     } else if show_logs {
-        4
+        5
     } else {
         0
     };
@@ -4709,6 +4709,27 @@ fn draw_chat_frame(
     );
 
     if bottom_overlay_height > 0 {
+        let overlay = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(outer[6]);
+        f.render_widget(
+            Paragraph::new(horizontal_rule(overlay[0].width))
+                .style(Style::default().fg(Color::DarkGray)),
+            overlay[0],
+        );
+        if overlay_hint.is_some() {
+            f.render_widget(Paragraph::new(""), overlay[1]);
+        } else {
+            f.render_widget(
+                Paragraph::new("-- Logs (F3 to hide):").style(Style::default().fg(Color::DarkGray)),
+                overlay[1],
+            );
+        }
         let logs_text = if let Some(hint) = overlay_hint {
             hint
         } else {
@@ -4716,7 +4737,7 @@ fn draw_chat_frame(
         };
         f.render_widget(
             Paragraph::new(logs_text).wrap(Wrap { trim: false }),
-            outer[6],
+            overlay[2],
         );
     }
 }
