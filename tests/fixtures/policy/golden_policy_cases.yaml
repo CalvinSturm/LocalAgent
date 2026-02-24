@@ -1,0 +1,74 @@
+version: 1
+cases:
+  - name: "allow docs read"
+    tool: "read_file"
+    arguments:
+      path: "docs/CLI_REFERENCE.md"
+    context:
+      workdir: "."
+      exec_target: "host"
+      mode: "single"
+      planner_hash_hex: null
+      hooks_hash_hex: null
+    expect:
+      decision: "allow"
+      reason_contains: "docs read allowed"
+      source_contains: "golden_policy.yaml"
+  - name: "require approval for env read"
+    tool: "read_file"
+    arguments:
+      path: ".env"
+    context:
+      workdir: "."
+      exec_target: "host"
+      mode: "single"
+      planner_hash_hex: null
+      hooks_hash_hex: null
+    expect:
+      decision: "require_approval"
+      reason_contains: "sensitive file requires approval"
+      source_contains: "golden_policy.yaml"
+  - name: "deny rm shell"
+    tool: "shell"
+    arguments:
+      cmd: "rm"
+    context:
+      workdir: "."
+      exec_target: "host"
+      mode: "single"
+      planner_hash_hex: null
+      hooks_hash_hex: null
+    expect:
+      decision: "deny"
+      reason_contains: "dangerous command denied"
+      source_contains: "golden_policy.yaml"
+  - name: "require approval for non-rm shell"
+    tool: "shell"
+    arguments:
+      cmd: "echo"
+    context:
+      workdir: "."
+      exec_target: "host"
+      mode: "single"
+      planner_hash_hex: null
+      hooks_hash_hex: null
+    expect:
+      decision: "require_approval"
+      reason_contains: "shell requires approval"
+      source_contains: "golden_policy.yaml"
+  - name: "require approval for writes"
+    tool: "write_file"
+    arguments:
+      path: "README.md"
+      content: "update"
+    context:
+      workdir: "."
+      exec_target: "host"
+      mode: "single"
+      planner_hash_hex: null
+      hooks_hash_hex: null
+    expect:
+      decision: "require_approval"
+      reason_contains: "writes require approval"
+      source_contains: "golden_policy.yaml"
+

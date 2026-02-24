@@ -1,0 +1,31 @@
+version: 2
+default: deny
+rules:
+  - tool: "read_file"
+    decision: allow
+    when:
+      - arg: path
+        op: starts_with
+        value: "docs/"
+    reason: "docs read allowed"
+  - tool: "read_file"
+    decision: require_approval
+    when:
+      - arg: path
+        op: contains
+        value: ".env"
+    reason: "sensitive file requires approval"
+  - tool: "write_file"
+    decision: require_approval
+    reason: "writes require approval"
+  - tool: "shell"
+    decision: deny
+    when:
+      - arg: cmd
+        op: equals
+        value: "rm"
+    reason: "dangerous command denied"
+  - tool: "shell"
+    decision: require_approval
+    reason: "shell requires approval"
+
