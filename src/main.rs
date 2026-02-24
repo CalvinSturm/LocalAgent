@@ -3584,6 +3584,11 @@ async fn run_chat_tui(
                                                 {
                                                     show_logs = !show_logs;
                                                 }
+                                                KeyCode::Tab => {
+                                                    if show_tools && show_approvals {
+                                                        tools_focus = !tools_focus;
+                                                    }
+                                                }
                                                 KeyCode::Char('1')
                                                     if key
                                                         .modifiers
@@ -3604,6 +3609,87 @@ async fn run_chat_tui(
                                                         .contains(KeyModifiers::CONTROL) =>
                                                 {
                                                     show_logs = !show_logs;
+                                                }
+                                                KeyCode::Char('j')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    if show_tools && (!show_approvals || tools_focus) {
+                                                        if tools_selected + 1 < visible_tool_count {
+                                                            tools_selected += 1;
+                                                        }
+                                                    } else if approvals_selected + 1
+                                                        < ui_state.pending_approvals.len()
+                                                    {
+                                                        approvals_selected += 1;
+                                                    }
+                                                }
+                                                KeyCode::Char('k')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    if show_tools && (!show_approvals || tools_focus) {
+                                                        tools_selected = tools_selected.saturating_sub(1);
+                                                    } else {
+                                                        approvals_selected =
+                                                            approvals_selected.saturating_sub(1);
+                                                    }
+                                                }
+                                                KeyCode::Char('r')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    if let Err(e) =
+                                                        ui_state.refresh_approvals(&paths.approvals_path)
+                                                    {
+                                                        logs.push(format!(
+                                                            "approvals refresh failed: {e}"
+                                                        ));
+                                                    }
+                                                }
+                                                KeyCode::Char('a')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    if let Some(row) =
+                                                        ui_state.pending_approvals.get(approvals_selected)
+                                                    {
+                                                        let store = ApprovalsStore::new(
+                                                            paths.approvals_path.clone(),
+                                                        );
+                                                        if let Err(e) = store.approve(&row.id, None, None)
+                                                        {
+                                                            logs.push(format!("approve failed: {e}"));
+                                                        } else {
+                                                            logs.push(format!("approved {}", row.id));
+                                                        }
+                                                        let _ =
+                                                            ui_state.refresh_approvals(&paths.approvals_path);
+                                                    }
+                                                }
+                                                KeyCode::Char('x')
+                                                    if key
+                                                        .modifiers
+                                                        .contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    if let Some(row) =
+                                                        ui_state.pending_approvals.get(approvals_selected)
+                                                    {
+                                                        let store = ApprovalsStore::new(
+                                                            paths.approvals_path.clone(),
+                                                        );
+                                                        if let Err(e) = store.deny(&row.id) {
+                                                            logs.push(format!("deny failed: {e}"));
+                                                        } else {
+                                                            logs.push(format!("denied {}", row.id));
+                                                        }
+                                                        let _ =
+                                                            ui_state.refresh_approvals(&paths.approvals_path);
+                                                    }
                                                 }
                                                 _ => {}
                                             }
@@ -4726,7 +4812,7 @@ fn draw_chat_frame(
             f.render_widget(Paragraph::new(""), overlay[1]);
         } else {
             f.render_widget(
-                Paragraph::new("-- Logs (F3 to hide):").style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new("Logs (F3 to hide):").style(Style::default().fg(Color::DarkGray)),
                 overlay[1],
             );
         }
