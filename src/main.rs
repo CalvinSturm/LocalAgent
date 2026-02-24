@@ -584,11 +584,11 @@ struct EvalArgs {
     api_key: Option<String>,
     #[arg(long, default_value_t = 2)]
     http_max_retries: u32,
-    #[arg(long, default_value_t = 60_000)]
+    #[arg(long, default_value_t = 0)]
     http_timeout_ms: u64,
     #[arg(long, default_value_t = 2_000)]
     http_connect_timeout_ms: u64,
-    #[arg(long, default_value_t = 15_000)]
+    #[arg(long, default_value_t = 0)]
     http_stream_idle_timeout_ms: u64,
     #[arg(long, default_value_t = 10_000_000)]
     http_max_response_bytes: usize,
@@ -754,11 +754,11 @@ struct RunArgs {
     events: Option<PathBuf>,
     #[arg(long, default_value_t = 2)]
     http_max_retries: u32,
-    #[arg(long, default_value_t = 60_000)]
+    #[arg(long, default_value_t = 0)]
     http_timeout_ms: u64,
     #[arg(long, default_value_t = 2_000)]
     http_connect_timeout_ms: u64,
-    #[arg(long, default_value_t = 15_000)]
+    #[arg(long, default_value_t = 0)]
     http_stream_idle_timeout_ms: u64,
     #[arg(long, default_value_t = 10_000_000)]
     http_max_response_bytes: usize,
@@ -7929,9 +7929,9 @@ rules:
             stream: false,
             events: None,
             http_max_retries: 2,
-            http_timeout_ms: 60_000,
+            http_timeout_ms: 0,
             http_connect_timeout_ms: 2_000,
-            http_stream_idle_timeout_ms: 15_000,
+            http_stream_idle_timeout_ms: 0,
             http_max_response_bytes: 10_000_000,
             http_max_line_bytes: 200_000,
             tui: false,
