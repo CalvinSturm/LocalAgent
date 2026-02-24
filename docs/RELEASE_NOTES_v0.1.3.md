@@ -1,4 +1,4 @@
-# LocalAgent v0.2.3 Release Notes
+# LocalAgent v0.1.3 Release Notes
 
 Date: 2026-02-24
 
