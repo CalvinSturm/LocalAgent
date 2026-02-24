@@ -129,7 +129,8 @@ pub fn builtin_tools_enabled(enable_write_tools: bool) -> Vec<ToolDef> {
                 "properties":{
                     "path":{"type":"string"},
                     "content":{"type":"string"},
-                    "create_parents":{"type":"boolean"}
+                    "create_parents":{"type":"boolean"},
+                    "overwrite_existing":{"type":"boolean"}
                 },
                 "required":["path","content"]
             }),
@@ -226,6 +227,11 @@ pub fn validate_builtin_tool_args(
             if let Some(v) = obj.get("create_parents") {
                 if v.as_bool().is_none() {
                     return Err("create_parents must be a boolean".to_string());
+                }
+            }
+            if let Some(v) = obj.get("overwrite_existing") {
+                if v.as_bool().is_none() {
+                    return Err("overwrite_existing must be a boolean".to_string());
                 }
             }
         }
@@ -529,6 +535,27 @@ async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
         .get("create_parents")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let overwrite_existing = args
+        .get("overwrite_existing")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !overwrite_existing {
+        let exists_probe = rt
+            .exec_target
+            .read_file(ReadReq {
+                workdir: rt.workdir.clone(),
+                path: path.to_string(),
+                max_read_bytes: 1,
+            })
+            .await;
+        if exists_probe.ok {
+            return failed_exec(
+                rt,
+                SideEffects::FilesystemWrite,
+                "write_file blocked for existing file; use apply_patch for in-place edits or set overwrite_existing=true for explicit full rewrite".to_string(),
+            );
+        }
+    }
     let out = rt
         .exec_target
         .write_file(WriteReq {
@@ -709,6 +736,65 @@ mod tests {
         let content = msg.content.unwrap_or_default();
         assert!(content.contains("invalid tool arguments"));
         assert!(!tmp.path().join("x.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn write_file_blocks_existing_file_without_overwrite_flag() {
+        let tmp = tempdir().expect("tempdir");
+        let existing = tmp.path().join("x.txt");
+        std::fs::write(&existing, "old").expect("seed file");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_overwrite_block".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path":"x.txt","content":"new"}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let body = msg.content.unwrap_or_default();
+        assert!(body.contains("\"ok\":false"));
+        assert!(body.contains("use apply_patch"));
+        let after = std::fs::read_to_string(existing).expect("read file");
+        assert_eq!(after, "old");
+    }
+
+    #[tokio::test]
+    async fn write_file_allows_existing_file_with_overwrite_flag() {
+        let tmp = tempdir().expect("tempdir");
+        let existing = tmp.path().join("x.txt");
+        std::fs::write(&existing, "old").expect("seed file");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_overwrite_allowed".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path":"x.txt","content":"new","overwrite_existing":true}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let body = msg.content.unwrap_or_default();
+        assert!(body.contains("\"ok\":true"));
+        let after = std::fs::read_to_string(existing).expect("read file");
+        assert_eq!(after, "new");
     }
 
     #[test]
