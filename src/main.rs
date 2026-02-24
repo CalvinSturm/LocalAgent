@@ -23,7 +23,7 @@ mod types;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::mcp::registry::{
     doctor_server as mcp_doctor_server, list_servers as mcp_list_servers, McpRegistry,
@@ -2716,6 +2716,7 @@ async fn run_chat_tui(
 
     let run_result: anyhow::Result<()> = async {
         loop {
+            ui_state.on_tick(Instant::now());
             let tool_row_count = if compact_tools { 20 } else { 12 };
             let visible_tool_count = ui_state.tool_calls.len().min(tool_row_count);
             if visible_tool_count == 0 {
@@ -3380,6 +3381,7 @@ async fn run_chat_tui(
                             };
 
                             loop {
+                                ui_state.on_tick(Instant::now());
                                 while let Ok(ev) = rx.try_recv() {
                                     ui_state.apply_event(&ev);
                                     match ev.kind {
@@ -3780,6 +3782,34 @@ fn adjust_transcript_scroll(current: usize, delta: isize, max_scroll: usize) -> 
     } else {
         base.saturating_add(delta as usize).min(max_scroll)
     }
+}
+
+fn activity_status_hint(ui_state: &UiState, status: &str) -> Option<String> {
+    if status != "running" {
+        return None;
+    }
+    if let Some(tool) = ui_state
+        .tool_calls
+        .iter()
+        .rev()
+        .find(|t| t.status == "running" || t.status == "STALL")
+    {
+        let secs = (tool.running_for_ms / 1000).max(1);
+        if tool.status == "STALL" {
+            return Some(format!(
+                "stalled on {} ({}s • esc to interrupt)",
+                tool.tool_name, secs
+            ));
+        }
+        return Some(format!(
+            "running {} ({}s • esc to interrupt)",
+            tool.tool_name, secs
+        ));
+    }
+    if ui_state.net_status == "SLOW" {
+        return Some("waiting on provider retry (esc to interrupt)".to_string());
+    }
+    Some("generating response (esc to interrupt)".to_string())
 }
 
 const SLASH_COMMANDS: &[(&str, &str)] = &[
@@ -4536,22 +4566,25 @@ fn draw_chat_frame(
     } else {
         ("Ready", Style::default().fg(Color::DarkGray))
     };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            if status == "running" {
-                Span::styled(wave[phase], glow_style)
-            } else {
-                Span::styled("●", Style::default().fg(Color::DarkGray))
-            },
-            Span::raw(" "),
-            if status == "running" {
-                Span::styled(format!("{status_text}..."), status_style)
-            } else {
-                Span::styled(status_text, status_style)
-            },
-        ])),
-        outer[3],
-    );
+    let status_hint = activity_status_hint(ui_state, status);
+    let mut status_spans = vec![
+        if status == "running" {
+            Span::styled(wave[phase], glow_style)
+        } else {
+            Span::styled("●", Style::default().fg(Color::DarkGray))
+        },
+        Span::raw(" "),
+        if status == "running" {
+            Span::styled(format!("{status_text}..."), status_style)
+        } else {
+            Span::styled(status_text, status_style)
+        },
+    ];
+    if let Some(hint) = status_hint {
+        status_spans.push(Span::raw("  "));
+        status_spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
+    }
+    f.render_widget(Paragraph::new(Line::from(status_spans)), outer[3]);
 
     let input_box = Layout::default()
         .direction(Direction::Vertical)
