@@ -2714,6 +2714,7 @@ async fn run_chat_tui(
     let mut logs: Vec<String> = Vec::new();
     let max_logs = base_run.tui_max_log_lines;
     let mut status = "idle".to_string();
+    let mut status_detail = String::new();
     let mut provider_connected = true;
     let mut think_tick: u64 = 0;
     let mut ui_tick: u64 = 0;
@@ -2786,6 +2787,7 @@ async fn run_chat_tui(
                     provider_connected,
                     &model,
                     &status,
+                    &status_detail,
                     &transcript,
                     &streaming_assistant,
                     &ui_state,
@@ -3279,6 +3281,7 @@ async fn run_chat_tui(
                                 continue;
                             }
                             status = "running".to_string();
+                            status_detail.clear();
                             streaming_assistant.clear();
                             think_tick = 0;
                             terminal.draw(|f| {
@@ -3289,6 +3292,7 @@ async fn run_chat_tui(
                                     provider_connected,
                                     &model,
                                     &status,
+                                    &status_detail,
                                     &transcript,
                                     &streaming_assistant,
                                     &ui_state,
@@ -3354,6 +3358,7 @@ async fn run_chat_tui(
                                         show_logs = true;
                                         transcript.push(("system".to_string(), msg));
                                         status = "idle".to_string();
+                                        status_detail = "mcp init failed".to_string();
                                         if follow_output {
                                             transcript_scroll = usize::MAX;
                                         }
@@ -3495,6 +3500,7 @@ async fn run_chat_tui(
                                                     show_logs = true;
                                                     streaming_assistant.clear();
                                                     status = "idle".to_string();
+                                                    status_detail = "cancelled by user".to_string();
                                                     if follow_output {
                                                         transcript_scroll = usize::MAX;
                                                     }
@@ -3521,6 +3527,7 @@ async fn run_chat_tui(
                                                     show_logs = true;
                                                     streaming_assistant.clear();
                                                     status = "idle".to_string();
+                                                    status_detail = "cancelled by user".to_string();
                                                     if follow_output {
                                                         transcript_scroll = usize::MAX;
                                                     }
@@ -3728,6 +3735,7 @@ async fn run_chat_tui(
                                         provider_connected,
                                         &model,
                                         &status,
+                                        &status_detail,
                                         &transcript,
                                         &streaming_assistant,
                                         &ui_state,
@@ -3774,11 +3782,23 @@ async fn run_chat_tui(
                                 if let Some(res) = maybe_res {
                                     match res {
                                         Ok(out) => {
-                                            if matches!(out.outcome.exit_reason, AgentExitReason::ProviderError) {
-                                                let err = out
-                                                    .outcome
-                                                    .error
-                                                    .unwrap_or_else(|| "provider error".to_string());
+                                            let outcome = out.outcome;
+                                            let exit_reason = outcome.exit_reason;
+                                            let outcome_error =
+                                                outcome.error.unwrap_or_else(String::new);
+                                            let final_text = if outcome.final_output.is_empty() {
+                                                agent::sanitize_user_visible_output(
+                                                    &streaming_assistant,
+                                                )
+                                            } else {
+                                                outcome.final_output
+                                            };
+                                            if matches!(exit_reason, AgentExitReason::ProviderError) {
+                                                let err = if outcome_error.trim().is_empty() {
+                                                    "provider error".to_string()
+                                                } else {
+                                                    outcome_error.clone()
+                                                };
                                                 provider_connected = false;
                                                 logs.push(err.clone());
                                                 if is_timeout_error_text(&err) && !timeout_notice_active {
@@ -3786,20 +3806,44 @@ async fn run_chat_tui(
                                                     logs.push(timeout_notice_text(&active_run));
                                                 }
                                                 show_logs = true;
+                                                status_detail = format!(
+                                                    "{}: {}",
+                                                    exit_reason.as_str(),
+                                                    compact_status_detail(&err, 120)
+                                                );
                                                 transcript.push((
                                                     "system".to_string(),
                                                     format!("Provider error: {err}"),
                                                 ));
                                             } else {
                                                 provider_connected = true;
+                                                if matches!(exit_reason, AgentExitReason::Ok) {
+                                                    status_detail.clear();
+                                                } else {
+                                                    let reason_text = if !outcome_error.trim().is_empty() {
+                                                        outcome_error.clone()
+                                                    } else if !final_text.trim().is_empty() {
+                                                        final_text.clone()
+                                                    } else {
+                                                        exit_reason.as_str().to_string()
+                                                    };
+                                                    let reason_short =
+                                                        compact_status_detail(&reason_text, 120);
+                                                    status_detail = format!(
+                                                        "{}: {}",
+                                                        exit_reason.as_str(),
+                                                        reason_short
+                                                    );
+                                                    transcript.push((
+                                                        "system".to_string(),
+                                                        format!(
+                                                            "Run ended with {}: {}",
+                                                            exit_reason.as_str(),
+                                                            compact_status_detail(&reason_text, 220)
+                                                        ),
+                                                    ));
+                                                }
                                             }
-                                            let final_text = if out.outcome.final_output.is_empty() {
-                                                agent::sanitize_user_visible_output(
-                                                    &streaming_assistant,
-                                                )
-                                            } else {
-                                                out.outcome.final_output
-                                            };
                                             if !final_text.trim().is_empty() {
                                                 transcript.push(("assistant".to_string(), final_text));
                                             }
@@ -3815,6 +3859,10 @@ async fn run_chat_tui(
                                             logs.push(msg.clone());
                                             show_logs = true;
                                             transcript.push(("system".to_string(), msg));
+                                            status_detail = format!(
+                                                "run failed: {}",
+                                                compact_status_detail(&e.to_string(), 120)
+                                            );
                                             if follow_output {
                                                 transcript_scroll = usize::MAX;
                                             }
@@ -4418,6 +4466,17 @@ fn truncate_cell(s: &str, max_chars: usize) -> String {
     out
 }
 
+fn compact_status_detail(s: &str, max_chars: usize) -> String {
+    let compact = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    let mut out = compact;
+    out.truncate(max_chars.saturating_sub(3));
+    out.push_str("...");
+    out
+}
+
 fn centered_multiline(text: &str, width: u16, top_pad: usize) -> String {
     let width = width as usize;
     let lines = text.lines().collect::<Vec<_>>();
@@ -4516,6 +4575,7 @@ fn draw_chat_frame(
     provider_connected: bool,
     model: &str,
     status: &str,
+    status_detail: &str,
     transcript: &[(String, String)],
     streaming_assistant: &str,
     ui_state: &UiState,
@@ -4761,6 +4821,13 @@ fn draw_chat_frame(
     if let Some(hint) = status_hint {
         status_spans.push(Span::raw("  "));
         status_spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
+    }
+    if !status_detail.trim().is_empty() {
+        status_spans.push(Span::raw("  "));
+        status_spans.push(Span::styled(
+            compact_status_detail(status_detail, 140),
+            Style::default().fg(Color::Red),
+        ));
     }
     f.render_widget(Paragraph::new(Line::from(status_spans)), outer[3]);
 
