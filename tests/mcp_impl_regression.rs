@@ -3,25 +3,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use openagent::agent::{
+use localagent::agent::{
     Agent, AgentExitReason, McpPinEnforcementMode, PlanStepConstraint, PlanToolEnforcementMode,
     ToolCallBudget,
 };
-use openagent::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
-use openagent::gate::{
+use localagent::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
+use localagent::gate::{
     compute_policy_hash_hex, ApprovalKeyVersion, ApprovalMode, AutoApproveScope, GateContext,
     NoGate, ProviderKind, ToolGate, TrustGate, TrustMode,
 };
-use openagent::hooks::config::HooksMode;
-use openagent::hooks::runner::{HookManager, HookRuntimeConfig};
-use openagent::providers::ModelProvider;
-use openagent::taint::{TaintLevel, TaintMode, TaintToggle};
-use openagent::target::{ExecTargetKind, HostTarget};
-use openagent::tools::{builtin_tools_enabled, ToolArgsStrict, ToolRuntime};
-use openagent::trust::approvals::ApprovalsStore;
-use openagent::trust::audit::AuditLog;
-use openagent::trust::policy::Policy;
-use openagent::types::{GenerateRequest, GenerateResponse, Message, Role, ToolCall};
+use localagent::hooks::config::HooksMode;
+use localagent::hooks::runner::{HookManager, HookRuntimeConfig};
+use localagent::providers::ModelProvider;
+use localagent::taint::{TaintLevel, TaintMode, TaintToggle};
+use localagent::target::{ExecTargetKind, HostTarget};
+use localagent::tools::{builtin_tools_enabled, ToolArgsStrict, ToolRuntime};
+use localagent::trust::approvals::ApprovalsStore;
+use localagent::trust::audit::AuditLog;
+use localagent::trust::policy::Policy;
+use localagent::types::{GenerateRequest, GenerateResponse, Message, Role, ToolCall};
 use serde_json::Value;
 use tempfile::tempdir;
 

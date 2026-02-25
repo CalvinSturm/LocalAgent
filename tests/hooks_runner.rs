@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use openagent::hooks::config::HooksMode;
-use openagent::hooks::runner::{
+use localagent::hooks::config::HooksMode;
+use localagent::hooks::runner::{
     make_pre_model_input, make_tool_result_input, HookManager, HookRuntimeConfig,
 };
 

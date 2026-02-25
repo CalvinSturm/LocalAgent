@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use openagent::diagnostics::{
+use localagent::diagnostics::{
     render_json, render_text, sort_diagnostics, Diagnostic, Severity, DIAGNOSTIC_SCHEMA_VERSION,
 };
 use serde_json::json;
@@ -139,7 +139,7 @@ fn json_roundtrip_preserves_schema_version() {
     let mut d = diag(
         "OA1001",
         Severity::Warning,
-        Some("config/openagent.yaml"),
+        Some("config/localagent.yaml"),
         Some(7),
         Some(12),
         "unknown field",

@@ -1,6 +1,6 @@
 [package]
-name = "openagent"
-version = "0.1.2"
+name = "localagent"
+version = "0.2.1"
 edition = "2021"
 default-run = "localagent"
 repository = "https://github.com/CalvinSturm/LocalAgent"

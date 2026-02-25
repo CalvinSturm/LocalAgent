@@ -1,14 +1,14 @@
 use std::fs;
 use std::time::Duration;
 
-use openagent::agent::{AgentExitReason, AgentOutcome};
-use openagent::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
-use openagent::eval::assert::{evaluate_assertions, Assertion};
-use openagent::mcp::registry::McpRegistry;
-use openagent::mcp::types::{McpConfigFile, McpServerConfig};
-use openagent::tools::ToolArgsStrict;
-use openagent::trust::policy::{Policy, PolicyDecision};
-use openagent::types::{Message, ToolCall};
+use localagent::agent::{AgentExitReason, AgentOutcome};
+use localagent::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
+use localagent::eval::assert::{evaluate_assertions, Assertion};
+use localagent::mcp::registry::McpRegistry;
+use localagent::mcp::types::{McpConfigFile, McpServerConfig};
+use localagent::tools::ToolArgsStrict;
+use localagent::trust::policy::{Policy, PolicyDecision};
+use localagent::types::{Message, ToolCall};
 use serde_json::json;
 use tempfile::tempdir;
 

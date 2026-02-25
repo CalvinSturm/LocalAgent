@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use openagent::trust::policy_test::run_policy_tests;
+use localagent::trust::policy_test::run_policy_tests;
 
 #[test]
 fn policy_golden_cases_are_stable() {

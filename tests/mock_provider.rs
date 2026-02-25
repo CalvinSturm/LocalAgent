@@ -1,6 +1,6 @@
-use openagent::providers::mock::{MockProvider, MockProviderError};
-use openagent::providers::{ModelProvider, StreamDelta};
-use openagent::types::{GenerateRequest, Message, Role};
+use localagent::providers::mock::{MockProvider, MockProviderError};
+use localagent::providers::{ModelProvider, StreamDelta};
+use localagent::types::{GenerateRequest, Message, Role};
 use serde_json::json;
 
 fn req_with_user(content: &str) -> GenerateRequest {

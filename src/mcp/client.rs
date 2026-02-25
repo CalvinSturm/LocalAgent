@@ -81,7 +81,7 @@ impl McpClient {
         let params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": { "name": "openagent", "version": env!("CARGO_PKG_VERSION") }
+            "clientInfo": { "name": "localagent", "version": env!("CARGO_PKG_VERSION") }
         });
         let _ = self.call("initialize", params, timeout).await?;
         Ok(())
