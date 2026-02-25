@@ -9,6 +9,7 @@ mod instructions;
 mod mcp;
 mod planner;
 mod providers;
+mod qualification;
 mod repro;
 mod scaffold;
 mod session;
@@ -24,7 +25,6 @@ mod types;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::mcp::registry::{
@@ -95,9 +95,6 @@ use trust::audit::AuditLog;
 use trust::policy::{McpAllowSummary, Policy};
 use tui::state::UiState;
 use types::{GenerateRequest, Message, Role};
-
-static ORCHESTRATOR_QUAL_CACHE: OnceLock<Mutex<std::collections::BTreeMap<String, bool>>> =
-    OnceLock::new();
 
 #[derive(Debug, Subcommand)]
 enum Commands {
@@ -4619,208 +4616,6 @@ async fn run_agent<P: ModelProvider>(
     .await
 }
 
-fn parse_wrapped_tool_call_from_content(content: &str) -> Option<types::ToolCall> {
-    let upper = content.to_ascii_uppercase();
-    let start_tag = "[TOOL_CALL]";
-    let end_tag = "[END_TOOL_CALL]";
-    let start = upper.find(start_tag)? + start_tag.len();
-    let end = upper[start..].find(end_tag)? + start;
-    let body = content[start..end].trim();
-    if body.is_empty() {
-        return None;
-    }
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    tool_call_from_json_value(&value, "wrapped_probe_tool_call")
-}
-
-fn parse_inline_tool_call_from_content(content: &str) -> Option<types::ToolCall> {
-    let trimmed = content.trim();
-    let candidate = if trimmed.starts_with("```") {
-        let mut lines = trimmed.lines();
-        let first = lines.next().unwrap_or_default();
-        if !first.starts_with("```") {
-            return None;
-        }
-        let rest = lines.collect::<Vec<_>>().join("\n");
-        let fence_end = rest.rfind("```")?;
-        rest[..fence_end].trim().to_string()
-    } else {
-        trimmed.to_string()
-    };
-    let value: serde_json::Value = serde_json::from_str(&candidate).ok()?;
-    tool_call_from_json_value(&value, "inline_probe_tool_call")
-}
-
-fn tool_call_from_json_value(value: &serde_json::Value, id: &str) -> Option<types::ToolCall> {
-    let name = value.get("name").and_then(|v| v.as_str())?;
-    let arguments = value
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    Some(types::ToolCall {
-        id: id.to_string(),
-        name: name.to_string(),
-        arguments,
-    })
-}
-
-fn probe_response_to_tool_call(resp: &types::GenerateResponse) -> Option<types::ToolCall> {
-    if let Some(tc) = resp.tool_calls.first() {
-        return Some(tc.clone());
-    }
-    let content = resp.assistant.content.as_deref()?;
-    parse_wrapped_tool_call_from_content(content)
-        .or_else(|| parse_inline_tool_call_from_content(content))
-}
-
-fn load_orchestrator_qual_cache(
-    path: &std::path::Path,
-) -> std::collections::BTreeMap<String, bool> {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return std::collections::BTreeMap::new();
-    };
-    serde_json::from_str::<std::collections::BTreeMap<String, bool>>(&raw).unwrap_or_default()
-}
-
-fn persist_orchestrator_qual_cache(
-    path: &std::path::Path,
-    map: &std::collections::BTreeMap<String, bool>,
-) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(payload) = serde_json::to_string_pretty(map) {
-        let _ = std::fs::write(path, payload);
-    }
-}
-
-async fn ensure_orchestrator_qualified<P: ModelProvider>(
-    provider: &P,
-    provider_kind: ProviderKind,
-    base_url: &str,
-    model: &str,
-    tools: &[types::ToolDef],
-    cache_path: &std::path::Path,
-) -> anyhow::Result<()> {
-    let key = format!(
-        "{}|{}|{}",
-        provider_to_string(provider_kind),
-        base_url,
-        model
-    );
-    let cache =
-        ORCHESTRATOR_QUAL_CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
-    if let Ok(mut m) = cache.lock() {
-        if !m.contains_key(&key) {
-            let disk = load_orchestrator_qual_cache(cache_path);
-            for (k, v) in disk {
-                m.entry(k).or_insert(v);
-            }
-        }
-    }
-    if let Some(passed) = cache.lock().ok().and_then(|m| m.get(&key).copied()) {
-        if passed {
-            return Ok(());
-        }
-        return Err(anyhow!(
-            "orchestrator qualification failed previously for this model/session: {key}"
-        ));
-    }
-    let Some(list_dir_tool) = tools.iter().find(|t| t.name == "list_dir").cloned() else {
-        if let Ok(mut m) = cache.lock() {
-            m.insert(key, false);
-            persist_orchestrator_qual_cache(cache_path, &m);
-        }
-        return Err(anyhow!(
-            "orchestrator qualification failed: list_dir tool is not available"
-        ));
-    };
-    let probe_prompt =
-        "Emit exactly one native tool call and no prose:\nname=list_dir\narguments={\"path\":\".\"}";
-    for _ in 0..3 {
-        let req = GenerateRequest {
-            model: model.to_string(),
-            messages: vec![Message {
-                role: Role::User,
-                content: Some(probe_prompt.to_string()),
-                tool_call_id: None,
-                tool_name: None,
-                tool_calls: None,
-            }],
-            tools: Some(vec![list_dir_tool.clone()]),
-        };
-        let resp = provider
-            .generate(req)
-            .await
-            .with_context(|| "orchestrator qualification provider call failed")?;
-        let Some(tc) = probe_response_to_tool_call(&resp) else {
-            if let Ok(mut m) = cache.lock() {
-                m.insert(key.clone(), false);
-                persist_orchestrator_qual_cache(cache_path, &m);
-            }
-            return Err(anyhow!(
-                "orchestrator qualification failed: no tool call returned by probe"
-            ));
-        };
-        let path_ok = tc
-            .arguments
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|p| p == ".")
-            .unwrap_or(false);
-        if tc.name != "list_dir" || !path_ok {
-            if let Ok(mut m) = cache.lock() {
-                m.insert(key.clone(), false);
-                persist_orchestrator_qual_cache(cache_path, &m);
-            }
-            return Err(anyhow!(
-                "orchestrator qualification failed: expected list_dir {{\"path\":\".\"}}"
-            ));
-        }
-    }
-    if let Ok(mut m) = cache.lock() {
-        m.insert(key, true);
-        persist_orchestrator_qual_cache(cache_path, &m);
-    }
-    Ok(())
-}
-
-async fn qualify_or_enable_readonly_fallback<P: ModelProvider>(
-    provider: &P,
-    provider_kind: ProviderKind,
-    base_url: &str,
-    worker_model: &str,
-    args: &RunArgs,
-    all_tools: &mut Vec<types::ToolDef>,
-    cache_path: &std::path::Path,
-) -> anyhow::Result<Option<String>> {
-    if !args.enable_write_tools && !args.allow_write {
-        return Ok(None);
-    }
-    match ensure_orchestrator_qualified(
-        provider,
-        provider_kind,
-        base_url,
-        worker_model,
-        all_tools,
-        cache_path,
-    )
-    .await
-    {
-        Ok(()) => Ok(None),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("orchestrator qualification failed") {
-                all_tools.retain(|t| t.side_effects != types::SideEffects::FilesystemWrite);
-                return Ok(Some(format!(
-                    "orchestrator qualification failed for model '{worker_model}'; continuing in read-only fallback (write tools disabled): {msg}"
-                )));
-            }
-            Err(e)
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_with_ui<P: ModelProvider>(
     provider: P,
@@ -5002,12 +4797,12 @@ async fn run_agent_with_ui<P: ModelProvider>(
     let qual_cache_path = paths
         .state_dir
         .join("orchestrator_qualification_cache.json");
-    let qualification_fallback_note = qualify_or_enable_readonly_fallback(
+    let qualification_fallback_note = qualification::qualify_or_enable_readonly_fallback(
         &provider,
         provider_kind,
         base_url,
         &worker_model,
-        args,
+        args.enable_write_tools || args.allow_write,
         &mut all_tools,
         &qual_cache_path,
     )
@@ -7806,7 +7601,7 @@ rules:
             tool_calls: Vec::new(),
             usage: None,
         };
-        let tc = super::probe_response_to_tool_call(&resp).expect("tool call");
+        let tc = super::qualification::probe_response_to_tool_call(&resp).expect("tool call");
         assert_eq!(tc.name, "list_dir");
         assert_eq!(tc.arguments, serde_json::json!({"path":"."}));
     }
@@ -7827,7 +7622,7 @@ rules:
             tool_calls: Vec::new(),
             usage: None,
         };
-        let tc = super::probe_response_to_tool_call(&resp).expect("tool call");
+        let tc = super::qualification::probe_response_to_tool_call(&resp).expect("tool call");
         assert_eq!(tc.name, "list_dir");
         assert_eq!(tc.arguments, serde_json::json!({"path":"."}));
     }
@@ -7993,7 +7788,7 @@ rules:
             calls: first_calls.clone(),
             mode: QualificationProbeMode::FailNoTool,
         };
-        let err = super::ensure_orchestrator_qualified(
+        let err = super::qualification::ensure_orchestrator_qualified(
             &first,
             ProviderKind::Lmstudio,
             "http://localhost:1234/v1",
@@ -8011,7 +7806,7 @@ rules:
             calls: second_calls,
             mode: QualificationProbeMode::NativePass,
         };
-        let err2 = super::ensure_orchestrator_qualified(
+        let err2 = super::qualification::ensure_orchestrator_qualified(
             &second,
             ProviderKind::Lmstudio,
             "http://localhost:1234/v1",
@@ -8044,12 +7839,12 @@ rules:
         args.enable_write_tools = true;
         args.allow_write = true;
 
-        let note = super::qualify_or_enable_readonly_fallback(
+        let note = super::qualification::qualify_or_enable_readonly_fallback(
             &provider,
             ProviderKind::Lmstudio,
             "http://localhost:1234/v1",
             "fallback-model",
-            &args,
+            args.enable_write_tools || args.allow_write,
             &mut tools,
             &cache,
         )
@@ -8075,12 +7870,12 @@ rules:
         let mut args = default_run_args();
         args.enable_write_tools = true;
         args.allow_write = true;
-        let note = super::qualify_or_enable_readonly_fallback(
+        let note = super::qualification::qualify_or_enable_readonly_fallback(
             &provider,
             ProviderKind::Lmstudio,
             "http://localhost:1234/v1",
             "pass-model",
-            &args,
+            args.enable_write_tools || args.allow_write,
             &mut tools,
             &cache,
         )
