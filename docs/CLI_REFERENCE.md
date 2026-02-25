@@ -186,6 +186,8 @@ localagent version [--json]
 localagent init [--state-dir <PATH>] [--workdir <PATH>] [--force] [--print]
 ```
 
+Note: `localagent` auto-initializes `.localagent/` on first use in a project. `init` remains useful for explicit, up-front scaffolding.
+
 ### `template`
 
 - `localagent template list`
@@ -314,7 +316,7 @@ Chat TUI slash commands:
 - `/mode web`
 - `/mode custom`
 - `/timeout`
-- `/timeout <seconds|+N|-N>`
+- `/timeout <seconds|+N|-N|off>`
 - `/dismiss`
 - `/clear`
 - `/exit`
@@ -326,6 +328,7 @@ Mode naming note:
 - `/mode coding` is the command token.
 - Header label displays as `Code`.
 - `/timeout` updates request and stream-idle timeout together (connect timeout is unchanged).
+- `/timeout off` disables request and stream-idle timeout (connect timeout remains unchanged).
 
 ---
 

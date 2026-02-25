@@ -6,7 +6,10 @@
 cargo install --path . --force
 ```
 
-Then bootstrap state/config:
+State/config bootstrap:
+
+- Automatic: first `localagent` command in a project auto-creates `.localagent/` if missing.
+- Explicit: run `init` yourself when you want scaffolding created immediately.
 
 ```bash
 localagent init

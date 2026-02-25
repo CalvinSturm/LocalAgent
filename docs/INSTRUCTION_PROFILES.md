@@ -9,7 +9,7 @@ This is the recommended way to improve reliability for individual local models (
 Default path:
 
 ```text
-.openagent/instructions.yaml
+.localagent/instructions.yaml
 ```
 
 You can also pass a custom path:
@@ -72,7 +72,7 @@ Practical pattern:
 
 ## How To Add a New Model Profile
 
-1. Open `.openagent/instructions.yaml`
+1. Open `.localagent/instructions.yaml`
 2. Copy an existing `model_profiles` entry
 3. Change `name` and `selector`
 4. Add 1-3 short `developer` messages (start small)
@@ -132,7 +132,7 @@ Example:
 localagent \
   --provider ollama \
   --model qwen3:8b \
-  --instructions-config .openagent/instructions.yaml \
+  --instructions-config .localagent/instructions.yaml \
   --instruction-model-profile qwen3_tool_discipline_v1 \
   --instruction-task-profile coding \
   --task-kind coding \
@@ -170,4 +170,3 @@ Avoid:
 - More context increases memory pressure (KV cache) and can reduce stability/performance.
 - For many local agents, stronger tool discipline beats simply increasing context length.
 - Inference is typically GPU-heavy; CPU-only runs are often too slow for interactive agent workflows.
-

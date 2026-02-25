@@ -269,7 +269,7 @@ This is common and usually improvable.
 
 What to do:
 
-1. Add a per-model profile in `.openagent/instructions.yaml`
+1. Add a per-model profile in `.localagent/instructions.yaml`
 2. Keep instructions short and explicit (tool JSON format, one call at a time, ask before guessing)
 3. Test the same prompt repeatedly and keep only changes that improve consistency
 
@@ -277,7 +277,7 @@ See `docs/INSTRUCTION_PROFILES.md` for examples and a recommended workflow.
 
 ## 7) Optional: MCP Playwright for Browser Tasks
 
-Ensure `.localagent/mcp_servers.json` exists (`localagent init` creates it), then:
+Ensure `.localagent/mcp_servers.json` exists (`localagent` auto-init or `localagent init` creates it), then:
 
 ```bash
 localagent mcp list
@@ -293,7 +293,6 @@ localagent --provider lmstudio --model <model> --mcp playwright chat --tui
 ## 8) Recommended First Validation Flow
 
 ```bash
-localagent init
 localagent doctor --provider lmstudio
 localagent --provider lmstudio --model <model> --prompt "Say hi in one sentence." run
 localagent --provider lmstudio --model <model> chat --tui

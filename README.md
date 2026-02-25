@@ -61,13 +61,15 @@ Download the correct `localagent-<OS>-<tag>` asset from Releases and place it on
 
 ## First-Time Setup
 
-Run in your project directory:
+On first use in a project directory, `localagent` now auto-initializes `.localagent/` if it does not exist.
+
+You can still run init explicitly when you want deterministic scaffolding up front:
 
 ```bash
 localagent init
 ```
 
-This scaffolds default state/config under:
+This scaffolds default state/config under (same layout as auto-init):
 
 ```text
 <workdir>/.localagent/
