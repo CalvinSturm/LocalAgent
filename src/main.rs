@@ -20,6 +20,7 @@ mod qualification;
 mod repro;
 mod run_prep;
 mod runtime_config;
+mod runtime_events;
 mod runtime_flags;
 mod runtime_paths;
 mod runtime_wiring;
@@ -3364,7 +3365,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         } else {
             None
         };
-    emit_event(
+    runtime_events::emit_event(
         &mut event_sink,
         &run_id,
         0,
@@ -3378,7 +3379,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         }),
     );
     if let Some(note) = &qualification_fallback_note {
-        emit_event(
+        runtime_events::emit_event(
             &mut event_sink,
             &run_id,
             0,
@@ -3391,7 +3392,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
     }
 
     if matches!(args.mode, planner::RunMode::PlannerWorker) {
-        emit_event(
+        runtime_events::emit_event(
             &mut event_sink,
             &run_id,
             0,
@@ -3418,7 +3419,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         match planner_out {
             Ok(out) => {
                 if planner_strict_effective && !out.ok {
-                    emit_event(
+                    runtime_events::emit_event(
                         &mut event_sink,
                         &run_id,
                         0,
@@ -3539,7 +3540,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
                         run_artifact_path,
                     });
                 }
-                emit_event(
+                runtime_events::emit_event(
                     &mut event_sink,
                     &run_id,
                     0,
@@ -3600,7 +3601,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
                     raw_output: out.raw_output,
                     error: out.error,
                 });
-                emit_event(
+                runtime_events::emit_event(
                     &mut event_sink,
                     &run_id,
                     0,
@@ -3614,7 +3615,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
             }
             Err(e) => {
                 let err_short = e.to_string();
-                emit_event(
+                runtime_events::emit_event(
                     &mut event_sink,
                     &run_id,
                     0,
@@ -3866,7 +3867,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
             .error
             .clone()
             .unwrap_or_else(|| "worker requested replan transition".to_string());
-        emit_event(
+        runtime_events::emit_event(
             &mut agent.event_sink,
             &run_id,
             0,
@@ -3902,7 +3903,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         .await
         {
             Ok(replan_out) if !planner_strict_effective || replan_out.ok => {
-                emit_event(
+                runtime_events::emit_event(
                     &mut agent.event_sink,
                     &run_id,
                     0,
@@ -3948,7 +3949,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
                 if let Some(worker) = worker_record.as_mut() {
                     worker.injected_planner_hash_hex = Some(replan_out.plan_hash_hex.clone());
                 }
-                emit_event(
+                runtime_events::emit_event(
                     &mut agent.event_sink,
                     &run_id,
                     0,
@@ -4174,7 +4175,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         },
     )?;
     if let Some(r) = &repro_record {
-        emit_event(
+        runtime_events::emit_event(
             &mut agent.event_sink,
             &outcome.run_id,
             0,
@@ -4266,7 +4267,7 @@ async fn run_tasks_graph(
     let graph_started = trust::now_rfc3339();
     let mut sink =
         runtime_wiring::build_event_sink(false, base_run.events.as_deref(), false, None, false)?;
-    emit_event(
+    runtime_events::emit_event(
         &mut sink,
         &graph_run_id,
         0,
@@ -4293,7 +4294,7 @@ async fn run_tasks_graph(
             .ok_or_else(|| anyhow!("checkpoint missing node {node_id}"))?
             .clone();
         if args.resume && cp_node.status == "done" {
-            emit_event(
+            runtime_events::emit_event(
                 &mut sink,
                 &graph_run_id,
                 idx as u32,
@@ -4308,7 +4309,7 @@ async fn run_tasks_graph(
             continue;
         }
 
-        emit_event(
+        runtime_events::emit_event(
             &mut sink,
             &graph_run_id,
             idx as u32,
@@ -4435,7 +4436,11 @@ async fn run_tasks_graph(
                 .run_artifact_path
                 .as_ref()
                 .map(|p| stable_path_string(p));
-            n.error_short = result.outcome.error.as_deref().map(short_error);
+            n.error_short = result
+                .outcome
+                .error
+                .as_deref()
+                .map(runtime_events::short_error);
         }
         checkpoint.updated_at = trust::now_rfc3339();
         taskgraph::write_checkpoint(&checkpoint_path, &checkpoint)?;
@@ -4452,7 +4457,7 @@ async fn run_tasks_graph(
             },
         );
 
-        emit_event(
+        runtime_events::emit_event(
             &mut sink,
             &graph_run_id,
             idx as u32,
@@ -4466,7 +4471,7 @@ async fn run_tasks_graph(
         );
 
         if args.propagate_summaries.enabled() {
-            summaries.push(node_summary_line(
+            summaries.push(runtime_events::node_summary_line(
                 node_id,
                 result.outcome.exit_reason.as_str(),
                 &result.outcome.final_output,
@@ -4485,7 +4490,7 @@ async fn run_tasks_graph(
             status = "failed".to_string();
         }
     }
-    emit_event(
+    runtime_events::emit_event(
         &mut sink,
         &graph_run_id,
         order.len() as u32,
@@ -4513,23 +4518,6 @@ async fn run_tasks_graph(
     Ok(if status == "ok" { 0 } else { 1 })
 }
 
-fn short_error(s: &str) -> String {
-    s.chars().take(200).collect()
-}
-
-fn node_summary_line(node_id: &str, exit_reason: &str, final_output: &str) -> String {
-    let digest = store::sha256_hex(final_output.as_bytes());
-    let head = final_output
-        .chars()
-        .take(200)
-        .collect::<String>()
-        .replace('\n', " ");
-    format!(
-        "- [{}] exit_reason={} output_sha256={} head={}",
-        node_id, exit_reason, digest, head
-    )
-}
-
 #[derive(Debug, Clone)]
 struct PlannerPhaseOutput {
     plan_json: serde_json::Value,
@@ -4537,20 +4525,6 @@ struct PlannerPhaseOutput {
     raw_output: Option<String>,
     error: Option<String>,
     ok: bool,
-}
-
-fn emit_event(
-    sink: &mut Option<Box<dyn EventSink>>,
-    run_id: &str,
-    step: u32,
-    kind: EventKind,
-    data: serde_json::Value,
-) {
-    if let Some(s) = sink {
-        if let Err(e) = s.emit(Event::new(run_id.to_string(), step, kind, data)) {
-            eprintln!("WARN: failed to emit event: {e}");
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4587,7 +4561,7 @@ async fn run_planner_phase<P: ModelProvider>(
     let max_steps = planner_max_steps.max(1);
     let mut last_output = String::new();
     for step in 0..max_steps {
-        emit_event(
+        runtime_events::emit_event(
             sink,
             run_id,
             step,
@@ -4609,7 +4583,7 @@ async fn run_planner_phase<P: ModelProvider>(
             Err(e) => {
                 if let Some(pe) = e.downcast_ref::<providers::http::ProviderError>() {
                     for r in &pe.retries {
-                        emit_event(
+                        runtime_events::emit_event(
                             sink,
                             run_id,
                             step,
@@ -4623,7 +4597,7 @@ async fn run_planner_phase<P: ModelProvider>(
                             }),
                         );
                     }
-                    emit_event(
+                    runtime_events::emit_event(
                         sink,
                         run_id,
                         step,
@@ -4643,7 +4617,7 @@ async fn run_planner_phase<P: ModelProvider>(
         };
 
         let output = resp.assistant.content.clone().unwrap_or_default();
-        emit_event(
+        runtime_events::emit_event(
             sink,
             run_id,
             step,
@@ -4987,8 +4961,8 @@ rules:
 
     #[test]
     fn node_summary_line_is_deterministic() {
-        let a = super::node_summary_line("N1", "ok", "hello\nworld");
-        let b = super::node_summary_line("N1", "ok", "hello\nworld");
+        let a = super::runtime_events::node_summary_line("N1", "ok", "hello\nworld");
+        let b = super::runtime_events::node_summary_line("N1", "ok", "hello\nworld");
         assert_eq!(a, b);
         assert!(a.contains("output_sha256="));
     }
@@ -5273,5 +5247,6 @@ rules:
         }
     }
 }
+
 
 
