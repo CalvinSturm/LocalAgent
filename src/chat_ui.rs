@@ -37,7 +37,7 @@ pub(crate) fn draw_chat_frame(
 ) {
     let input_display = format!("> {input}");
     let input_width = f.area().width.saturating_sub(2).max(1) as usize;
-    let input_total_lines = crate::wrapped_line_count(&input_display, input_width);
+    let input_total_lines = crate::chat_view_utils::wrapped_line_count(&input_display, input_width);
     let max_input_lines = usize::from(f.area().height.saturating_sub(12)).clamp(1, 8);
     let input_visible_lines = input_total_lines.min(max_input_lines).max(1);
     let input_scroll = input_total_lines.saturating_sub(input_visible_lines);
@@ -89,7 +89,7 @@ pub(crate) fn draw_chat_frame(
         outer[0],
     );
     f.render_widget(
-        Paragraph::new(crate::horizontal_rule(outer[1].width))
+        Paragraph::new(crate::chat_view_utils::horizontal_rule(outer[1].width))
             .style(Style::default().fg(Color::DarkGray)),
         outer[1],
     );
@@ -110,13 +110,13 @@ pub(crate) fn draw_chat_frame(
     let show_hero_banner = show_banner && transcript.is_empty() && streaming_assistant.is_empty();
     let mut chat_text = String::new();
     if show_hero_banner {
-        chat_text.push_str(&crate::centered_multiline(
-            &crate::localagent_banner(ui_tick),
+        chat_text.push_str(&crate::chat_view_utils::centered_multiline(
+            &crate::chat_view_utils::localagent_banner(ui_tick),
             mid[0].width,
             0,
         ));
         chat_text.push_str("\n\n");
-        chat_text.push_str(&crate::centered_left_block(
+        chat_text.push_str(&crate::chat_view_utils::centered_left_block(
             "+ Type your message and press enter\n+ /help for a list of commands\n+ /mode to switch between Safe, Coding, Web, and Custom modes",
             mid[0].width,
             0,
@@ -144,10 +144,11 @@ pub(crate) fn draw_chat_frame(
     } else {
         Style::default()
     };
-    let (chat_render, chat_plain) = crate::styled_chat_text(&chat_text, chat_style);
+    let (chat_render, chat_plain) =
+        crate::chat_view_utils::styled_chat_text(&chat_text, chat_style);
     let chat_width = mid[0].width.max(1) as usize;
     let chat_visible_lines = mid[0].height.max(1) as usize;
-    let chat_total_lines = crate::wrapped_line_count(&chat_plain, chat_width);
+    let chat_total_lines = crate::chat_view_utils::wrapped_line_count(&chat_plain, chat_width);
     let max_scroll = chat_total_lines.saturating_sub(chat_visible_lines);
     let scroll = if transcript_scroll == usize::MAX {
         max_scroll
@@ -231,7 +232,7 @@ pub(crate) fn draw_chat_frame(
     let (status_text, status_style) = if status == "running" {
         if tools_running {
             (
-                crate::rotating_status_word(
+                crate::chat_view_utils::rotating_status_word(
                     &working_words,
                     think_tick,
                     tui_refresh_ms,
@@ -241,7 +242,7 @@ pub(crate) fn draw_chat_frame(
             )
         } else {
             (
-                crate::rotating_status_word(
+                crate::chat_view_utils::rotating_status_word(
                     &thinking_words,
                     think_tick,
                     tui_refresh_ms,
@@ -253,7 +254,7 @@ pub(crate) fn draw_chat_frame(
     } else {
         ("Ready", Style::default().fg(Color::DarkGray))
     };
-    let status_hint = crate::activity_status_hint(ui_state, status);
+    let status_hint = crate::chat_view_utils::activity_status_hint(ui_state, status);
     let mut status_spans = vec![
         if status == "running" {
             Span::styled(wave[phase], glow_style)
@@ -274,7 +275,7 @@ pub(crate) fn draw_chat_frame(
     if !status_detail.trim().is_empty() {
         status_spans.push(Span::raw("  "));
         status_spans.push(Span::styled(
-            crate::compact_status_detail(status_detail, 140),
+            crate::chat_view_utils::compact_status_detail(status_detail, 140),
             Style::default().fg(Color::Red),
         ));
     }
@@ -289,7 +290,7 @@ pub(crate) fn draw_chat_frame(
         ])
         .split(outer[4]);
     f.render_widget(
-        Paragraph::new(crate::horizontal_rule(input_box[0].width))
+        Paragraph::new(crate::chat_view_utils::horizontal_rule(input_box[0].width))
             .style(Style::default().fg(Color::DarkGray)),
         input_box[0],
     );
@@ -300,7 +301,7 @@ pub(crate) fn draw_chat_frame(
         input_box[1],
     );
     f.render_widget(
-        Paragraph::new(crate::horizontal_rule(input_box[2].width))
+        Paragraph::new(crate::chat_view_utils::horizontal_rule(input_box[2].width))
             .style(Style::default().fg(Color::DarkGray)),
         input_box[2],
     );
@@ -348,7 +349,7 @@ pub(crate) fn draw_chat_frame(
             ])
             .split(outer[6]);
         f.render_widget(
-            Paragraph::new(crate::horizontal_rule(overlay[0].width))
+            Paragraph::new(crate::chat_view_utils::horizontal_rule(overlay[0].width))
                 .style(Style::default().fg(Color::DarkGray)),
             overlay[0],
         );
