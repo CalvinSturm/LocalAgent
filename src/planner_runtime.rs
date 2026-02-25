@@ -116,7 +116,8 @@ pub(crate) async fn run_planner_phase<P: ModelProvider>(
             }),
         );
         if !resp.tool_calls.is_empty() {
-            let wrapped = planner::normalize_planner_output(&output, prompt, planner_output, false)?;
+            let wrapped =
+                planner::normalize_planner_output(&output, prompt, planner_output, false)?;
             return Ok(PlannerPhaseOutput {
                 plan_json: wrapped.plan_json,
                 plan_hash_hex: wrapped.plan_hash_hex,

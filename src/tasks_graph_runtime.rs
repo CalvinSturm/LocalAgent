@@ -93,7 +93,8 @@ pub(crate) async fn run_tasks_graph(
         task_apply::apply_node_overrides(&mut node_args, &node.settings)?;
         node_args.tui = false;
         node_args.stream = node_args.stream && !base_run.tui;
-        let node_workdir = task_apply::resolve_node_workdir(&taskfile, node_id, &node_args.workdir)?;
+        let node_workdir =
+            task_apply::resolve_node_workdir(&taskfile, node_id, &node_args.workdir)?;
         node_args.workdir = node_workdir;
         node_args.prompt = Some(
             if args.propagate_summaries.enabled() && !summaries.is_empty() {

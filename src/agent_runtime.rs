@@ -5,7 +5,9 @@ use std::time::Duration;
 use anyhow::Context;
 use tokio::sync::watch;
 
-use crate::agent::{self, Agent, AgentExitReason, PlanToolEnforcementMode, PolicyLoadedInfo, ToolCallBudget};
+use crate::agent::{
+    self, Agent, AgentExitReason, PlanToolEnforcementMode, PolicyLoadedInfo, ToolCallBudget,
+};
 use crate::compaction::CompactionSettings;
 use crate::events::{Event, EventKind};
 use crate::gate::{ApprovalMode, GateContext, ProviderKind};
@@ -15,13 +17,17 @@ use crate::ops_helpers;
 use crate::planner;
 use crate::providers::ModelProvider;
 use crate::repro;
+use crate::repro::ReproEnvMode;
 use crate::run_prep;
 use crate::runtime_events;
 use crate::runtime_flags;
 use crate::runtime_paths;
 use crate::runtime_wiring;
-use crate::session::{self, settings_from_run, task_memory_message, RunSettingInputs, SessionStore};
+use crate::session::{
+    self, settings_from_run, task_memory_message, RunSettingInputs, SessionStore,
+};
 use crate::store::{self, PlannerRunRecord, WorkerRunRecord};
+use crate::store::{config_hash_hex, extract_session_messages, provider_to_string};
 use crate::taint;
 use crate::taint::TaintToggle;
 use crate::target::{DockerTarget, ExecTarget, ExecTargetKind, HostTarget};
@@ -30,8 +36,6 @@ use crate::trust;
 use crate::trust::policy::Policy;
 use crate::types::{Message, Role};
 use crate::{instruction_runtime, planner_runtime, tui, DockerNetwork, RunArgs};
-use crate::repro::ReproEnvMode;
-use crate::store::{config_hash_hex, extract_session_messages, provider_to_string};
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent<P: ModelProvider>(
     provider: P,
@@ -241,8 +245,10 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     let hooks_config_path = runtime_paths::resolved_hooks_config_path(args, &paths.state_dir);
     let tool_schema_hash_hex_map = store::tool_schema_hash_hex_map(&all_tools);
     gate_ctx.tool_schema_hashes = tool_schema_hash_hex_map.clone();
-    let hooks_config_hash_hex =
-        ops_helpers::compute_hooks_config_hash_hex(resolved_settings.hooks_mode, &hooks_config_path);
+    let hooks_config_hash_hex = ops_helpers::compute_hooks_config_hash_hex(
+        resolved_settings.hooks_mode,
+        &hooks_config_path,
+    );
     gate_ctx.hooks_config_hash_hex = hooks_config_hash_hex.clone();
     let hook_manager = HookManager::build(HookRuntimeConfig {
         mode: resolved_settings.hooks_mode,
@@ -456,8 +462,12 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                         Some(format!("{:?}", effective_plan_tool_enforcement).to_lowercase()),
                         &instruction_resolution,
                     );
-                    let config_fingerprint =
-                        runtime_paths::build_config_fingerprint(&cli_config, args, &worker_model, paths);
+                    let config_fingerprint = runtime_paths::build_config_fingerprint(
+                        &cli_config,
+                        args,
+                        &worker_model,
+                        paths,
+                    );
                     let cfg_hash = config_hash_hex(&config_fingerprint)?;
                     let run_artifact_path = match store::write_run_record(
                         paths,
@@ -634,8 +644,12 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                     Some(format!("{:?}", effective_plan_tool_enforcement).to_lowercase()),
                     &instruction_resolution,
                 );
-                let config_fingerprint =
-                    runtime_paths::build_config_fingerprint(&cli_config, args, &worker_model, paths);
+                let config_fingerprint = runtime_paths::build_config_fingerprint(
+                    &cli_config,
+                    args,
+                    &worker_model,
+                    paths,
+                );
                 let cfg_hash = config_hash_hex(&config_fingerprint)?;
                 let run_artifact_path = match store::write_run_record(
                     paths,
@@ -1201,5 +1215,3 @@ pub(crate) struct RunExecutionResult {
     pub(crate) outcome: agent::AgentOutcome,
     pub(crate) run_artifact_path: Option<PathBuf>,
 }
-
-

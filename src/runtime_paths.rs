@@ -310,10 +310,7 @@ pub(crate) fn resolved_mcp_config_path(args: &RunArgs, state_dir: &std::path::Pa
         .unwrap_or_else(|| state_dir.join("mcp_servers.json"))
 }
 
-pub(crate) fn resolved_hooks_config_path(
-    args: &RunArgs,
-    state_dir: &std::path::Path,
-) -> PathBuf {
+pub(crate) fn resolved_hooks_config_path(args: &RunArgs, state_dir: &std::path::Path) -> PathBuf {
     args.hooks_config
         .clone()
         .unwrap_or_else(|| state_dir.join("hooks.yaml"))

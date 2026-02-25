@@ -31,16 +31,16 @@ mod runtime_wiring;
 mod scaffold;
 mod session;
 mod session_ops;
-mod startup_detect;
 mod startup_bootstrap;
+mod startup_detect;
 mod startup_init;
 mod store;
 mod taint;
+mod target;
 mod task_apply;
 mod task_eval_profile;
-mod tasks_graph_runtime;
-mod target;
 mod taskgraph;
+mod tasks_graph_runtime;
 mod tools;
 mod trust;
 mod tui;
@@ -49,12 +49,8 @@ pub(crate) use agent_runtime::{run_agent, run_agent_with_ui, RunExecutionResult}
 
 use std::path::PathBuf;
 
-use crate::mcp::registry::{
-    doctor_server as mcp_doctor_server, list_servers as mcp_list_servers,
-};
-use agent::{
-    AgentExitReason, McpPinEnforcementMode, PlanToolEnforcementMode,
-};
+use crate::mcp::registry::{doctor_server as mcp_doctor_server, list_servers as mcp_list_servers};
+use agent::{AgentExitReason, McpPinEnforcementMode, PlanToolEnforcementMode};
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand, ValueEnum};
 use compaction::{CompactionMode, ToolResultPersist};
@@ -75,9 +71,7 @@ use providers::openai_compat::OpenAiCompatProvider;
 use repro::{render_verify_report, verify_run_record, ReproEnvMode, ReproMode};
 use scaffold::{version_info, InitOptions};
 use session::{CapsMode, SessionStore};
-use store::{
-    provider_to_string, resolve_state_paths, stable_path_string,
-};
+use store::{provider_to_string, resolve_state_paths, stable_path_string};
 use taint::{TaintMode, TaintToggle};
 use target::ExecTargetKind;
 use taskgraph::PropagateSummaries;
@@ -820,12 +814,7 @@ async fn main() -> anyhow::Result<()> {
             paths.state_dir.display()
         );
     }
-    startup_init::maybe_auto_init_state(
-        &cli.command,
-        cli.run.state_dir.clone(),
-        &workdir,
-        &paths,
-    )?;
+    startup_init::maybe_auto_init_state(&cli.command, cli.run.state_dir.clone(), &workdir, &paths)?;
 
     match &cli.command {
         Some(Commands::Run) | Some(Commands::Exec) => {}
@@ -891,7 +880,8 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Some(Commands::Mcp(args)) => {
-            let mcp_config_path = runtime_paths::resolved_mcp_config_path(&cli.run, &paths.state_dir);
+            let mcp_config_path =
+                runtime_paths::resolved_mcp_config_path(&cli.run, &paths.state_dir);
             match &args.command {
                 McpSubcommand::List => {
                     let names = mcp_list_servers(&mcp_config_path)?;
@@ -953,7 +943,10 @@ async fn main() -> anyhow::Result<()> {
             }
             PolicySubcommand::PrintEffective { policy, json } => {
                 let policy_path = policy.clone().unwrap_or_else(|| paths.policy_path.clone());
-                println!("{}", ops_helpers::policy_effective_output(&policy_path, *json)?);
+                println!(
+                    "{}",
+                    ops_helpers::policy_effective_output(&policy_path, *json)?
+                );
                 return Ok(());
             }
             PolicySubcommand::Test {
@@ -1608,7 +1601,10 @@ mod tests {
 
     #[test]
     fn doctor_url_construction_openai_compat() {
-        let urls = provider_runtime::doctor_probe_urls(ProviderKind::Lmstudio, "http://localhost:1234/v1/");
+        let urls = provider_runtime::doctor_probe_urls(
+            ProviderKind::Lmstudio,
+            "http://localhost:1234/v1/",
+        );
         assert_eq!(urls[0], "http://localhost:1234/v1/models");
         assert_eq!(urls[1], "http://localhost:1234/v1");
     }
@@ -2066,8 +2062,3 @@ rules:
         }
     }
 }
-
-
-
-
-

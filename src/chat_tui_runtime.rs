@@ -1,9 +1,14 @@
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
-use crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event as CEvent, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as CEvent, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -16,13 +21,13 @@ use crate::events::{Event, EventKind};
 use crate::gate::ProviderKind;
 use crate::mcp::registry::McpRegistry;
 use crate::provider_runtime;
+use crate::providers::mock::MockProvider;
+use crate::providers::ollama::OllamaProvider;
+use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::runtime_config;
 use crate::runtime_paths;
 use crate::session::SessionStore;
 use crate::store;
-use crate::providers::mock::MockProvider;
-use crate::providers::ollama::OllamaProvider;
-use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::trust::approvals::ApprovalsStore;
 use crate::tui::state::UiState;
 use crate::{run_agent_with_ui, ChatArgs, RunArgs, RunExecutionResult};

@@ -62,11 +62,10 @@ pub(crate) async fn run_startup_bootstrap(
     base_run: &RunArgs,
     paths: &store::StatePaths,
 ) -> anyhow::Result<()> {
-    let mut detection =
-        startup_detect::detect_startup_provider(provider_runtime::http_config_from_run_args(
-            base_run,
-        ))
-        .await;
+    let mut detection = startup_detect::detect_startup_provider(
+        provider_runtime::http_config_from_run_args(base_run),
+    )
+    .await;
     let mut selections = StartupSelections::default();
     let mut web_status = refresh_startup_web_status(base_run, paths, &selections).await;
     let mut selected_idx = 0usize;
@@ -758,4 +757,3 @@ fn draw_startup_bootstrap_frame(
         footer_outer[1],
     );
 }
-

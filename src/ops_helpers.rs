@@ -4,11 +4,16 @@ use crate::compaction::CompactionSettings;
 use crate::hooks;
 use crate::hooks::config::HooksMode;
 use crate::hooks::protocol::{PreModelCompactionPayload, PreModelPayload, ToolResultPayload};
-use crate::hooks::runner::{make_pre_model_input, make_tool_result_input, HookManager, HookRuntimeConfig};
+use crate::hooks::runner::{
+    make_pre_model_input, make_tool_result_input, HookManager, HookRuntimeConfig,
+};
 use crate::trust::policy::{McpAllowSummary, Policy};
 use crate::RunArgs;
 
-pub(crate) fn compute_hooks_config_hash_hex(mode: HooksMode, path: &std::path::Path) -> Option<String> {
+pub(crate) fn compute_hooks_config_hash_hex(
+    mode: HooksMode,
+    path: &std::path::Path,
+) -> Option<String> {
     if matches!(mode, HooksMode::Off) || !path.exists() {
         return None;
     }

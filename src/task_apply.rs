@@ -47,10 +47,7 @@ pub(crate) fn apply_task_defaults(args: &mut RunArgs, d: &TaskDefaults) -> anyho
     apply_task_settings(args, d, None)
 }
 
-pub(crate) fn apply_node_overrides(
-    args: &mut RunArgs,
-    s: &TaskNodeSettings,
-) -> anyhow::Result<()> {
+pub(crate) fn apply_node_overrides(args: &mut RunArgs, s: &TaskNodeSettings) -> anyhow::Result<()> {
     apply_task_settings(
         args,
         &TaskDefaults {

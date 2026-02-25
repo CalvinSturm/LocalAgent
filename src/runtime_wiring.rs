@@ -3,9 +3,7 @@ use std::sync::mpsc::Sender;
 use anyhow::Context;
 
 use crate::events::{Event, EventSink, JsonlFileSink, MultiSink, StdoutSink};
-use crate::gate::{
-    compute_policy_hash_hex, NoGate, ToolGate, TrustGate, TrustMode,
-};
+use crate::gate::{compute_policy_hash_hex, NoGate, ToolGate, TrustGate, TrustMode};
 use crate::store;
 use crate::trust;
 use crate::trust::approvals::ApprovalsStore;
