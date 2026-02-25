@@ -11,6 +11,7 @@ mod hooks;
 mod instructions;
 mod mcp;
 mod planner;
+mod provider_runtime;
 mod providers;
 mod qualification;
 mod repro;
@@ -920,7 +921,7 @@ async fn main() -> anyhow::Result<()> {
             run_chat_repl(args, &cli.run, &paths).await?;
             return Ok(());
         }
-        Some(Commands::Doctor(args)) => match doctor_check(args).await {
+        Some(Commands::Doctor(args)) => match provider_runtime::doctor_check(args).await {
             Ok(ok_msg) => {
                 println!("{ok_msg}");
                 return Ok(());
@@ -1137,12 +1138,11 @@ async fn main() -> anyhow::Result<()> {
                                     Some("mock") => ProviderKind::Mock,
                                     _ => ProviderKind::Ollama,
                                 };
-                                let base_url = loaded
-                                    .profile
-                                    .base_url
-                                    .clone()
-                                    .unwrap_or_else(|| default_base_url(provider).to_string());
-                                match doctor_check(&DoctorArgs {
+                                let base_url =
+                                    loaded.profile.base_url.clone().unwrap_or_else(|| {
+                                        provider_runtime::default_base_url(provider).to_string()
+                                    });
+                                match provider_runtime::doctor_check(&DoctorArgs {
                                     provider,
                                     base_url: Some(base_url.clone()),
                                     api_key: None,
@@ -1228,10 +1228,9 @@ async fn main() -> anyhow::Result<()> {
             }
             let cfg = EvalConfig {
                 provider: args.provider,
-                base_url: args
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| default_base_url(args.provider).to_string()),
+                base_url: args.base_url.clone().unwrap_or_else(|| {
+                    provider_runtime::default_base_url(args.provider).to_string()
+                }),
                 api_key: args.api_key.clone(),
                 models,
                 pack: args.pack,
@@ -1278,7 +1277,7 @@ async fn main() -> anyhow::Result<()> {
                 audit_override: args.audit.clone(),
                 workdir_override: args.workdir.clone(),
                 keep_workdir: args.keep_workdir,
-                http: http_config_from_eval_args(&args),
+                http: provider_runtime::http_config_from_eval_args(&args),
                 mode: args.mode,
                 planner_model: args.planner_model.clone(),
                 worker_model: args.worker_model.clone(),
@@ -1451,14 +1450,14 @@ async fn main() -> anyhow::Result<()> {
         .run
         .base_url
         .clone()
-        .unwrap_or_else(|| default_base_url(provider_kind).to_string());
+        .unwrap_or_else(|| provider_runtime::default_base_url(provider_kind).to_string());
 
     match provider_kind {
         ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
             let provider = OpenAiCompatProvider::new(
                 base_url.clone(),
                 cli.run.api_key.clone(),
-                http_config_from_run_args(&cli.run),
+                provider_runtime::http_config_from_run_args(&cli.run),
             )?;
             let res = run_agent(
                 provider,
@@ -1481,13 +1480,15 @@ async fn main() -> anyhow::Result<()> {
                     provider_cli_name(provider_kind),
                     base_url,
                     provider_cli_name(provider_kind),
-                    default_base_url(provider_kind)
+                    provider_runtime::default_base_url(provider_kind)
                 ));
             }
         }
         ProviderKind::Ollama => {
-            let provider =
-                OllamaProvider::new(base_url.clone(), http_config_from_run_args(&cli.run))?;
+            let provider = OllamaProvider::new(
+                base_url.clone(),
+                provider_runtime::http_config_from_run_args(&cli.run),
+            )?;
             let res = run_agent(
                 provider,
                 provider_kind,
@@ -1509,7 +1510,7 @@ async fn main() -> anyhow::Result<()> {
                     provider_cli_name(provider_kind),
                     base_url,
                     provider_cli_name(provider_kind),
-                    default_base_url(provider_kind)
+                    provider_runtime::default_base_url(provider_kind)
                 ));
             }
         }
@@ -1581,7 +1582,8 @@ async fn run_startup_bootstrap(
     base_run: &RunArgs,
     paths: &store::StatePaths,
 ) -> anyhow::Result<()> {
-    let mut detection = detect_startup_provider(http_config_from_run_args(base_run)).await;
+    let mut detection =
+        detect_startup_provider(provider_runtime::http_config_from_run_args(base_run)).await;
     let mut selections = StartupSelections::default();
     let mut web_status = refresh_startup_web_status(base_run, paths, &selections).await;
     let mut selected_idx = 0usize;
@@ -1659,7 +1661,7 @@ async fn run_startup_bootstrap(
                             }
                         }
                         KeyCode::Char('r') | KeyCode::Char('R') => {
-                            detection = detect_startup_provider(http_config_from_run_args(base_run)).await;
+                            detection = detect_startup_provider(provider_runtime::http_config_from_run_args(base_run)).await;
                             web_status = refresh_startup_web_status(base_run, paths, &selections).await;
                             error_line = None;
                         }
@@ -2282,15 +2284,15 @@ async fn discover_local_default(
     let candidates = [
         (
             ProviderKind::Lmstudio,
-            default_base_url(ProviderKind::Lmstudio).to_string(),
+            provider_runtime::default_base_url(ProviderKind::Lmstudio).to_string(),
         ),
         (
             ProviderKind::Ollama,
-            default_base_url(ProviderKind::Ollama).to_string(),
+            provider_runtime::default_base_url(ProviderKind::Ollama).to_string(),
         ),
         (
             ProviderKind::Llamacpp,
-            default_base_url(ProviderKind::Llamacpp).to_string(),
+            provider_runtime::default_base_url(ProviderKind::Llamacpp).to_string(),
         ),
     ];
     for (provider, base_url) in candidates {
@@ -2300,9 +2302,9 @@ async fn discover_local_default(
     }
     Err(anyhow!(
         "No local provider detected. Start LM Studio ({}), Ollama ({}), or llama.cpp server ({}) then rerun.",
-        default_base_url(ProviderKind::Lmstudio),
-        default_base_url(ProviderKind::Ollama),
-        default_base_url(ProviderKind::Llamacpp)
+        provider_runtime::default_base_url(ProviderKind::Lmstudio),
+        provider_runtime::default_base_url(ProviderKind::Ollama),
+        provider_runtime::default_base_url(ProviderKind::Llamacpp)
     ))
 }
 
@@ -2434,7 +2436,7 @@ async fn run_chat_repl(
     let base_url = base_run
         .base_url
         .clone()
-        .unwrap_or_else(|| default_base_url(provider_kind).to_string());
+        .unwrap_or_else(|| provider_runtime::default_base_url(provider_kind).to_string());
     let mut active_run = base_run.clone();
     let mut pending_timeout_input = false;
     let mut pending_params_input = false;
@@ -2595,7 +2597,7 @@ async fn run_chat_repl(
                 let provider = OpenAiCompatProvider::new(
                     base_url.clone(),
                     turn_args.api_key.clone(),
-                    http_config_from_run_args(&turn_args),
+                    provider_runtime::http_config_from_run_args(&turn_args),
                 )?;
                 let res = run_agent(
                     provider,
@@ -2618,7 +2620,7 @@ async fn run_chat_repl(
                         provider_cli_name(provider_kind),
                         base_url,
                         provider_cli_name(provider_kind),
-                        default_base_url(provider_kind)
+                        provider_runtime::default_base_url(provider_kind)
                     );
                     if runtime_config::is_timeout_error_text(&err) && !timeout_notice_active {
                         timeout_notice_active = true;
@@ -2627,8 +2629,10 @@ async fn run_chat_repl(
                 }
             }
             ProviderKind::Ollama => {
-                let provider =
-                    OllamaProvider::new(base_url.clone(), http_config_from_run_args(&turn_args))?;
+                let provider = OllamaProvider::new(
+                    base_url.clone(),
+                    provider_runtime::http_config_from_run_args(&turn_args),
+                )?;
                 let res = run_agent(
                     provider,
                     provider_kind,
@@ -2650,7 +2654,7 @@ async fn run_chat_repl(
                         provider_cli_name(provider_kind),
                         base_url,
                         provider_cli_name(provider_kind),
-                        default_base_url(provider_kind)
+                        provider_runtime::default_base_url(provider_kind)
                     );
                     if runtime_config::is_timeout_error_text(&err) && !timeout_notice_active {
                         timeout_notice_active = true;
@@ -2691,7 +2695,7 @@ async fn run_chat_tui(
     let base_url = base_run
         .base_url
         .clone()
-        .unwrap_or_else(|| default_base_url(provider_kind).to_string());
+        .unwrap_or_else(|| provider_runtime::default_base_url(provider_kind).to_string());
     let cwd_label = chat_runtime::normalize_path_for_display(
         std::fs::canonicalize(&base_run.workdir)
             .or_else(|_| std::env::current_dir())
@@ -3387,7 +3391,7 @@ async fn run_chat_tui(
                                     let provider = OpenAiCompatProvider::new(
                                         base_url.clone(),
                                         turn_args.api_key.clone(),
-                                        http_config_from_run_args(&turn_args),
+                                        provider_runtime::http_config_from_run_args(&turn_args),
                                     )?;
                                     Box::pin(run_agent_with_ui(
                                         provider,
@@ -3405,7 +3409,7 @@ async fn run_chat_tui(
                                 ProviderKind::Ollama => {
                                     let provider = OllamaProvider::new(
                                         base_url.clone(),
-                                        http_config_from_run_args(&turn_args),
+                                        provider_runtime::http_config_from_run_args(&turn_args),
                                     )?;
                                     Box::pin(run_agent_with_ui(
                                         provider,
@@ -5240,7 +5244,7 @@ async fn run_tasks_graph(
         let base_url = node_args
             .base_url
             .clone()
-            .unwrap_or_else(|| default_base_url(provider_kind).to_string());
+            .unwrap_or_else(|| provider_runtime::default_base_url(provider_kind).to_string());
         let prompt = node_args
             .prompt
             .clone()
@@ -5251,7 +5255,7 @@ async fn run_tasks_graph(
                 let provider = OpenAiCompatProvider::new(
                     base_url.clone(),
                     node_args.api_key.clone(),
-                    http_config_from_run_args(&node_args),
+                    provider_runtime::http_config_from_run_args(&node_args),
                 )?;
                 run_agent(
                     provider,
@@ -5265,8 +5269,10 @@ async fn run_tasks_graph(
                 .await?
             }
             ProviderKind::Ollama => {
-                let provider =
-                    OllamaProvider::new(base_url.clone(), http_config_from_run_args(&node_args))?;
+                let provider = OllamaProvider::new(
+                    base_url.clone(),
+                    provider_runtime::http_config_from_run_args(&node_args),
+                )?;
                 run_agent(
                     provider,
                     provider_kind,
@@ -6330,151 +6336,6 @@ fn build_gate(args: &RunArgs, paths: &store::StatePaths) -> anyhow::Result<GateB
                 mcp_allowlist,
             })
         }
-    }
-}
-
-async fn doctor_check(args: &DoctorArgs) -> Result<String, String> {
-    let base_url = args
-        .base_url
-        .clone()
-        .unwrap_or_else(|| default_base_url(args.provider).to_string());
-    let client = Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
-
-    match args.provider {
-        ProviderKind::Mock => Ok(format!("OK: mock provider ready at {}", base_url)),
-        ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
-            let urls = doctor_probe_urls(args.provider, &base_url);
-            let models_url = &urls[0];
-            let health_url = &urls[1];
-
-            match get_with_optional_bearer(&client, models_url, args.api_key.as_deref()).await {
-                Ok(models_resp) => {
-                    if models_resp.status().is_success() {
-                        return Ok(format!(
-                            "OK: {} reachable at {}",
-                            provider_cli_name(args.provider),
-                            base_url
-                        ));
-                    }
-
-                    if models_resp.status() == reqwest::StatusCode::NOT_FOUND {
-                        let health_resp =
-                            get_with_optional_bearer(&client, health_url, args.api_key.as_deref())
-                                .await
-                                .map_err(|e| {
-                                    format!("{} not reachable after /models 404: {e}", health_url)
-                                })?;
-                        if health_resp.status().is_success() {
-                            return Ok(format!(
-                                "OK: {} reachable at {} (reachable but endpoint differs)",
-                                provider_cli_name(args.provider),
-                                base_url
-                            ));
-                        }
-                    }
-
-                    Err(format!(
-                        "{} responded with HTTP {} at {}",
-                        provider_cli_name(args.provider),
-                        models_resp.status(),
-                        models_url
-                    ))
-                }
-                Err(models_err) => {
-                    let health_resp =
-                        get_with_optional_bearer(&client, health_url, args.api_key.as_deref())
-                            .await
-                            .map_err(|health_err| {
-                                format!(
-                                    "could not reach {} ({models_err}); fallback {} also failed: {health_err}",
-                                    models_url, health_url
-                                )
-                            })?;
-                    if health_resp.status().is_success() {
-                        Ok(format!(
-                            "OK: {} reachable at {} (reachable but endpoint differs)",
-                            provider_cli_name(args.provider),
-                            base_url
-                        ))
-                    } else {
-                        Err(format!(
-                            "{} responded with HTTP {} at fallback {}",
-                            provider_cli_name(args.provider),
-                            health_resp.status(),
-                            health_url
-                        ))
-                    }
-                }
-            }
-        }
-        ProviderKind::Ollama => {
-            let tags_url = doctor_probe_urls(args.provider, &base_url)
-                .into_iter()
-                .next()
-                .ok_or_else(|| "internal error building Ollama doctor URL".to_string())?;
-            let resp = client
-                .get(&tags_url)
-                .send()
-                .await
-                .map_err(|e| format!("could not reach {tags_url}: {e}"))?;
-            if resp.status().is_success() {
-                Ok(format!("OK: ollama reachable at {}", base_url))
-            } else {
-                Err(format!(
-                    "ollama responded with HTTP {} at {}",
-                    resp.status(),
-                    tags_url
-                ))
-            }
-        }
-    }
-}
-
-async fn get_with_optional_bearer(
-    client: &Client,
-    url: &str,
-    api_key: Option<&str>,
-) -> Result<reqwest::Response, reqwest::Error> {
-    let mut req = client.get(url);
-    if let Some(key) = api_key {
-        req = req.bearer_auth(key);
-    }
-    req.send().await
-}
-
-fn default_base_url(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::Lmstudio => "http://localhost:1234/v1",
-        ProviderKind::Llamacpp => "http://localhost:8080/v1",
-        ProviderKind::Ollama => "http://localhost:11434",
-        ProviderKind::Mock => "mock://local",
-    }
-}
-
-fn http_config_from_run_args(args: &RunArgs) -> HttpConfig {
-    HttpConfig {
-        connect_timeout_ms: args.http_connect_timeout_ms,
-        request_timeout_ms: args.http_timeout_ms,
-        stream_idle_timeout_ms: args.http_stream_idle_timeout_ms,
-        max_response_bytes: args.http_max_response_bytes,
-        max_line_bytes: args.http_max_line_bytes,
-        http_max_retries: args.http_max_retries,
-        ..HttpConfig::default()
-    }
-}
-
-fn http_config_from_eval_args(args: &EvalArgs) -> HttpConfig {
-    HttpConfig {
-        connect_timeout_ms: args.http_connect_timeout_ms,
-        request_timeout_ms: args.http_timeout_ms,
-        stream_idle_timeout_ms: args.http_stream_idle_timeout_ms,
-        max_response_bytes: args.http_max_response_bytes,
-        max_line_bytes: args.http_max_line_bytes,
-        http_max_retries: args.http_max_retries,
-        ..HttpConfig::default()
     }
 }
 
