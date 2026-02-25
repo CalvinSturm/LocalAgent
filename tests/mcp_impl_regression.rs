@@ -272,6 +272,11 @@ async fn apply_patch_edits_existing_file_in_place() {
                 name: "apply_patch",
                 arguments: serde_json::json!({"path":"chess.html","patch":"@@ -1 +1 @@\n-old\n+new\n"}),
             },
+            ScriptStep::Tool {
+                id: "tc3",
+                name: "read_file",
+                arguments: serde_json::json!({"path":"chess.html"}),
+            },
             ScriptStep::Final("done"),
         ],
         next: AtomicUsize::new(0),

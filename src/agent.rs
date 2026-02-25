@@ -3958,6 +3958,7 @@ fn implementation_integrity_violation(
         );
     }
     let mut read_paths = std::collections::BTreeSet::<String>::new();
+    let mut pending_post_write_verification = std::collections::BTreeSet::<String>::new();
     let allow_new_file_without_read = prompt_allows_new_file_without_read(user_prompt);
     for call in observed_tool_calls {
         match call.name.as_str() {
@@ -3968,7 +3969,8 @@ fn implementation_integrity_violation(
                     .and_then(|v| v.as_str())
                     .map(normalize_tool_path)
                 {
-                    read_paths.insert(path);
+                    read_paths.insert(path.clone());
+                    pending_post_write_verification.remove(&path);
                 }
             }
             "apply_patch" => {
@@ -3983,27 +3985,31 @@ fn implementation_integrity_violation(
                             "implementation guard: apply_patch on '{path}' requires prior read_file on the same path"
                         ));
                     }
+                    pending_post_write_verification.insert(path);
                 }
             }
             "write_file" => {
-                if allow_new_file_without_read {
-                    continue;
-                }
                 if let Some(path) = call
                     .arguments
                     .get("path")
                     .and_then(|v| v.as_str())
                     .map(normalize_tool_path)
                 {
-                    if !read_paths.contains(&path) {
+                    if !allow_new_file_without_read && !read_paths.contains(&path) {
                         return Some(format!(
                             "implementation guard: write_file on '{path}' requires prior read_file on the same path"
                         ));
                     }
+                    pending_post_write_verification.insert(path);
                 }
             }
             _ => {}
         }
+    }
+    if let Some(path) = pending_post_write_verification.iter().next() {
+        return Some(format!(
+            "implementation guard: post-write verification missing read_file on '{path}'"
+        ));
     }
     None
 }
@@ -4521,6 +4527,53 @@ mod tests {
         assert!(!super::tool_result_has_error(
             &json!({"ok":true}).to_string()
         ));
+    }
+
+    #[test]
+    fn implementation_guard_requires_post_write_read_back() {
+        let calls = vec![
+            crate::types::ToolCall {
+                id: "tc1".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path":"chess.html"}),
+            },
+            crate::types::ToolCall {
+                id: "tc2".to_string(),
+                name: "apply_patch".to_string(),
+                arguments: json!({"path":"chess.html","patch":"@@ -1 +1 @@\n-a\n+b\n"}),
+            },
+        ];
+        let err =
+            super::implementation_integrity_violation("improve chess.html file", "done", &calls)
+                .expect("expected guard failure");
+        assert!(err.contains("post-write verification missing read_file"));
+    }
+
+    #[test]
+    fn implementation_guard_accepts_post_write_read_back() {
+        let calls = vec![
+            crate::types::ToolCall {
+                id: "tc1".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path":"chess.html"}),
+            },
+            crate::types::ToolCall {
+                id: "tc2".to_string(),
+                name: "apply_patch".to_string(),
+                arguments: json!({"path":"chess.html","patch":"@@ -1 +1 @@\n-a\n+b\n"}),
+            },
+            crate::types::ToolCall {
+                id: "tc3".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path":"chess.html"}),
+            },
+        ];
+        assert!(super::implementation_integrity_violation(
+            "improve chess.html file",
+            "done",
+            &calls
+        )
+        .is_none());
     }
 
     #[test]
