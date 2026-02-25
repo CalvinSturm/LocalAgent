@@ -19,6 +19,7 @@ mod repro;
 mod run_prep;
 mod runtime_config;
 mod runtime_flags;
+mod runtime_wiring;
 mod scaffold;
 mod session;
 mod startup_detect;
@@ -66,10 +67,9 @@ use eval::profile::{doctor_profile, list_profiles, load_profile};
 use eval::report_compare::compare_results_files;
 use eval::runner::{run_eval, EvalConfig};
 use eval::tasks::EvalPack;
-use events::{Event, EventKind, EventSink, JsonlFileSink, MultiSink, StdoutSink};
+use events::{Event, EventKind, EventSink};
 use gate::{
-    compute_policy_hash_hex, ApprovalKeyVersion, ApprovalMode, AutoApproveScope, GateContext,
-    NoGate, ProviderKind, ToolGate, TrustGate, TrustMode,
+    ApprovalKeyVersion, ApprovalMode, AutoApproveScope, GateContext, ProviderKind, TrustMode,
 };
 use hooks::config::HooksMode;
 use hooks::runner::{HookManager, HookRuntimeConfig};
@@ -95,7 +95,6 @@ use taskgraph::PropagateSummaries;
 use tokio::sync::watch;
 use tools::{ToolArgsStrict, ToolRuntime};
 use trust::approvals::ApprovalsStore;
-use trust::audit::AuditLog;
 use trust::policy::{McpAllowSummary, Policy};
 use tui::state::UiState;
 use types::{GenerateRequest, Message, Role};
@@ -3214,7 +3213,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         taint_overall: taint::TaintLevel::Clean,
         taint_sources: Vec::new(),
     };
-    let gate_build = build_gate(args, paths)?;
+    let gate_build = runtime_wiring::build_gate(args, paths)?;
     let policy_hash_hex = gate_build.policy_hash_hex.clone();
     let policy_source = gate_build.policy_source.to_string();
     let policy_version = gate_build.policy_version;
@@ -3385,7 +3384,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
     } else {
         None
     };
-    let mut event_sink = build_event_sink(
+    let mut event_sink = runtime_wiring::build_event_sink(
         args.stream,
         args.events.as_deref(),
         args.tui,
@@ -4309,7 +4308,8 @@ async fn run_tasks_graph(
 
     let graph_run_id = uuid::Uuid::new_v4().to_string();
     let graph_started = trust::now_rfc3339();
-    let mut sink = build_event_sink(false, base_run.events.as_deref(), false, None, false)?;
+    let mut sink =
+        runtime_wiring::build_event_sink(false, base_run.events.as_deref(), false, None, false)?;
     emit_event(
         &mut sink,
         &graph_run_id,
@@ -5075,140 +5075,6 @@ fn resolve_instruction_messages(
         selected_task_profile: selected_task,
         messages,
     })
-}
-
-fn build_event_sink(
-    stream: bool,
-    events_path: Option<&std::path::Path>,
-    tui_enabled: bool,
-    ui_tx: Option<Sender<Event>>,
-    suppress_stdout: bool,
-) -> anyhow::Result<Option<Box<dyn EventSink>>> {
-    let mut multi = MultiSink::new();
-    if stream && !tui_enabled && !suppress_stdout {
-        multi.push(Box::new(StdoutSink::new()));
-    }
-    if let Some(tx) = ui_tx {
-        multi.push(Box::new(tui::UiSink::new(tx)));
-    }
-    if let Some(path) = events_path {
-        multi.push(Box::new(JsonlFileSink::new(path)?));
-    }
-    if multi.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(Box::new(multi)))
-    }
-}
-
-struct GateBuild {
-    gate: Box<dyn ToolGate>,
-    policy_hash_hex: Option<String>,
-    policy_source: &'static str,
-    policy_for_exposure: Option<Policy>,
-    policy_version: Option<u32>,
-    includes_resolved: Vec<String>,
-    mcp_allowlist: Option<McpAllowSummary>,
-}
-
-fn build_gate(args: &RunArgs, paths: &store::StatePaths) -> anyhow::Result<GateBuild> {
-    match args.trust {
-        TrustMode::Off => Ok(GateBuild {
-            gate: Box::new(NoGate::new()),
-            policy_hash_hex: None,
-            policy_source: "none",
-            policy_for_exposure: None,
-            policy_version: None,
-            includes_resolved: Vec::new(),
-            mcp_allowlist: None,
-        }),
-        TrustMode::Auto => {
-            if !paths.policy_path.exists() {
-                return Ok(GateBuild {
-                    gate: Box::new(NoGate::new()),
-                    policy_hash_hex: None,
-                    policy_source: "none",
-                    policy_for_exposure: None,
-                    policy_version: None,
-                    includes_resolved: Vec::new(),
-                    mcp_allowlist: None,
-                });
-            }
-            let policy_bytes = std::fs::read(&paths.policy_path).with_context(|| {
-                format!(
-                    "failed reading policy file: {}",
-                    paths.policy_path.display()
-                )
-            })?;
-            let policy = Policy::from_path(&paths.policy_path).with_context(|| {
-                format!(
-                    "failed parsing policy file: {}",
-                    paths.policy_path.display()
-                )
-            })?;
-            let policy_hash_hex = compute_policy_hash_hex(&policy_bytes);
-            let policy_version = policy.version();
-            let includes_resolved = policy.includes_resolved().to_vec();
-            let mcp_allowlist = policy.mcp_allowlist_summary();
-            Ok(GateBuild {
-                gate: Box::new(TrustGate::new(
-                    policy.clone(),
-                    ApprovalsStore::new(paths.approvals_path.clone()),
-                    AuditLog::new(paths.audit_path.clone()),
-                    TrustMode::Auto,
-                    policy_hash_hex.clone(),
-                )),
-                policy_hash_hex: Some(policy_hash_hex),
-                policy_source: "file",
-                policy_for_exposure: Some(policy),
-                policy_version: Some(policy_version),
-                includes_resolved,
-                mcp_allowlist,
-            })
-        }
-        TrustMode::On => {
-            let (policy, policy_hash_hex, policy_source) = if paths.policy_path.exists() {
-                let policy_bytes = std::fs::read(&paths.policy_path).with_context(|| {
-                    format!(
-                        "failed reading policy file: {}",
-                        paths.policy_path.display()
-                    )
-                })?;
-                let policy = Policy::from_path(&paths.policy_path).with_context(|| {
-                    format!(
-                        "failed parsing policy file: {}",
-                        paths.policy_path.display()
-                    )
-                })?;
-                (policy, compute_policy_hash_hex(&policy_bytes), "file")
-            } else {
-                let repr = trust::policy::safe_default_policy_repr();
-                (
-                    Policy::safe_default(),
-                    compute_policy_hash_hex(repr.as_bytes()),
-                    "default",
-                )
-            };
-            let policy_version = policy.version();
-            let includes_resolved = policy.includes_resolved().to_vec();
-            let mcp_allowlist = policy.mcp_allowlist_summary();
-            Ok(GateBuild {
-                gate: Box::new(TrustGate::new(
-                    policy.clone(),
-                    ApprovalsStore::new(paths.approvals_path.clone()),
-                    AuditLog::new(paths.audit_path.clone()),
-                    TrustMode::On,
-                    policy_hash_hex.clone(),
-                )),
-                policy_hash_hex: Some(policy_hash_hex),
-                policy_source,
-                policy_for_exposure: Some(policy),
-                policy_version: Some(policy_version),
-                includes_resolved,
-                mcp_allowlist,
-            })
-        }
-    }
 }
 
 fn handle_session_command(store: &SessionStore, cmd: &SessionSubcommand) -> anyhow::Result<()> {
