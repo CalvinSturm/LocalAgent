@@ -1,4 +1,5 @@
 mod agent;
+mod chat_commands;
 mod chat_ui;
 mod compaction;
 mod eval;
@@ -2817,9 +2818,9 @@ async fn run_chat_tui(
                             search_query
                         ))
                     } else if input.starts_with('/') {
-                        slash_overlay_text(&input, slash_menu_index)
+                        chat_commands::slash_overlay_text(&input, slash_menu_index)
                     } else if input.starts_with('?') {
-                        keybinds_overlay_text()
+                        chat_commands::keybinds_overlay_text()
                     } else {
                         None
                     },
@@ -2955,10 +2956,10 @@ async fn run_chat_tui(
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                         KeyCode::Up => {
                             if input.starts_with('/') {
-                                let matches = slash_command_matches(&input);
-                                if !matches.is_empty() {
+                                let matches_len = chat_commands::slash_match_count(&input);
+                                if matches_len > 0 {
                                     slash_menu_index = if slash_menu_index == 0 {
-                                        matches.len() - 1
+                                        matches_len - 1
                                     } else {
                                         slash_menu_index - 1
                                     };
@@ -2976,9 +2977,9 @@ async fn run_chat_tui(
                         }
                         KeyCode::Down => {
                             if input.starts_with('/') {
-                                let matches = slash_command_matches(&input);
-                                if !matches.is_empty() {
-                                    slash_menu_index = (slash_menu_index + 1) % matches.len();
+                                let matches_len = chat_commands::slash_match_count(&input);
+                                if matches_len > 0 {
+                                    slash_menu_index = (slash_menu_index + 1) % matches_len;
                                 }
                                 continue;
                             }
@@ -3134,8 +3135,8 @@ async fn run_chat_tui(
                                 continue;
                             }
                             if line.starts_with('/') {
-                                let resolved = selected_slash_command(&line, slash_menu_index)
-                                    .or_else(|| resolve_slash_command(&line))
+                                let resolved = chat_commands::selected_slash_command(&line, slash_menu_index)
+                                    .or_else(|| chat_commands::resolve_slash_command(&line))
                                     .unwrap_or(line.as_str());
                                 match resolved {
                                     "/exit" => break,
@@ -3322,9 +3323,9 @@ async fn run_chat_tui(
                                             search_query
                                         ))
                                     } else if input.starts_with('/') {
-                                        slash_overlay_text(&input, slash_menu_index)
+                                        chat_commands::slash_overlay_text(&input, slash_menu_index)
                                     } else if input.starts_with('?') {
-                                        keybinds_overlay_text()
+                                        chat_commands::keybinds_overlay_text()
                                     } else {
                                         None
                                     },
@@ -3765,9 +3766,9 @@ async fn run_chat_tui(
                                                 search_query
                                             ))
                                         } else if input.starts_with('/') {
-                                            slash_overlay_text(&input, slash_menu_index)
+                                            chat_commands::slash_overlay_text(&input, slash_menu_index)
                                         } else if input.starts_with('?') {
-                                            keybinds_overlay_text()
+                                            chat_commands::keybinds_overlay_text()
                                         } else {
                                             None
                                         },
@@ -4060,133 +4061,6 @@ pub(crate) fn styled_chat_text(chat_text: &str, base_style: Style) -> (Text<'sta
     }
 
     (Text::from(lines), plain)
-}
-
-const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/help", "show shortcuts and slash commands"),
-    ("/mode", "show current mode"),
-    ("/mode safe", "switch mode to safe"),
-    ("/mode coding", "switch mode to coding"),
-    ("/mode web", "switch mode to web"),
-    ("/mode custom", "switch mode to custom"),
-    ("/timeout", "show timeout settings and enter a new value"),
-    ("/timeout 60", "set timeout to 60 seconds"),
-    ("/timeout +30", "increase timeout by 30 seconds"),
-    ("/timeout -10", "decrease timeout by 10 seconds"),
-    ("/timeout off", "disable request and stream-idle timeout"),
-    (
-        "/params",
-        "show current tuning params and enter a new key/value",
-    ),
-    ("/params max_steps 30", "set max agent loop steps"),
-    (
-        "/params compaction_mode summary",
-        "enable summary compaction mode",
-    ),
-    ("/dismiss", "dismiss timeout notification"),
-    ("/clear", "clear transcript (and session if enabled)"),
-    ("/exit", "exit chat"),
-    ("/hide tools", "hide tools pane"),
-    ("/hide approvals", "hide approvals pane"),
-    ("/hide logs", "hide logs pane"),
-    ("/show tools", "show tools pane"),
-    ("/show approvals", "show approvals pane"),
-    ("/show logs", "show logs pane"),
-    ("/show all", "show all panes"),
-];
-
-fn slash_command_matches(input: &str) -> Vec<(&'static str, &'static str)> {
-    SLASH_COMMANDS
-        .iter()
-        .copied()
-        .filter(|(cmd, _)| cmd.starts_with(input))
-        .collect()
-}
-
-fn resolve_slash_command(input: &str) -> Option<&'static str> {
-    let matches = slash_command_matches(input);
-    if matches.len() == 1 {
-        matches.first().map(|(cmd, _)| *cmd)
-    } else {
-        None
-    }
-}
-
-fn selected_slash_command(input: &str, index: usize) -> Option<&'static str> {
-    let matches = slash_command_matches(input);
-    if matches.is_empty() {
-        return None;
-    }
-    Some(matches[index % matches.len()].0)
-}
-
-fn slash_overlay_text(input: &str, selected: usize) -> Option<String> {
-    let matches = slash_command_matches(input);
-    if matches.is_empty() {
-        return Some("no matching / commands".to_string());
-    }
-    let selected_idx = selected % matches.len();
-    let window = 6usize;
-    let start = if selected_idx >= window {
-        selected_idx + 1 - window
-    } else {
-        0
-    };
-    let end = (start + window).min(matches.len());
-    let mut lines = vec!["/ commands".to_string()];
-    for (idx, (cmd, _desc)) in matches[start..end].iter().enumerate() {
-        let absolute_idx = start + idx;
-        lines.push(format!(
-            "{} {}",
-            if absolute_idx == selected_idx {
-                "›"
-            } else {
-                " "
-            },
-            cmd
-        ));
-    }
-    let (_cmd, desc) = matches[selected_idx];
-    lines.push(format!("desc: {desc}"));
-    Some(lines.join("\n"))
-}
-
-fn keybinds_overlay_text() -> Option<String> {
-    let mut lines = vec!["keybinds".to_string()];
-    let rows = [
-        ("Esc", "quit chat"),
-        (
-            "Ctrl+T / Ctrl+Y / Ctrl+G",
-            "toggle tools / approvals / logs",
-        ),
-        (
-            "Ctrl+1 / Ctrl+2 / Ctrl+3",
-            "same toggles (terminal-dependent)",
-        ),
-        ("PgUp / PgDn", "scroll transcript"),
-        ("Ctrl+U / Ctrl+D", "scroll transcript"),
-        ("Mouse wheel", "scroll transcript"),
-        ("Ctrl+J / Ctrl+K", "approvals selection"),
-        ("Ctrl+A / Ctrl+X", "approve / deny selected approval"),
-        ("Ctrl+R", "refresh approvals"),
-        ("Tab", "switch tools/approvals focus"),
-        ("Ctrl+P", "command palette"),
-        ("Ctrl+F", "search transcript"),
-        ("Enter (empty input)", "toggle selected tool details"),
-        ("/mode <...>", "switch chat mode (safe/coding/web/custom)"),
-        (
-            "/timeout <...>",
-            "adjust request/stream idle timeout (or off)",
-        ),
-        ("/params <key> <value>", "adjust live agent tuning settings"),
-        ("/dismiss", "dismiss timeout notification"),
-        ("/...", "slash commands dropdown"),
-        ("?", "show this keybinds panel"),
-    ];
-    for (lhs, rhs) in rows {
-        lines.push(format!("  {:<26} {}", lhs, rhs));
-    }
-    Some(lines.join("\n"))
 }
 
 pub(crate) fn localagent_banner(_tick: u64) -> String {
