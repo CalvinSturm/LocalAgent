@@ -13,6 +13,7 @@ mod planner;
 mod providers;
 mod qualification;
 mod repro;
+mod run_prep;
 mod runtime_config;
 mod scaffold;
 mod session;
@@ -92,7 +93,7 @@ use taint::{TaintMode, TaintToggle};
 use target::{DockerTarget, ExecTarget, ExecTargetKind, HostTarget};
 use taskgraph::{PropagateSummaries, TaskDefaults, TaskFile, TaskNodeSettings};
 use tokio::sync::watch;
-use tools::{builtin_tools_enabled, ToolArgsStrict, ToolRuntime};
+use tools::{ToolArgsStrict, ToolRuntime};
 use trust::approvals::ApprovalsStore;
 use trust::audit::AuditLog;
 use trust::policy::{McpAllowSummary, Policy};
@@ -4215,69 +4216,28 @@ async fn run_agent_with_ui<P: ModelProvider>(
         ))
     };
 
-    let mut all_tools = builtin_tools_enabled(
-        args.enable_write_tools,
-        args.allow_shell || args.allow_shell_in_workdir,
-    );
-    let mut mcp_tool_snapshot: Vec<store::McpToolSnapshotEntry> = Vec::new();
-    if let Some(reg) = &mcp_registry {
-        let mut mcp_defs = reg.tool_defs();
-        mcp_tool_snapshot = mcp_defs
-            .iter()
-            .map(|t| store::McpToolSnapshotEntry {
-                name: t.name.clone(),
-                parameters: t.parameters.clone(),
-            })
-            .collect();
-        mcp_tool_snapshot.sort_by(|a, b| a.name.cmp(&b.name));
-        if let Some(policy) = &gate_build.policy_for_exposure {
-            mcp_defs.retain(|t| policy.mcp_tool_allowed(&t.name).is_ok());
-        }
-        all_tools.extend(mcp_defs);
-    }
-    let qual_cache_path = paths
-        .state_dir
-        .join("orchestrator_qualification_cache.json");
-    let qualification_fallback_note = qualification::qualify_or_enable_readonly_fallback(
+    let prep = run_prep::prepare_tools_and_qualification(
         &provider,
         provider_kind,
         base_url,
         &worker_model,
-        args.enable_write_tools || args.allow_write,
-        &mut all_tools,
-        &qual_cache_path,
+        args,
+        &paths.state_dir,
+        &mcp_config_path,
+        mcp_registry.as_ref(),
+        gate_build.policy_for_exposure.as_ref(),
     )
     .await?;
+    let all_tools = prep.all_tools;
+    let mcp_tool_snapshot = prep.mcp_tool_snapshot;
+    let qualification_fallback_note = prep.qualification_fallback_note;
     if let Some(note) = &qualification_fallback_note {
         eprintln!("WARN: {note}");
     }
-    let mcp_tool_catalog_hash_hex = if mcp_tool_snapshot.is_empty() {
-        None
-    } else {
-        Some(store::mcp_tool_snapshot_hash_hex(&mcp_tool_snapshot)?)
-    };
-    let mcp_config_hash_hex = if args.mcp.is_empty() {
-        None
-    } else {
-        std::fs::read(&mcp_config_path)
-            .ok()
-            .map(|bytes| store::sha256_hex(&bytes))
-    };
-    let mcp_startup_live_catalog_hash_hex = if let (Some(reg), Some(_expected_hash)) =
-        (mcp_registry.as_ref(), mcp_tool_catalog_hash_hex.as_ref())
-    {
-        reg.live_tool_catalog_hash_hex().await.ok()
-    } else {
-        None
-    };
-    let mcp_snapshot_pinned = match (
-        mcp_tool_catalog_hash_hex.as_ref(),
-        mcp_startup_live_catalog_hash_hex.as_ref(),
-    ) {
-        (Some(expected), Some(actual)) => expected == actual,
-        (None, _) => true,
-        _ => false,
-    };
+    let mcp_tool_catalog_hash_hex = prep.mcp_tool_catalog_hash_hex;
+    let mcp_config_hash_hex = prep.mcp_config_hash_hex;
+    let mcp_startup_live_catalog_hash_hex = prep.mcp_startup_live_catalog_hash_hex;
+    let mcp_snapshot_pinned = prep.mcp_snapshot_pinned;
     let mcp_pin_enforcement = format!("{:?}", args.mcp_pin_enforcement).to_lowercase();
     let hooks_config_path = resolved_hooks_config_path(args, &paths.state_dir);
     let tool_schema_hash_hex_map = store::tool_schema_hash_hex_map(&all_tools);
