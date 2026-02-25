@@ -1,5 +1,6 @@
 mod agent;
 mod chat_commands;
+mod chat_runtime;
 mod chat_ui;
 mod chat_view_utils;
 mod compaction;
@@ -43,7 +44,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as CEvent, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event as CEvent, KeyCode, KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -2516,7 +2517,7 @@ async fn run_chat_repl(
                 "/mode" => {
                     println!(
                         "current mode: {} (use /mode <safe|coding|web|custom>)",
-                        chat_mode_label(&active_run)
+                        chat_runtime::chat_mode_label(&active_run)
                     );
                 }
                 "/timeout" => {
@@ -2555,7 +2556,10 @@ async fn run_chat_repl(
                 _ if input.starts_with("/mode ") => {
                     let mode = input["/mode ".len()..].trim();
                     if runtime_config::apply_chat_mode(&mut active_run, mode).is_some() {
-                        println!("mode switched to {}", chat_mode_label(&active_run));
+                        println!(
+                            "mode switched to {}",
+                            chat_runtime::chat_mode_label(&active_run)
+                        );
                     } else {
                         println!("unknown mode: {mode}. expected safe|coding|web|custom");
                     }
@@ -2688,7 +2692,7 @@ async fn run_chat_tui(
         .base_url
         .clone()
         .unwrap_or_else(|| default_base_url(provider_kind).to_string());
-    let cwd_label = normalize_path_for_display(
+    let cwd_label = chat_runtime::normalize_path_for_display(
         std::fs::canonicalize(&base_run.workdir)
             .or_else(|_| std::env::current_dir())
             .map(|p| p.display().to_string())
@@ -2787,7 +2791,7 @@ async fn run_chat_tui(
             terminal.draw(|f| {
                 chat_ui::draw_chat_frame(
                     f,
-                    chat_mode_label(&active_run),
+                    chat_runtime::chat_mode_label(&active_run),
                     provider_cli_name(provider_kind),
                     provider_connected,
                     &model,
@@ -2835,16 +2839,16 @@ async fn run_chat_tui(
             if event::poll(Duration::from_millis(base_run.tui_refresh_ms))? {
                 match event::read()? {
                     CEvent::Mouse(me) => {
-                        if let Some(delta) = mouse_scroll_delta(&me) {
+                        if let Some(delta) = chat_runtime::mouse_scroll_delta(&me) {
                             let max_scroll =
-                                transcript_max_scroll_lines(&transcript, &streaming_assistant);
+                                chat_runtime::transcript_max_scroll_lines(&transcript, &streaming_assistant);
                             transcript_scroll =
-                                adjust_transcript_scroll(transcript_scroll, delta, max_scroll);
+                                chat_runtime::adjust_transcript_scroll(transcript_scroll, delta, max_scroll);
                             follow_output = false;
                         }
                     }
                     CEvent::Paste(pasted) => {
-                        input.push_str(&normalize_pasted_text(&pasted));
+                        input.push_str(&chat_runtime::normalize_pasted_text(&pasted));
                         history_idx = None;
                         slash_menu_index = 0;
                     }
@@ -2919,7 +2923,7 @@ async fn run_chat_tui(
                                 do_search = true;
                                 search_line_cursor = search_line_cursor.saturating_add(1);
                             }
-                            KeyCode::Char(c) if is_text_input_mods(key.modifiers) => {
+                            KeyCode::Char(c) if chat_runtime::is_text_input_mods(key.modifiers) => {
                                 search_query.push(c);
                                 search_line_cursor = 0;
                                 do_search = true;
@@ -3003,30 +3007,30 @@ async fn run_chat_tui(
                         }
                         KeyCode::PageUp => {
                             let max_scroll =
-                                transcript_max_scroll_lines(&transcript, &streaming_assistant);
+                                chat_runtime::transcript_max_scroll_lines(&transcript, &streaming_assistant);
                             transcript_scroll =
-                                adjust_transcript_scroll(transcript_scroll, -12, max_scroll);
+                                chat_runtime::adjust_transcript_scroll(transcript_scroll, -12, max_scroll);
                             follow_output = false;
                         }
                         KeyCode::PageDown => {
                             let max_scroll =
-                                transcript_max_scroll_lines(&transcript, &streaming_assistant);
+                                chat_runtime::transcript_max_scroll_lines(&transcript, &streaming_assistant);
                             transcript_scroll =
-                                adjust_transcript_scroll(transcript_scroll, 12, max_scroll);
+                                chat_runtime::adjust_transcript_scroll(transcript_scroll, 12, max_scroll);
                             follow_output = false;
                         }
                         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             let max_scroll =
-                                transcript_max_scroll_lines(&transcript, &streaming_assistant);
+                                chat_runtime::transcript_max_scroll_lines(&transcript, &streaming_assistant);
                             transcript_scroll =
-                                adjust_transcript_scroll(transcript_scroll, -10, max_scroll);
+                                chat_runtime::adjust_transcript_scroll(transcript_scroll, -10, max_scroll);
                             follow_output = false;
                         }
                         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             let max_scroll =
-                                transcript_max_scroll_lines(&transcript, &streaming_assistant);
+                                chat_runtime::transcript_max_scroll_lines(&transcript, &streaming_assistant);
                             transcript_scroll =
-                                adjust_transcript_scroll(transcript_scroll, 10, max_scroll);
+                                chat_runtime::adjust_transcript_scroll(transcript_scroll, 10, max_scroll);
                             follow_output = false;
                         }
                         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3155,7 +3159,7 @@ async fn run_chat_tui(
                                     "/mode" => {
                                         logs.push(format!(
                                             "current mode: {} (use /mode <safe|coding|web|custom>)",
-                                            chat_mode_label(&active_run)
+                                            chat_runtime::chat_mode_label(&active_run)
                                         ));
                                         show_logs = true;
                                     }
@@ -3231,7 +3235,7 @@ async fn run_chat_tui(
                                         if runtime_config::apply_chat_mode(&mut active_run, mode).is_some() {
                                             logs.push(format!(
                                                 "mode switched to {}",
-                                                chat_mode_label(&active_run)
+                                                chat_runtime::chat_mode_label(&active_run)
                                             ));
                                         } else {
                                             logs.push(format!(
@@ -3292,7 +3296,7 @@ async fn run_chat_tui(
                             terminal.draw(|f| {
                                 chat_ui::draw_chat_frame(
                                     f,
-                                    chat_mode_label(&active_run),
+                                    chat_runtime::chat_mode_label(&active_run),
                                     provider_cli_name(provider_kind),
                                     provider_connected,
                                     &model,
@@ -3463,12 +3467,12 @@ async fn run_chat_tui(
                                 while event::poll(Duration::from_millis(0))? {
                                     match event::read()? {
                                         CEvent::Mouse(me) => {
-                                            if let Some(delta) = mouse_scroll_delta(&me) {
-                                                let max_scroll = transcript_max_scroll_lines(
+                                            if let Some(delta) = chat_runtime::mouse_scroll_delta(&me) {
+                                                let max_scroll = chat_runtime::transcript_max_scroll_lines(
                                                     &transcript,
                                                     &streaming_assistant,
                                                 );
-                                                transcript_scroll = adjust_transcript_scroll(
+                                                transcript_scroll = chat_runtime::adjust_transcript_scroll(
                                                     transcript_scroll,
                                                     delta,
                                                     max_scroll,
@@ -3477,7 +3481,7 @@ async fn run_chat_tui(
                                             }
                                         }
                                         CEvent::Paste(pasted) => {
-                                            input.push_str(&normalize_pasted_text(&pasted));
+                                            input.push_str(&chat_runtime::normalize_pasted_text(&pasted));
                                             history_idx = None;
                                             slash_menu_index = 0;
                                         }
@@ -3539,11 +3543,11 @@ async fn run_chat_tui(
                                                     break;
                                                 }
                                                 KeyCode::PageUp => {
-                                                    let max_scroll = transcript_max_scroll_lines(
+                                                    let max_scroll = chat_runtime::transcript_max_scroll_lines(
                                                         &transcript,
                                                         &streaming_assistant,
                                                     );
-                                                    transcript_scroll = adjust_transcript_scroll(
+                                                    transcript_scroll = chat_runtime::adjust_transcript_scroll(
                                                         transcript_scroll,
                                                         -12,
                                                         max_scroll,
@@ -3551,11 +3555,11 @@ async fn run_chat_tui(
                                                     follow_output = false;
                                                 }
                                                 KeyCode::PageDown => {
-                                                    let max_scroll = transcript_max_scroll_lines(
+                                                    let max_scroll = chat_runtime::transcript_max_scroll_lines(
                                                         &transcript,
                                                         &streaming_assistant,
                                                     );
-                                                    transcript_scroll = adjust_transcript_scroll(
+                                                    transcript_scroll = chat_runtime::adjust_transcript_scroll(
                                                         transcript_scroll,
                                                         12,
                                                         max_scroll,
@@ -3567,11 +3571,11 @@ async fn run_chat_tui(
                                                         .modifiers
                                                         .contains(KeyModifiers::CONTROL) =>
                                                 {
-                                                    let max_scroll = transcript_max_scroll_lines(
+                                                    let max_scroll = chat_runtime::transcript_max_scroll_lines(
                                                         &transcript,
                                                         &streaming_assistant,
                                                     );
-                                                    transcript_scroll = adjust_transcript_scroll(
+                                                    transcript_scroll = chat_runtime::adjust_transcript_scroll(
                                                         transcript_scroll,
                                                         -10,
                                                         max_scroll,
@@ -3583,11 +3587,11 @@ async fn run_chat_tui(
                                                         .modifiers
                                                         .contains(KeyModifiers::CONTROL) =>
                                                 {
-                                                    let max_scroll = transcript_max_scroll_lines(
+                                                    let max_scroll = chat_runtime::transcript_max_scroll_lines(
                                                         &transcript,
                                                         &streaming_assistant,
                                                     );
-                                                    transcript_scroll = adjust_transcript_scroll(
+                                                    transcript_scroll = chat_runtime::adjust_transcript_scroll(
                                                         transcript_scroll,
                                                         10,
                                                         max_scroll,
@@ -3735,7 +3739,7 @@ async fn run_chat_tui(
                                 terminal.draw(|f| {
                                     chat_ui::draw_chat_frame(
                                         f,
-                                        chat_mode_label(&active_run),
+                                        chat_runtime::chat_mode_label(&active_run),
                                         provider_cli_name(provider_kind),
                                         provider_connected,
                                         &model,
@@ -3911,7 +3915,7 @@ async fn run_chat_tui(
                             slash_menu_index = 0;
                         }
                         KeyCode::Char(c) => {
-                            if is_text_input_mods(key.modifiers) {
+                            if chat_runtime::is_text_input_mods(key.modifiers) {
                                 input.push(c);
                                 if c == '/' && input.len() == 1 {
                                     slash_menu_index = 0;
@@ -3951,86 +3955,6 @@ async fn run_chat_tui(
     }
     terminal.show_cursor()?;
     run_result
-}
-
-fn is_text_input_mods(mods: KeyModifiers) -> bool {
-    mods.is_empty() || mods == KeyModifiers::SHIFT
-}
-
-fn normalize_pasted_text(s: &str) -> String {
-    s.replace("\r\n", "\n").replace('\r', "\n")
-}
-
-fn mouse_scroll_delta(me: &MouseEvent) -> Option<isize> {
-    let step = if me.modifiers.contains(KeyModifiers::SHIFT) {
-        12
-    } else {
-        3
-    };
-    match me.kind {
-        MouseEventKind::ScrollUp => Some(-(step as isize)),
-        MouseEventKind::ScrollDown => Some(step as isize),
-        _ => None,
-    }
-}
-
-fn transcript_max_scroll_lines(
-    transcript: &[(String, String)],
-    streaming_assistant: &str,
-) -> usize {
-    let mut chat_text = transcript
-        .iter()
-        .map(|(role, text)| format!("{}: {}", role.to_uppercase(), text))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if !streaming_assistant.is_empty() {
-        if !chat_text.is_empty() {
-            chat_text.push_str("\n\n");
-        }
-        chat_text.push_str(&format!("ASSISTANT: {}", streaming_assistant));
-    }
-    chat_text.lines().count().saturating_sub(1)
-}
-
-fn adjust_transcript_scroll(current: usize, delta: isize, max_scroll: usize) -> usize {
-    let base = if current == usize::MAX {
-        max_scroll
-    } else {
-        current.min(max_scroll)
-    };
-    if delta < 0 {
-        base.saturating_sub((-delta) as usize)
-    } else {
-        base.saturating_add(delta as usize).min(max_scroll)
-    }
-}
-
-fn normalize_path_for_display(path: String) -> String {
-    if cfg!(windows) {
-        if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-            return format!(r"\\{}", rest);
-        }
-        if let Some(rest) = path.strip_prefix(r"\\?\") {
-            return rest.to_string();
-        }
-    }
-    path
-}
-
-fn chat_mode_label(run: &RunArgs) -> &'static str {
-    let web_enabled = run.mcp.iter().any(|m| m == "playwright");
-    let is_safe = !web_enabled && !run.enable_write_tools && !run.allow_write && !run.allow_shell;
-    let is_code = !web_enabled && run.enable_write_tools && run.allow_write && run.allow_shell;
-    let is_web = web_enabled && !run.enable_write_tools && !run.allow_write && !run.allow_shell;
-    if is_safe {
-        "Safe"
-    } else if is_code {
-        "Code"
-    } else if is_web {
-        "Web"
-    } else {
-        "Custom"
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
