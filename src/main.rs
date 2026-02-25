@@ -30,6 +30,7 @@ mod session;
 mod session_ops;
 mod startup_detect;
 mod startup_bootstrap;
+mod startup_init;
 mod store;
 mod taint;
 mod task_apply;
@@ -105,7 +106,7 @@ use tui::state::UiState;
 use types::{Message, Role};
 
 #[derive(Debug, Subcommand)]
-enum Commands {
+pub(crate) enum Commands {
     Run,
     Exec,
     Version(VersionArgs),
@@ -816,34 +817,6 @@ struct DoctorArgs {
     api_key: Option<String>,
 }
 
-fn should_auto_init_state(command: &Option<Commands>) -> bool {
-    !matches!(
-        command,
-        Some(Commands::Version(_)) | Some(Commands::Init(_)) | Some(Commands::Template(_))
-    )
-}
-
-fn maybe_auto_init_state(
-    cli: &Cli,
-    workdir: &std::path::Path,
-    paths: &store::StatePaths,
-) -> anyhow::Result<()> {
-    if !should_auto_init_state(&cli.command) || paths.state_dir.exists() {
-        return Ok(());
-    }
-    let _ = scaffold::run_init(&InitOptions {
-        workdir: workdir.to_path_buf(),
-        state_dir_override: cli.run.state_dir.clone(),
-        force: false,
-        print_only: false,
-    })?;
-    eprintln!(
-        "INFO: initialized LocalAgent state at {}",
-        paths.state_dir.display()
-    );
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -868,7 +841,12 @@ async fn main() -> anyhow::Result<()> {
             paths.state_dir.display()
         );
     }
-    maybe_auto_init_state(&cli, &workdir, &paths)?;
+    startup_init::maybe_auto_init_state(
+        &cli.command,
+        cli.run.state_dir.clone(),
+        &workdir,
+        &paths,
+    )?;
 
     match &cli.command {
         Some(Commands::Run) | Some(Commands::Exec) => {}
