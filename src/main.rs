@@ -11,6 +11,7 @@ mod planner;
 mod providers;
 mod qualification;
 mod repro;
+mod runtime_config;
 mod scaffold;
 mod session;
 mod store;
@@ -2459,7 +2460,7 @@ async fn run_chat_repl(
                 println!("params update cancelled");
                 continue;
             }
-            match apply_params_input(&mut active_run, input) {
+            match runtime_config::apply_params_input(&mut active_run, input) {
                 Ok(msg) => {
                     pending_params_input = false;
                     println!("{msg}");
@@ -2477,7 +2478,7 @@ async fn run_chat_repl(
                 println!("timeout update cancelled");
                 continue;
             }
-            match apply_timeout_input(&mut active_run, input) {
+            match runtime_config::apply_timeout_input(&mut active_run, input) {
                 Ok(msg) => {
                     pending_timeout_input = false;
                     println!("{msg}");
@@ -2514,12 +2515,12 @@ async fn run_chat_repl(
                 }
                 "/timeout" => {
                     pending_timeout_input = true;
-                    println!("{}", timeout_settings_summary(&active_run));
+                    println!("{}", runtime_config::timeout_settings_summary(&active_run));
                     println!("enter seconds, +N, -N, or 'cancel'");
                 }
                 "/params" => {
                     pending_params_input = true;
-                    println!("{}", params_settings_summary(&active_run));
+                    println!("{}", runtime_config::params_settings_summary(&active_run));
                     println!(
                         "editable keys: max_steps, max_context_chars, compaction_mode(off|summary), compaction_keep_last, tool_result_persist(all|digest|none), max_tool_output_bytes, max_read_bytes, stream(on|off), allow_shell(on|off), allow_write(on|off), enable_write_tools(on|off), allow_shell_in_workdir(on|off)"
                     );
@@ -2547,7 +2548,7 @@ async fn run_chat_repl(
                 }
                 _ if input.starts_with("/mode ") => {
                     let mode = input["/mode ".len()..].trim();
-                    if apply_chat_mode(&mut active_run, mode).is_some() {
+                    if runtime_config::apply_chat_mode(&mut active_run, mode).is_some() {
                         println!("mode switched to {}", chat_mode_label(&active_run));
                     } else {
                         println!("unknown mode: {mode}. expected safe|coding|web|custom");
@@ -2555,14 +2556,14 @@ async fn run_chat_repl(
                 }
                 _ if input.starts_with("/timeout ") => {
                     let value = input["/timeout ".len()..].trim();
-                    match apply_timeout_input(&mut active_run, value) {
+                    match runtime_config::apply_timeout_input(&mut active_run, value) {
                         Ok(msg) => println!("{msg}"),
                         Err(msg) => println!("{msg}"),
                     }
                 }
                 _ if input.starts_with("/params ") => {
                     let value = input["/params ".len()..].trim();
-                    match apply_params_input(&mut active_run, value) {
+                    match runtime_config::apply_params_input(&mut active_run, value) {
                         Ok(msg) => println!("{msg}"),
                         Err(msg) => println!("{msg}"),
                     }
@@ -2609,9 +2610,9 @@ async fn run_chat_repl(
                         provider_cli_name(provider_kind),
                         default_base_url(provider_kind)
                     );
-                    if is_timeout_error_text(&err) && !timeout_notice_active {
+                    if runtime_config::is_timeout_error_text(&err) && !timeout_notice_active {
                         timeout_notice_active = true;
-                        eprintln!("{}", timeout_notice_text(&active_run));
+                        eprintln!("{}", runtime_config::timeout_notice_text(&active_run));
                     }
                 }
             }
@@ -2641,9 +2642,9 @@ async fn run_chat_repl(
                         provider_cli_name(provider_kind),
                         default_base_url(provider_kind)
                     );
-                    if is_timeout_error_text(&err) && !timeout_notice_active {
+                    if runtime_config::is_timeout_error_text(&err) && !timeout_notice_active {
                         timeout_notice_active = true;
-                        eprintln!("{}", timeout_notice_text(&active_run));
+                        eprintln!("{}", runtime_config::timeout_notice_text(&active_run));
                     }
                 }
             }
@@ -3101,7 +3102,7 @@ async fn run_chat_tui(
                                     pending_params_input = false;
                                     logs.push("params update cancelled".to_string());
                                 } else {
-                                    match apply_params_input(&mut active_run, &line) {
+                                    match runtime_config::apply_params_input(&mut active_run, &line) {
                                         Ok(msg) => {
                                             pending_params_input = false;
                                             logs.push(msg);
@@ -3118,7 +3119,7 @@ async fn run_chat_tui(
                                     logs.push("timeout update cancelled".to_string());
                                     show_logs = false;
                                 } else {
-                                    match apply_timeout_input(&mut active_run, &line) {
+                                    match runtime_config::apply_timeout_input(&mut active_run, &line) {
                                         Ok(msg) => {
                                             pending_timeout_input = false;
                                             logs.push(msg);
@@ -3154,7 +3155,7 @@ async fn run_chat_tui(
                                     }
                                     "/timeout" => {
                                         pending_timeout_input = true;
-                                        logs.push(timeout_settings_summary(&active_run));
+                                        logs.push(runtime_config::timeout_settings_summary(&active_run));
                                         logs.push(
                                             "enter seconds, +N, -N, or 'cancel' on the next line"
                                                 .to_string(),
@@ -3163,7 +3164,7 @@ async fn run_chat_tui(
                                     }
                                     "/params" => {
                                         pending_params_input = true;
-                                        logs.push(params_settings_summary(&active_run));
+                                        logs.push(runtime_config::params_settings_summary(&active_run));
                                         logs.push(
                                             "editable keys: max_steps, max_context_chars, compaction_mode(off|summary), compaction_keep_last, tool_result_persist(all|digest|none), max_tool_output_bytes, max_read_bytes, stream(on|off), allow_shell(on|off), allow_write(on|off), enable_write_tools(on|off), allow_shell_in_workdir(on|off)"
                                                 .to_string(),
@@ -3221,7 +3222,7 @@ async fn run_chat_tui(
                                     }
                                     _ if resolved.starts_with("/mode ") => {
                                         let mode = resolved["/mode ".len()..].trim();
-                                        if apply_chat_mode(&mut active_run, mode).is_some() {
+                                        if runtime_config::apply_chat_mode(&mut active_run, mode).is_some() {
                                             logs.push(format!(
                                                 "mode switched to {}",
                                                 chat_mode_label(&active_run)
@@ -3235,7 +3236,7 @@ async fn run_chat_tui(
                                     }
                                     _ if resolved.starts_with("/timeout ") => {
                                         let value = resolved["/timeout ".len()..].trim();
-                                        match apply_timeout_input(&mut active_run, value) {
+                                        match runtime_config::apply_timeout_input(&mut active_run, value) {
                                             Ok(msg) => {
                                                 logs.push(msg);
                                                 show_logs = false;
@@ -3248,7 +3249,7 @@ async fn run_chat_tui(
                                     }
                                     _ if resolved.starts_with("/params ") => {
                                         let value = resolved["/params ".len()..].trim();
-                                        match apply_params_input(&mut active_run, value) {
+                                        match runtime_config::apply_params_input(&mut active_run, value) {
                                             Ok(msg) => logs.push(msg),
                                             Err(msg) => logs.push(msg),
                                         }
@@ -3799,9 +3800,9 @@ async fn run_chat_tui(
                                                 };
                                                 provider_connected = false;
                                                 logs.push(err.clone());
-                                                if is_timeout_error_text(&err) && !timeout_notice_active {
+                                                if runtime_config::is_timeout_error_text(&err) && !timeout_notice_active {
                                                     timeout_notice_active = true;
-                                                    logs.push(timeout_notice_text(&active_run));
+                                                    logs.push(runtime_config::timeout_notice_text(&active_run));
                                                 }
                                                 show_logs = true;
                                                 status_detail = format!(
@@ -3813,7 +3814,7 @@ async fn run_chat_tui(
                                                     "system".to_string(),
                                                     format!("Provider error: {err}"),
                                                 ));
-                                                if let Some(hint) = protocol_remediation_hint(&err) {
+                                                if let Some(hint) = runtime_config::protocol_remediation_hint(&err) {
                                                     logs.push(hint.clone());
                                                     transcript.push((
                                                         "system".to_string(),
@@ -3849,7 +3850,7 @@ async fn run_chat_tui(
                                                         ),
                                                     ));
                                                     if let Some(hint) =
-                                                        protocol_remediation_hint(&reason_text)
+                                                        runtime_config::protocol_remediation_hint(&reason_text)
                                                     {
                                                         logs.push(hint.clone());
                                                         transcript.push((
@@ -3869,7 +3870,7 @@ async fn run_chat_tui(
                                         }
                                         Err(e) => {
                                             let msg = format!("run failed: {e}");
-                                            if is_timeout_error_text(&msg) {
+                                            if runtime_config::is_timeout_error_text(&msg) {
                                                 provider_connected = false;
                                             }
                                             logs.push(msg.clone());
@@ -3879,7 +3880,7 @@ async fn run_chat_tui(
                                                 "run failed: {}",
                                                 compact_status_detail(&e.to_string(), 120)
                                             );
-                                            if let Some(hint) = protocol_remediation_hint(
+                                            if let Some(hint) = runtime_config::protocol_remediation_hint(
                                                 &format!("{e}"),
                                             ) {
                                                 logs.push(hint.clone());
@@ -4093,272 +4094,6 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/show logs", "show logs pane"),
     ("/show all", "show all panes"),
 ];
-
-fn apply_chat_mode(run: &mut RunArgs, mode: &str) -> Option<()> {
-    match mode.to_ascii_lowercase().as_str() {
-        "safe" => {
-            run.enable_write_tools = false;
-            run.allow_write = false;
-            run.allow_shell = false;
-            run.mcp.retain(|m| m != "playwright");
-            Some(())
-        }
-        "coding" | "code" => {
-            run.enable_write_tools = true;
-            run.allow_write = true;
-            run.allow_shell = true;
-            run.mcp.retain(|m| m != "playwright");
-            Some(())
-        }
-        "web" => {
-            run.enable_write_tools = false;
-            run.allow_write = false;
-            run.allow_shell = false;
-            if !run.mcp.iter().any(|m| m == "playwright") {
-                run.mcp.push("playwright".to_string());
-            }
-            Some(())
-        }
-        "custom" => {
-            run.enable_write_tools = true;
-            run.allow_write = true;
-            run.allow_shell = true;
-            if !run.mcp.iter().any(|m| m == "playwright") {
-                run.mcp.push("playwright".to_string());
-            }
-            Some(())
-        }
-        _ => None,
-    }
-}
-
-fn timeout_settings_summary(run: &RunArgs) -> String {
-    let request = if run.http_timeout_ms == 0 {
-        "off".to_string()
-    } else {
-        format!("{}s", run.http_timeout_ms / 1000)
-    };
-    let stream_idle = if run.http_stream_idle_timeout_ms == 0 {
-        "off".to_string()
-    } else {
-        format!("{}s", run.http_stream_idle_timeout_ms / 1000)
-    };
-    format!(
-        "timeouts: request={}, stream-idle={}, connect={}s",
-        request,
-        stream_idle,
-        run.http_connect_timeout_ms / 1000
-    )
-}
-
-fn is_timeout_error_text(msg: &str) -> bool {
-    let lowered = msg.to_ascii_lowercase();
-    lowered.contains("timeout")
-        || lowered.contains("timed out")
-        || lowered.contains("stream idle")
-        || lowered.contains("attempt")
-}
-
-fn timeout_notice_text(run: &RunArgs) -> String {
-    format!(
-        "[timeout-notice] provider timeout detected; try /timeout to increase duration ({}) ; use /dismiss to hide this notice",
-        timeout_settings_summary(run)
-    )
-}
-
-fn protocol_remediation_hint(msg: &str) -> Option<String> {
-    let m = msg.to_ascii_lowercase();
-    if m.contains("repeated invalid patch format") || m.contains("invalid patch format") {
-        return Some(
-            "[protocol-hint] patch format rejected: use apply_patch with a valid unified diff (headers + @@ hunks), or use write_file only when creating a new file.".to_string(),
-        );
-    }
-    if m.contains("repeated malformed tool calls")
-        || m.contains("empty or malformed [tool_call] envelope")
-        || m.contains("no tool call returned by probe")
-    {
-        return Some(
-            "[protocol-hint] tool-call formatting issue: emit exactly one native tool call JSON object with {\"name\",\"arguments\"}; avoid wrappers, markdown fences, and prose.".to_string(),
-        );
-    }
-    if m.contains("tool-only phase") || m.contains("repeated prose output during tool-only phase") {
-        return Some(
-            "[protocol-hint] tool-only violation: emit tool calls only until write/verify is complete; return prose summary only after final read_file verification.".to_string(),
-        );
-    }
-    None
-}
-
-fn apply_timeout_input(run: &mut RunArgs, input: &str) -> Result<String, String> {
-    let value = input.trim();
-    if value.is_empty() {
-        return Err("timeout value is empty".to_string());
-    }
-    if matches!(
-        value.to_ascii_lowercase().as_str(),
-        "off" | "none" | "disable" | "disabled"
-    ) {
-        run.http_timeout_ms = 0;
-        run.http_stream_idle_timeout_ms = 0;
-        return Ok(format!(
-            "updated {} (request+stream-idle timeout disabled; connect remains {}s)",
-            timeout_settings_summary(run),
-            run.http_connect_timeout_ms / 1000
-        ));
-    }
-    let parse_seconds = |s: &str| -> Result<i64, String> {
-        s.parse::<i64>()
-            .map_err(|_| format!("invalid timeout value: {s}"))
-    };
-    let current = (run.http_timeout_ms / 1000) as i64;
-    let next_seconds = if let Some(delta) = value.strip_prefix('+') {
-        current + parse_seconds(delta)?
-    } else if let Some(delta) = value.strip_prefix('-') {
-        current - parse_seconds(delta)?
-    } else {
-        parse_seconds(value)?
-    };
-    if next_seconds <= 0 {
-        return Err("timeout must be at least 1 second".to_string());
-    }
-    let next_ms = (next_seconds as u64) * 1000;
-    run.http_timeout_ms = next_ms;
-    run.http_stream_idle_timeout_ms = next_ms;
-    Ok(format!(
-        "updated {} (request+stream-idle now {}s; connect remains {}s)",
-        timeout_settings_summary(run),
-        next_seconds,
-        run.http_connect_timeout_ms / 1000
-    ))
-}
-
-fn params_settings_summary(run: &RunArgs) -> String {
-    format!(
-        "params: max_steps={} max_context_chars={} compaction_mode={:?} compaction_keep_last={} tool_result_persist={:?} max_tool_output_bytes={} max_read_bytes={} stream={} allow_shell={} allow_write={} enable_write_tools={} allow_shell_in_workdir={}",
-        run.max_steps,
-        run.max_context_chars,
-        run.compaction_mode,
-        run.compaction_keep_last,
-        run.tool_result_persist,
-        run.max_tool_output_bytes,
-        run.max_read_bytes,
-        run.stream,
-        run.allow_shell,
-        run.allow_write,
-        run.enable_write_tools,
-        run.allow_shell_in_workdir
-    )
-}
-
-fn parse_toggle(value: &str) -> Option<bool> {
-    match value.to_ascii_lowercase().as_str() {
-        "on" | "true" | "1" | "yes" => Some(true),
-        "off" | "false" | "0" | "no" => Some(false),
-        _ => None,
-    }
-}
-
-fn apply_params_input(run: &mut RunArgs, input: &str) -> Result<String, String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("params input is empty".to_string());
-    }
-    let mut parts = trimmed.splitn(2, char::is_whitespace);
-    let key = parts
-        .next()
-        .ok_or_else(|| "missing params key".to_string())?
-        .to_ascii_lowercase();
-    let value = parts
-        .next()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| "missing params value".to_string())?;
-    match key.as_str() {
-        "max_steps" | "steps" => {
-            let parsed = value
-                .parse::<usize>()
-                .map_err(|_| format!("invalid usize for {key}: {value}"))?;
-            if parsed == 0 {
-                return Err("max_steps must be at least 1".to_string());
-            }
-            run.max_steps = parsed;
-        }
-        "max_context_chars" | "max_context" | "context" => {
-            run.max_context_chars = value
-                .parse::<usize>()
-                .map_err(|_| format!("invalid usize for {key}: {value}"))?;
-        }
-        "compaction_mode" | "compaction" => match value.to_ascii_lowercase().as_str() {
-            "off" => run.compaction_mode = CompactionMode::Off,
-            "summary" => run.compaction_mode = CompactionMode::Summary,
-            _ => {
-                return Err(format!(
-                    "invalid compaction_mode: {value} (expected off|summary)"
-                ))
-            }
-        },
-        "compaction_keep_last" | "keep_last" => {
-            let parsed = value
-                .parse::<usize>()
-                .map_err(|_| format!("invalid usize for {key}: {value}"))?;
-            if parsed == 0 {
-                return Err("compaction_keep_last must be at least 1".to_string());
-            }
-            run.compaction_keep_last = parsed;
-        }
-        "tool_result_persist" | "tool_persist" | "persist" => {
-            run.tool_result_persist = match value.to_ascii_lowercase().as_str() {
-                "all" => ToolResultPersist::All,
-                "digest" => ToolResultPersist::Digest,
-                "none" => ToolResultPersist::None,
-                _ => {
-                    return Err(format!(
-                        "invalid tool_result_persist: {value} (expected all|digest|none)"
-                    ));
-                }
-            };
-        }
-        "max_tool_output_bytes" | "tool_output" => {
-            run.max_tool_output_bytes = value
-                .parse::<usize>()
-                .map_err(|_| format!("invalid usize for {key}: {value}"))?;
-        }
-        "max_read_bytes" | "read_bytes" => {
-            run.max_read_bytes = value
-                .parse::<usize>()
-                .map_err(|_| format!("invalid usize for {key}: {value}"))?;
-        }
-        "stream" => {
-            run.stream = parse_toggle(value)
-                .ok_or_else(|| format!("invalid toggle for stream: {value} (use on|off)"))?;
-        }
-        "allow_shell" => {
-            run.allow_shell = parse_toggle(value)
-                .ok_or_else(|| format!("invalid toggle for allow_shell: {value} (use on|off)"))?;
-        }
-        "allow_write" => {
-            run.allow_write = parse_toggle(value)
-                .ok_or_else(|| format!("invalid toggle for allow_write: {value} (use on|off)"))?;
-        }
-        "enable_write_tools" | "write_tools" => {
-            run.enable_write_tools = parse_toggle(value).ok_or_else(|| {
-                format!("invalid toggle for enable_write_tools: {value} (use on|off)")
-            })?;
-        }
-        "allow_shell_in_workdir" | "shell_in_workdir" => {
-            run.allow_shell_in_workdir = parse_toggle(value).ok_or_else(|| {
-                format!("invalid toggle for allow_shell_in_workdir: {value} (use on|off)")
-            })?;
-        }
-        _ => {
-            return Err(format!(
-                "unknown params key: {key}. try: max_steps, max_context_chars, compaction_mode, compaction_keep_last, tool_result_persist, max_tool_output_bytes, max_read_bytes, stream, allow_shell, allow_write, enable_write_tools, allow_shell_in_workdir"
-            ));
-        }
-    }
-
-    Ok(params_settings_summary(run))
-}
 
 fn slash_command_matches(input: &str) -> Vec<(&'static str, &'static str)> {
     SLASH_COMMANDS
@@ -7763,12 +7498,13 @@ rules:
     #[test]
     fn timeout_command_off_disables_request_and_stream_idle() {
         let mut args = default_run_args();
-        let msg = super::apply_timeout_input(&mut args, "off").expect("timeout off");
+        let msg =
+            super::runtime_config::apply_timeout_input(&mut args, "off").expect("timeout off");
         assert_eq!(args.http_timeout_ms, 0);
         assert_eq!(args.http_stream_idle_timeout_ms, 0);
         assert!(msg.contains("disabled"));
-        assert!(super::timeout_settings_summary(&args).contains("request=off"));
-        assert!(super::timeout_settings_summary(&args).contains("stream-idle=off"));
+        assert!(super::runtime_config::timeout_settings_summary(&args).contains("request=off"));
+        assert!(super::runtime_config::timeout_settings_summary(&args).contains("stream-idle=off"));
     }
 
     #[tokio::test]
@@ -7889,7 +7625,7 @@ rules:
 
     #[test]
     fn protocol_hint_detects_tool_call_format_issues() {
-        let hint = super::protocol_remediation_hint(
+        let hint = super::runtime_config::protocol_remediation_hint(
             "MODEL_TOOL_PROTOCOL_VIOLATION: repeated malformed tool calls (tool='list_dir', error='...')",
         )
         .expect("hint");
@@ -7898,7 +7634,7 @@ rules:
 
     #[test]
     fn protocol_hint_detects_invalid_patch_format() {
-        let hint = super::protocol_remediation_hint(
+        let hint = super::runtime_config::protocol_remediation_hint(
             "MODEL_TOOL_PROTOCOL_VIOLATION: repeated invalid patch format for apply_patch",
         )
         .expect("hint");
@@ -7907,7 +7643,7 @@ rules:
 
     #[test]
     fn protocol_hint_ignores_non_protocol_errors() {
-        assert!(super::protocol_remediation_hint("provider timeout").is_none());
+        assert!(super::runtime_config::protocol_remediation_hint("provider timeout").is_none());
     }
 
     fn default_run_args() -> super::RunArgs {
