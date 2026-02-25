@@ -4477,6 +4477,17 @@ fn compact_status_detail(s: &str, max_chars: usize) -> String {
     out
 }
 
+fn is_protocol_badge_row(t: &crate::tui::state::ToolRow) -> bool {
+    if t.reason_token == "protocol" || t.status.to_ascii_lowercase().contains("protocol") {
+        return true;
+    }
+    let sr = t.short_result.to_ascii_lowercase();
+    sr.contains("model_tool_protocol_violation")
+        || sr.contains("repeated malformed tool calls")
+        || sr.contains("repeated invalid patch format")
+        || sr.contains("tool-only phase")
+}
+
 fn centered_multiline(text: &str, width: u16, top_pad: usize) -> String {
     let width = width as usize;
     let lines = text.lines().collect::<Vec<_>>();
@@ -4991,9 +5002,14 @@ fn draw_tools_pane(
         } else {
             Style::default()
         };
+        let tool_label = if is_protocol_badge_row(t) {
+            format!("[PROTO] {}", t.tool_name)
+        } else {
+            t.tool_name.clone()
+        };
         Row::new(vec![
             Cell::from(truncate_cell(
-                &t.tool_name,
+                &tool_label,
                 tool_w.saturating_sub(1) as usize,
             )),
             Cell::from(truncate_cell(

@@ -347,8 +347,12 @@ impl UiState {
                     row.running_since = None;
                     row.running_for_ms = 0;
                     if matches!(ok, Some(false)) {
-                        row.status = format!("FAIL:{}", class_to_reason_token(failure_class));
-                        row.reason_token = class_to_reason_token(failure_class).to_string();
+                        let mut token = class_to_reason_token(failure_class).to_string();
+                        if is_protocol_violation_text(result) {
+                            token = "protocol".to_string();
+                        }
+                        row.status = format!("FAIL:{token}");
+                        row.reason_token = token;
                     }
                     row.side_effects.clone()
                 };
@@ -753,6 +757,7 @@ fn reason_token(source: &str, reason: Option<&str>) -> &'static str {
 
 fn class_to_reason_token(class: &str) -> &'static str {
     match class {
+        "E_PROTOCOL" => "protocol",
         "E_SCHEMA" => "schema",
         "E_POLICY" => "policy",
         "E_TIMEOUT_TRANSIENT" | "E_NETWORK_TRANSIENT" => "net",
@@ -864,6 +869,15 @@ fn truncate_chars(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect()
 }
 
+fn is_protocol_violation_text(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.contains("model_tool_protocol_violation")
+        || t.contains("repeated malformed tool calls")
+        || t.contains("repeated invalid patch format")
+        || t.contains("tool-only phase")
+        || t.contains("no tool call returned by probe")
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -948,6 +962,27 @@ mod tests {
         ));
         assert_eq!(s.last_failure_class, "E_TIMEOUT_TRANSIENT");
         assert_eq!(s.last_tool_retry_count, 1);
+    }
+
+    #[test]
+    fn tool_exec_end_protocol_violation_sets_protocol_reason_token() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecEnd,
+            serde_json::json!({
+                "tool_call_id":"tc1",
+                "name":"apply_patch",
+                "ok":false,
+                "content":"MODEL_TOOL_PROTOCOL_VIOLATION: repeated invalid patch format for apply_patch",
+                "retry_count":1,
+                "failure_class":"E_OTHER"
+            }),
+        ));
+        assert_eq!(s.tool_calls.len(), 1);
+        assert_eq!(s.tool_calls[0].reason_token, "protocol");
+        assert_eq!(s.tool_calls[0].status, "FAIL:protocol");
     }
 
     #[test]
