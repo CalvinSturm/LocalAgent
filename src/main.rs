@@ -19,6 +19,7 @@ mod run_prep;
 mod runtime_config;
 mod scaffold;
 mod session;
+mod startup_detect;
 mod store;
 mod taint;
 mod target;
@@ -69,7 +70,6 @@ use hooks::config::HooksMode;
 use hooks::protocol::{PreModelCompactionPayload, PreModelPayload, ToolResultPayload};
 use hooks::runner::{make_pre_model_input, make_tool_result_input, HookManager, HookRuntimeConfig};
 use instructions::InstructionResolution;
-use providers::http::HttpConfig;
 use providers::mock::MockProvider;
 use providers::ollama::OllamaProvider;
 use providers::openai_compat::OpenAiCompatProvider;
@@ -81,9 +81,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 use repro::{render_verify_report, verify_run_record, ReproEnvMode, ReproMode};
-use reqwest::Client;
 use scaffold::{version_info, InitOptions};
-use serde_json::Value;
 use session::{
     settings_from_run, task_memory_message, CapsMode, ExplicitFlags, RunSettingInputs, SessionStore,
 };
@@ -1533,14 +1531,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct StartupDetection {
-    provider: Option<ProviderKind>,
-    model: Option<String>,
-    base_url: Option<String>,
-    status_line: String,
-}
-
-#[derive(Debug, Clone)]
 enum StartupWebStatus {
     NotRequired,
     Ready { tool_count: usize },
@@ -1582,8 +1572,10 @@ async fn run_startup_bootstrap(
     base_run: &RunArgs,
     paths: &store::StatePaths,
 ) -> anyhow::Result<()> {
-    let mut detection =
-        detect_startup_provider(provider_runtime::http_config_from_run_args(base_run)).await;
+    let mut detection = startup_detect::detect_startup_provider(
+        provider_runtime::http_config_from_run_args(base_run),
+    )
+    .await;
     let mut selections = StartupSelections::default();
     let mut web_status = refresh_startup_web_status(base_run, paths, &selections).await;
     let mut selected_idx = 0usize;
@@ -1661,7 +1653,7 @@ async fn run_startup_bootstrap(
                             }
                         }
                         KeyCode::Char('r') | KeyCode::Char('R') => {
-                            detection = detect_startup_provider(provider_runtime::http_config_from_run_args(base_run)).await;
+                            detection = startup_detect::detect_startup_provider(provider_runtime::http_config_from_run_args(base_run)).await;
                             web_status = refresh_startup_web_status(base_run, paths, &selections).await;
                             error_line = None;
                         }
@@ -1873,7 +1865,7 @@ fn toggle_startup_selection(
 #[allow(clippy::too_many_arguments)]
 fn draw_startup_bootstrap_frame(
     f: &mut ratatui::Frame<'_>,
-    detection: &StartupDetection,
+    detection: &startup_detect::StartupDetection,
     selections: &StartupSelections,
     web_status: &StartupWebStatus,
     selected_idx: usize,
@@ -2256,118 +2248,6 @@ fn draw_startup_bootstrap_frame(
         .alignment(ratatui::layout::Alignment::Center),
         footer_outer[1],
     );
-}
-
-async fn detect_startup_provider(http: HttpConfig) -> StartupDetection {
-    match discover_local_default(http).await {
-        Ok((provider, model, base_url)) => StartupDetection {
-            provider: Some(provider),
-            model: Some(model),
-            base_url: Some(base_url),
-            status_line: "Auto-detected local provider and model.".to_string(),
-        },
-        Err(_) => StartupDetection {
-            provider: None,
-            model: None,
-            base_url: None,
-            status_line:
-                "No local provider detected. Start LM Studio, Ollama, or llama.cpp and press R."
-                    .to_string(),
-        },
-    }
-}
-
-async fn discover_local_default(
-    http: HttpConfig,
-) -> anyhow::Result<(ProviderKind, String, String)> {
-    // Priority: LM Studio -> Ollama -> llama.cpp
-    let candidates = [
-        (
-            ProviderKind::Lmstudio,
-            provider_runtime::default_base_url(ProviderKind::Lmstudio).to_string(),
-        ),
-        (
-            ProviderKind::Ollama,
-            provider_runtime::default_base_url(ProviderKind::Ollama).to_string(),
-        ),
-        (
-            ProviderKind::Llamacpp,
-            provider_runtime::default_base_url(ProviderKind::Llamacpp).to_string(),
-        ),
-    ];
-    for (provider, base_url) in candidates {
-        if let Some(model) = discover_model_for_provider(provider, &base_url, &http).await {
-            return Ok((provider, model, base_url));
-        }
-    }
-    Err(anyhow!(
-        "No local provider detected. Start LM Studio ({}), Ollama ({}), or llama.cpp server ({}) then rerun.",
-        provider_runtime::default_base_url(ProviderKind::Lmstudio),
-        provider_runtime::default_base_url(ProviderKind::Ollama),
-        provider_runtime::default_base_url(ProviderKind::Llamacpp)
-    ))
-}
-
-async fn discover_model_for_provider(
-    provider: ProviderKind,
-    base_url: &str,
-    http: &HttpConfig,
-) -> Option<String> {
-    match provider {
-        ProviderKind::Ollama => discover_ollama_model(base_url, http).await,
-        ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
-            discover_openai_compat_model(base_url, http).await
-        }
-        ProviderKind::Mock => Some("mock-model".to_string()),
-    }
-}
-
-async fn discover_openai_compat_model(base_url: &str, http: &HttpConfig) -> Option<String> {
-    let mut builder =
-        Client::builder().connect_timeout(Duration::from_millis(http.connect_timeout_ms));
-    if http.request_timeout_ms > 0 {
-        builder = builder.timeout(Duration::from_millis(http.request_timeout_ms));
-    }
-    let client = builder.build().ok()?;
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let resp = client.get(url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let v: Value = resp.json().await.ok()?;
-    let data = v.get("data")?.as_array()?;
-    for item in data {
-        if let Some(id) = item.get("id").and_then(|x| x.as_str()) {
-            if !id.is_empty() {
-                return Some(id.to_string());
-            }
-        }
-    }
-    None
-}
-
-async fn discover_ollama_model(base_url: &str, http: &HttpConfig) -> Option<String> {
-    let mut builder =
-        Client::builder().connect_timeout(Duration::from_millis(http.connect_timeout_ms));
-    if http.request_timeout_ms > 0 {
-        builder = builder.timeout(Duration::from_millis(http.request_timeout_ms));
-    }
-    let client = builder.build().ok()?;
-    let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
-    let resp = client.get(url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let v: Value = resp.json().await.ok()?;
-    let models = v.get("models")?.as_array()?;
-    for item in models {
-        if let Some(name) = item.get("name").and_then(|x| x.as_str()) {
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
-        }
-    }
-    None
 }
 
 fn handle_approvals_command(
