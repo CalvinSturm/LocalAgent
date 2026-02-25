@@ -5072,13 +5072,35 @@ fn parse_wrapped_tool_call_from_content(content: &str) -> Option<types::ToolCall
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    tool_call_from_json_value(&value, "wrapped_probe_tool_call")
+}
+
+fn parse_inline_tool_call_from_content(content: &str) -> Option<types::ToolCall> {
+    let trimmed = content.trim();
+    let candidate = if trimmed.starts_with("```") {
+        let mut lines = trimmed.lines();
+        let first = lines.next().unwrap_or_default();
+        if !first.starts_with("```") {
+            return None;
+        }
+        let rest = lines.collect::<Vec<_>>().join("\n");
+        let fence_end = rest.rfind("```")?;
+        rest[..fence_end].trim().to_string()
+    } else {
+        trimmed.to_string()
+    };
+    let value: serde_json::Value = serde_json::from_str(&candidate).ok()?;
+    tool_call_from_json_value(&value, "inline_probe_tool_call")
+}
+
+fn tool_call_from_json_value(value: &serde_json::Value, id: &str) -> Option<types::ToolCall> {
     let name = value.get("name").and_then(|v| v.as_str())?;
     let arguments = value
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
     Some(types::ToolCall {
-        id: "wrapped_probe_tool_call".to_string(),
+        id: id.to_string(),
         name: name.to_string(),
         arguments,
     })
@@ -5088,10 +5110,9 @@ fn probe_response_to_tool_call(resp: &types::GenerateResponse) -> Option<types::
     if let Some(tc) = resp.tool_calls.first() {
         return Some(tc.clone());
     }
-    resp.assistant
-        .content
-        .as_deref()
-        .and_then(parse_wrapped_tool_call_from_content)
+    let content = resp.assistant.content.as_deref()?;
+    parse_wrapped_tool_call_from_content(content)
+        .or_else(|| parse_inline_tool_call_from_content(content))
 }
 
 fn load_orchestrator_qual_cache(
@@ -8107,6 +8128,45 @@ rules:
         let out = policy_effective_output(&p, true).expect("print");
         assert!(out.contains("\"rules\""));
         assert!(out.contains("read_file"));
+    }
+
+    #[test]
+    fn probe_parser_accepts_inline_json_tool_call() {
+        let resp = GenerateResponse {
+            assistant: Message {
+                role: Role::Assistant,
+                content: Some("{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}".to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            },
+            tool_calls: Vec::new(),
+            usage: None,
+        };
+        let tc = super::probe_response_to_tool_call(&resp).expect("tool call");
+        assert_eq!(tc.name, "list_dir");
+        assert_eq!(tc.arguments, serde_json::json!({"path":"."}));
+    }
+
+    #[test]
+    fn probe_parser_accepts_fenced_json_tool_call() {
+        let resp = GenerateResponse {
+            assistant: Message {
+                role: Role::Assistant,
+                content: Some(
+                    "```json\n{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}\n```"
+                        .to_string(),
+                ),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            },
+            tool_calls: Vec::new(),
+            usage: None,
+        };
+        let tc = super::probe_response_to_tool_call(&resp).expect("tool call");
+        assert_eq!(tc.name, "list_dir");
+        assert_eq!(tc.arguments, serde_json::json!({"path":"."}));
     }
 
     #[tokio::test]
