@@ -2,7 +2,7 @@
 
 Local-first agent runtime for building custom MCP-powered capabilities with local models, safety controls, reproducible runs, and beginner-to-pro UX.
 
-<img width="1100" height="587" alt="123" src="https://github.com/user-attachments/assets/2be9a0d3-8d49-4231-8c14-8547f2a87625" />
+<img width="1093" height="581" alt="13451" src="https://github.com/user-attachments/assets/28d0f3e2-dd7e-4be8-84d5-533e303b733d" />
 
 LocalAgent is a local-first CLI runtime for developers who want to build stronger agents by connecting local LLMs to custom MCP tools.
 
