@@ -3815,6 +3815,14 @@ async fn run_chat_tui(
                                                     "system".to_string(),
                                                     format!("Provider error: {err}"),
                                                 ));
+                                                if let Some(hint) = protocol_remediation_hint(&err) {
+                                                    logs.push(hint.clone());
+                                                    transcript.push((
+                                                        "system".to_string(),
+                                                        hint,
+                                                    ));
+                                                    show_logs = true;
+                                                }
                                             } else {
                                                 provider_connected = true;
                                                 if matches!(exit_reason, AgentExitReason::Ok) {
@@ -3842,6 +3850,16 @@ async fn run_chat_tui(
                                                             compact_status_detail(&reason_text, 220)
                                                         ),
                                                     ));
+                                                    if let Some(hint) =
+                                                        protocol_remediation_hint(&reason_text)
+                                                    {
+                                                        logs.push(hint.clone());
+                                                        transcript.push((
+                                                            "system".to_string(),
+                                                            hint,
+                                                        ));
+                                                        show_logs = true;
+                                                    }
                                                 }
                                             }
                                             if !final_text.trim().is_empty() {
@@ -3863,6 +3881,13 @@ async fn run_chat_tui(
                                                 "run failed: {}",
                                                 compact_status_detail(&e.to_string(), 120)
                                             );
+                                            if let Some(hint) = protocol_remediation_hint(
+                                                &format!("{e}"),
+                                            ) {
+                                                logs.push(hint.clone());
+                                                transcript.push(("system".to_string(), hint));
+                                                show_logs = true;
+                                            }
                                             if follow_output {
                                                 transcript_scroll = usize::MAX;
                                             }
@@ -4141,6 +4166,29 @@ fn timeout_notice_text(run: &RunArgs) -> String {
         "[timeout-notice] provider timeout detected; try /timeout to increase duration ({}) ; use /dismiss to hide this notice",
         timeout_settings_summary(run)
     )
+}
+
+fn protocol_remediation_hint(msg: &str) -> Option<String> {
+    let m = msg.to_ascii_lowercase();
+    if m.contains("repeated invalid patch format") || m.contains("invalid patch format") {
+        return Some(
+            "[protocol-hint] patch format rejected: use apply_patch with a valid unified diff (headers + @@ hunks), or use write_file only when creating a new file.".to_string(),
+        );
+    }
+    if m.contains("repeated malformed tool calls")
+        || m.contains("empty or malformed [tool_call] envelope")
+        || m.contains("no tool call returned by probe")
+    {
+        return Some(
+            "[protocol-hint] tool-call formatting issue: emit exactly one native tool call JSON object with {\"name\",\"arguments\"}; avoid wrappers, markdown fences, and prose.".to_string(),
+        );
+    }
+    if m.contains("tool-only phase") || m.contains("repeated prose output during tool-only phase") {
+        return Some(
+            "[protocol-hint] tool-only violation: emit tool calls only until write/verify is complete; return prose summary only after final read_file verification.".to_string(),
+        );
+    }
+    None
 }
 
 fn apply_timeout_input(run: &mut RunArgs, input: &str) -> Result<String, String> {
@@ -8394,6 +8442,29 @@ rules:
         assert!(msg.contains("disabled"));
         assert!(super::timeout_settings_summary(&args).contains("request=off"));
         assert!(super::timeout_settings_summary(&args).contains("stream-idle=off"));
+    }
+
+    #[test]
+    fn protocol_hint_detects_tool_call_format_issues() {
+        let hint = super::protocol_remediation_hint(
+            "MODEL_TOOL_PROTOCOL_VIOLATION: repeated malformed tool calls (tool='list_dir', error='...')",
+        )
+        .expect("hint");
+        assert!(hint.contains("native tool call JSON"));
+    }
+
+    #[test]
+    fn protocol_hint_detects_invalid_patch_format() {
+        let hint = super::protocol_remediation_hint(
+            "MODEL_TOOL_PROTOCOL_VIOLATION: repeated invalid patch format for apply_patch",
+        )
+        .expect("hint");
+        assert!(hint.contains("valid unified diff"));
+    }
+
+    #[test]
+    fn protocol_hint_ignores_non_protocol_errors() {
+        assert!(super::protocol_remediation_hint("provider timeout").is_none());
     }
 
     fn default_run_args() -> super::RunArgs {
