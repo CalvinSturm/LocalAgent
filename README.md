@@ -56,6 +56,8 @@ For local providers (`LM Studio`, `Ollama`, `llama.cpp`), start the provider fir
 
 ## Installation
 
+For the full install, update, Windows troubleshooting, and verification flow, see [docs/INSTALL.md](docs/INSTALL.md).
+
 ### Option 1: Build from source
 
 ```bash
@@ -393,6 +395,8 @@ Need deeper setup, profiles, or reference docs? Start here.
 - [Templates](docs/TEMPLATES.md)
 - [CLI reference](docs/CLI_REFERENCE.md)
 - [Provider setup](docs/LLM_SETUP.md)
+- [Instruction profiles](docs/INSTRUCTION_PROFILES.md)
+- [Safe tool tuning profile](docs/SAFE_TOOL_TUNING_PROFILE.md)
 - [Contributing](CONTRIBUTING.md)
 - [Release notes](docs/release-notes/README.md)
 - [Changelog](CHANGELOG.md)

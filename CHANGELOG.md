@@ -1,34 +1,55 @@
 # Changelog
 
-## v0.1.2 - 2026-02-22
+All notable changes to LocalAgent are documented in this file.
+
+This changelog is a concise release summary. For deeper release context, see `docs/release-notes/`.
+Older releases may appear in `docs/release-notes/` before they are backfilled here.
+
+## Unreleased
+
+- No unreleased changes yet.
+
+## v0.2.1 - 2026-02-22
+
+### Added
 
 - Chat TUI:
-  - added `/mode` command support (`safe`, `coding`, `web`, `custom`) to switch runtime mode in-session
-  - added `/timeout` command (`/timeout`, `/timeout <seconds|+N|-N>`) to tune request/stream idle timeout in-session
-  - added `/dismiss` command to clear active timeout notification
+  - `/mode` command support (`safe`, `coding`, `web`, `custom`) to switch runtime mode in-session
+  - `/timeout` command (`/timeout`, `/timeout <seconds|+N|-N>`) to tune request/stream idle timeout in-session
+  - `/dismiss` command to clear active timeout notification
+- Startup UI:
+  - provider details toggle (`D`)
+
+### Changed
+
+- Chat TUI:
   - provider timeout failures now emit a `/timeout` guidance notice
   - aligned `?` keybind overlay rows for uniform formatting
   - updated header/footer presentation (mode label in header, right-justified help marker, cwd + connection status footer)
   - replaced single-line prompt row with a boxed input area
 - Startup UI:
   - refreshed layout with compact `Mode` + `Provider` panes and footer controls
-  - added provider details toggle (`D`) and centered footer control rows
+  - centered footer control rows
 
 ## v0.1.0 - 2026-02-21
 
-- Released LocalAgent v0.1.0 (local-runtime agent CLI).
-- Set primary CLI command to `localagent`.
-- Added `run` and `exec` command aliases for one-shot usage.
+### Added
+
+- `run` and `exec` command aliases for one-shot usage
+- Deterministic instruction profiles support:
+  - `--instructions-config`
+  - `--instruction-model-profile`
+  - `--instruction-task-profile`
+  - `--task-kind`
+- Scaffolded `instructions.yaml` via `localagent init`
+
+### Changed
+
+- Set primary CLI command to `localagent`
 - Updated chat TUI UX:
   - pane toggles (`Ctrl+1/2/3`)
   - slash command dropdown (`/` + Up/Down + Enter)
   - keybinds dropdown (`?`)
   - `Esc` to quit
   - tools/approvals/logs hidden by default
-- Added deterministic instruction profiles support:
-  - `--instructions-config`
-  - `--instruction-model-profile`
-  - `--instruction-task-profile`
-  - `--task-kind`
-- Added scaffolded `instructions.yaml` via `localagent init`.
-- Updated README and docs for current command patterns and behavior.
+- Updated README and docs for current command patterns and behavior
