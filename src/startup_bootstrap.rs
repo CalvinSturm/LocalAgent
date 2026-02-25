@@ -16,8 +16,8 @@ use ratatui::Terminal;
 use crate::mcp::registry::doctor_server as mcp_doctor_server;
 use crate::store;
 use crate::{
-    chat_view_utils, provider_runtime, resolved_mcp_config_path, run_chat_tui, startup_detect,
-    ChatArgs, RunArgs,
+    chat_view_utils, provider_runtime, run_chat_tui, runtime_paths, startup_detect, ChatArgs,
+    RunArgs,
 };
 
 #[derive(Debug, Clone)]
@@ -305,7 +305,7 @@ async fn refresh_startup_web_status(
     if !probe_args.mcp.iter().any(|m| m == "playwright") {
         probe_args.mcp.push("playwright".to_string());
     }
-    let mcp_config_path = resolved_mcp_config_path(&probe_args, &paths.state_dir);
+    let mcp_config_path = runtime_paths::resolved_mcp_config_path(&probe_args, &paths.state_dir);
     match mcp_doctor_server(&mcp_config_path, "playwright").await {
         Ok(tool_count) => StartupWebStatus::Ready { tool_count },
         Err(e) => StartupWebStatus::Error(e.to_string()),
