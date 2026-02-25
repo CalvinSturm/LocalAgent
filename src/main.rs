@@ -9,6 +9,7 @@ mod eval;
 mod events;
 mod gate;
 mod hooks;
+mod instruction_runtime;
 mod instructions;
 mod mcp;
 mod ops_helpers;
@@ -3244,7 +3245,7 @@ async fn run_agent_with_ui<P: ModelProvider>(
         task_memory_message(&session_data.task_memory)
     };
     let instruction_resolution =
-        resolve_instruction_messages(args, &paths.state_dir, &worker_model)?;
+        instruction_runtime::resolve_instruction_messages(args, &paths.state_dir, &worker_model)?;
 
     let mcp_config_path = resolved_mcp_config_path(args, &paths.state_dir);
     let mcp_registry = if let Some(reg) = shared_mcp_registry {
@@ -4997,38 +4998,6 @@ fn resolved_hooks_config_path(args: &RunArgs, state_dir: &std::path::Path) -> Pa
     args.hooks_config
         .clone()
         .unwrap_or_else(|| state_dir.join("hooks.yaml"))
-}
-
-fn resolved_instructions_config_path(args: &RunArgs, state_dir: &std::path::Path) -> PathBuf {
-    args.instructions_config
-        .clone()
-        .unwrap_or_else(|| instructions::default_config_path(state_dir))
-}
-
-fn resolve_instruction_messages(
-    args: &RunArgs,
-    state_dir: &std::path::Path,
-    model: &str,
-) -> anyhow::Result<InstructionResolution> {
-    let cfg_path = resolved_instructions_config_path(args, state_dir);
-    if !cfg_path.exists() {
-        return Ok(InstructionResolution::empty());
-    }
-    let (cfg, hash_hex) = instructions::load_config(&cfg_path)?;
-    let (messages, selected_model, selected_task) = instructions::resolve_messages(
-        &cfg,
-        model,
-        args.task_kind.as_deref(),
-        args.instruction_model_profile.as_deref(),
-        args.instruction_task_profile.as_deref(),
-    )?;
-    Ok(InstructionResolution {
-        config_path: Some(cfg_path),
-        config_hash_hex: Some(hash_hex),
-        selected_model_profile: selected_model,
-        selected_task_profile: selected_task,
-        messages,
-    })
 }
 
 #[cfg(test)]
