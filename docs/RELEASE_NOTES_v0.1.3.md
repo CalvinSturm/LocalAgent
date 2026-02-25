@@ -62,3 +62,22 @@ localagent --help
 ## Notable Internal Tracking
 
 Primary implementation landed across commits from `4a512f0` through `02cbb7f` on `main`, including runtime boundedness, planner envelope enforcement, MCP lifecycle instrumentation, and pin enforcement diagnostics.
+
+## Post-Release Patch Set (P0 Hardening)
+
+- Added strict tool-protocol guards that fail fast on:
+  - repeated malformed tool calls
+  - repeated invalid `apply_patch` formats
+  - repeated prose output during tool-only phases
+- Added orchestrator qualification probing before write-capable runs:
+  - probe requires `list_dir {"path":"."}`
+  - qualification outcomes are persisted in `state/orchestrator_qualification_cache.json`
+  - probe parser accepts native tool calls, wrapped tool envelopes, inline JSON, and fenced JSON
+- Added read-back enforcement for implementation tasks:
+  - any `write_file` or `apply_patch` path must be verified by a subsequent `read_file` before finalize
+- Added TUI diagnostics for protocol failures:
+  - status-line failure reason details
+  - `[PROTO]` badge in tools pane rows
+  - automatic remediation hints in transcript/logs for common protocol failures
+- Added qualification fallback behavior:
+  - if qualification fails, LocalAgent continues in read-only fallback for that run (write tools disabled) instead of hard-aborting

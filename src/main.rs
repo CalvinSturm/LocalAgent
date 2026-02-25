@@ -5358,6 +5358,42 @@ async fn ensure_orchestrator_qualified<P: ModelProvider>(
     Ok(())
 }
 
+async fn qualify_or_enable_readonly_fallback<P: ModelProvider>(
+    provider: &P,
+    provider_kind: ProviderKind,
+    base_url: &str,
+    worker_model: &str,
+    args: &RunArgs,
+    all_tools: &mut Vec<types::ToolDef>,
+    cache_path: &std::path::Path,
+) -> anyhow::Result<Option<String>> {
+    if !args.enable_write_tools && !args.allow_write {
+        return Ok(None);
+    }
+    match ensure_orchestrator_qualified(
+        provider,
+        provider_kind,
+        base_url,
+        worker_model,
+        all_tools,
+        cache_path,
+    )
+    .await
+    {
+        Ok(()) => Ok(None),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("orchestrator qualification failed") {
+                all_tools.retain(|t| t.side_effects != types::SideEffects::FilesystemWrite);
+                return Ok(Some(format!(
+                    "orchestrator qualification failed for model '{worker_model}'; continuing in read-only fallback (write tools disabled): {msg}"
+                )));
+            }
+            Err(e)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_with_ui<P: ModelProvider>(
     provider: P,
@@ -5536,19 +5572,21 @@ async fn run_agent_with_ui<P: ModelProvider>(
         }
         all_tools.extend(mcp_defs);
     }
-    if args.enable_write_tools || args.allow_write {
-        let qual_cache_path = paths
-            .state_dir
-            .join("orchestrator_qualification_cache.json");
-        ensure_orchestrator_qualified(
-            &provider,
-            provider_kind,
-            base_url,
-            &worker_model,
-            &all_tools,
-            &qual_cache_path,
-        )
-        .await?;
+    let qual_cache_path = paths
+        .state_dir
+        .join("orchestrator_qualification_cache.json");
+    let qualification_fallback_note = qualify_or_enable_readonly_fallback(
+        &provider,
+        provider_kind,
+        base_url,
+        &worker_model,
+        args,
+        &mut all_tools,
+        &qual_cache_path,
+    )
+    .await?;
+    if let Some(note) = &qualification_fallback_note {
+        eprintln!("WARN: {note}");
     }
     let mcp_tool_catalog_hash_hex = if mcp_tool_snapshot.is_empty() {
         None
@@ -5673,6 +5711,18 @@ async fn run_agent_with_ui<P: ModelProvider>(
             "pinned": mcp_snapshot_pinned
         }),
     );
+    if let Some(note) = &qualification_fallback_note {
+        emit_event(
+            &mut event_sink,
+            &run_id,
+            0,
+            EventKind::Error,
+            serde_json::json!({
+                "error": note,
+                "source": "orchestrator_qualification_fallback"
+            }),
+        );
+    }
 
     if matches!(args.mode, planner::RunMode::PlannerWorker) {
         emit_event(
@@ -8155,7 +8205,10 @@ fn handle_session_command(store: &SessionStore, cmd: &SessionSubcommand) -> anyh
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     use async_trait::async_trait;
     use tempfile::tempdir;
@@ -8201,6 +8254,58 @@ mod tests {
                     tool_calls: None,
                 },
                 tool_calls: Vec::new(),
+                usage: None,
+            })
+        }
+
+        async fn generate_streaming(
+            &self,
+            req: GenerateRequest,
+            _on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+        ) -> anyhow::Result<GenerateResponse> {
+            self.generate(req).await
+        }
+    }
+
+    enum QualificationProbeMode {
+        NativePass,
+        InlinePass,
+        FailNoTool,
+    }
+
+    struct QualificationTestProvider {
+        calls: Arc<AtomicUsize>,
+        mode: QualificationProbeMode,
+    }
+
+    #[async_trait]
+    impl ModelProvider for QualificationTestProvider {
+        async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let (assistant_content, tool_calls) = match self.mode {
+                QualificationProbeMode::NativePass => (
+                    Some(String::new()),
+                    vec![crate::types::ToolCall {
+                        id: "q1".to_string(),
+                        name: "list_dir".to_string(),
+                        arguments: serde_json::json!({"path":"."}),
+                    }],
+                ),
+                QualificationProbeMode::InlinePass => (
+                    Some("{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}".to_string()),
+                    Vec::new(),
+                ),
+                QualificationProbeMode::FailNoTool => (Some("no tool".to_string()), Vec::new()),
+            };
+            Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: assistant_content,
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls,
                 usage: None,
             })
         }
@@ -8442,6 +8547,122 @@ rules:
         assert!(msg.contains("disabled"));
         assert!(super::timeout_settings_summary(&args).contains("request=off"));
         assert!(super::timeout_settings_summary(&args).contains("stream-idle=off"));
+    }
+
+    #[tokio::test]
+    async fn qualification_failure_is_cached_and_short_circuits_future_attempts() {
+        let tmp = tempdir().expect("tmp");
+        let cache = tmp.path().join("qual_cache.json");
+        let tools = crate::tools::builtin_tools_enabled(true, false);
+        let model = format!(
+            "qual_model_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let first_calls = Arc::new(AtomicUsize::new(0));
+        let first = QualificationTestProvider {
+            calls: first_calls.clone(),
+            mode: QualificationProbeMode::FailNoTool,
+        };
+        let err = super::ensure_orchestrator_qualified(
+            &first,
+            ProviderKind::Lmstudio,
+            "http://localhost:1234/v1",
+            &model,
+            &tools,
+            &cache,
+        )
+        .await
+        .expect_err("expected fail");
+        assert!(err.to_string().contains("no tool call returned"));
+        assert!(first_calls.load(Ordering::SeqCst) >= 1);
+
+        let second_calls = Arc::new(AtomicUsize::new(0));
+        let second = QualificationTestProvider {
+            calls: second_calls,
+            mode: QualificationProbeMode::NativePass,
+        };
+        let err2 = super::ensure_orchestrator_qualified(
+            &second,
+            ProviderKind::Lmstudio,
+            "http://localhost:1234/v1",
+            &model,
+            &tools,
+            &cache,
+        )
+        .await
+        .expect_err("cache should fail fast");
+        assert!(err2
+            .to_string()
+            .contains("failed previously for this model/session"));
+    }
+
+    #[tokio::test]
+    async fn qualification_fallback_disables_write_tools_and_continues() {
+        let tmp = tempdir().expect("tmp");
+        let cache = tmp.path().join("qual_cache.json");
+        let mut tools = crate::tools::builtin_tools_enabled(true, false);
+        assert!(tools
+            .iter()
+            .any(|t| t.side_effects == crate::types::SideEffects::FilesystemWrite));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = QualificationTestProvider {
+            calls,
+            mode: QualificationProbeMode::FailNoTool,
+        };
+        let mut args = default_run_args();
+        args.enable_write_tools = true;
+        args.allow_write = true;
+
+        let note = super::qualify_or_enable_readonly_fallback(
+            &provider,
+            ProviderKind::Lmstudio,
+            "http://localhost:1234/v1",
+            "fallback-model",
+            &args,
+            &mut tools,
+            &cache,
+        )
+        .await
+        .expect("fallback should not error")
+        .expect("fallback note");
+        assert!(note.contains("read-only fallback"));
+        assert!(!tools
+            .iter()
+            .any(|t| t.side_effects == crate::types::SideEffects::FilesystemWrite));
+    }
+
+    #[tokio::test]
+    async fn qualification_fallback_keeps_write_tools_when_probe_passes() {
+        let tmp = tempdir().expect("tmp");
+        let cache = tmp.path().join("qual_cache.json");
+        let mut tools = crate::tools::builtin_tools_enabled(true, false);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = QualificationTestProvider {
+            calls,
+            mode: QualificationProbeMode::InlinePass,
+        };
+        let mut args = default_run_args();
+        args.enable_write_tools = true;
+        args.allow_write = true;
+        let note = super::qualify_or_enable_readonly_fallback(
+            &provider,
+            ProviderKind::Lmstudio,
+            "http://localhost:1234/v1",
+            "pass-model",
+            &args,
+            &mut tools,
+            &cache,
+        )
+        .await
+        .expect("qualification ok");
+        assert!(note.is_none());
+        assert!(tools
+            .iter()
+            .any(|t| t.side_effects == crate::types::SideEffects::FilesystemWrite));
     }
 
     #[test]
