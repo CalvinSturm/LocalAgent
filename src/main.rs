@@ -5094,12 +5094,34 @@ fn probe_response_to_tool_call(resp: &types::GenerateResponse) -> Option<types::
         .and_then(parse_wrapped_tool_call_from_content)
 }
 
+fn load_orchestrator_qual_cache(
+    path: &std::path::Path,
+) -> std::collections::BTreeMap<String, bool> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return std::collections::BTreeMap::new();
+    };
+    serde_json::from_str::<std::collections::BTreeMap<String, bool>>(&raw).unwrap_or_default()
+}
+
+fn persist_orchestrator_qual_cache(
+    path: &std::path::Path,
+    map: &std::collections::BTreeMap<String, bool>,
+) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(payload) = serde_json::to_string_pretty(map) {
+        let _ = std::fs::write(path, payload);
+    }
+}
+
 async fn ensure_orchestrator_qualified<P: ModelProvider>(
     provider: &P,
     provider_kind: ProviderKind,
     base_url: &str,
     model: &str,
     tools: &[types::ToolDef],
+    cache_path: &std::path::Path,
 ) -> anyhow::Result<()> {
     let key = format!(
         "{}|{}|{}",
@@ -5109,6 +5131,14 @@ async fn ensure_orchestrator_qualified<P: ModelProvider>(
     );
     let cache =
         ORCHESTRATOR_QUAL_CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
+    if let Ok(mut m) = cache.lock() {
+        if !m.contains_key(&key) {
+            let disk = load_orchestrator_qual_cache(cache_path);
+            for (k, v) in disk {
+                m.entry(k).or_insert(v);
+            }
+        }
+    }
     if let Some(passed) = cache.lock().ok().and_then(|m| m.get(&key).copied()) {
         if passed {
             return Ok(());
@@ -5120,6 +5150,7 @@ async fn ensure_orchestrator_qualified<P: ModelProvider>(
     let Some(list_dir_tool) = tools.iter().find(|t| t.name == "list_dir").cloned() else {
         if let Ok(mut m) = cache.lock() {
             m.insert(key, false);
+            persist_orchestrator_qual_cache(cache_path, &m);
         }
         return Err(anyhow!(
             "orchestrator qualification failed: list_dir tool is not available"
@@ -5145,7 +5176,8 @@ async fn ensure_orchestrator_qualified<P: ModelProvider>(
             .with_context(|| "orchestrator qualification provider call failed")?;
         let Some(tc) = probe_response_to_tool_call(&resp) else {
             if let Ok(mut m) = cache.lock() {
-                m.insert(key, false);
+                m.insert(key.clone(), false);
+                persist_orchestrator_qual_cache(cache_path, &m);
             }
             return Err(anyhow!(
                 "orchestrator qualification failed: no tool call returned by probe"
@@ -5159,7 +5191,8 @@ async fn ensure_orchestrator_qualified<P: ModelProvider>(
             .unwrap_or(false);
         if tc.name != "list_dir" || !path_ok {
             if let Ok(mut m) = cache.lock() {
-                m.insert(key, false);
+                m.insert(key.clone(), false);
+                persist_orchestrator_qual_cache(cache_path, &m);
             }
             return Err(anyhow!(
                 "orchestrator qualification failed: expected list_dir {{\"path\":\".\"}}"
@@ -5168,6 +5201,7 @@ async fn ensure_orchestrator_qualified<P: ModelProvider>(
     }
     if let Ok(mut m) = cache.lock() {
         m.insert(key, true);
+        persist_orchestrator_qual_cache(cache_path, &m);
     }
     Ok(())
 }
@@ -5351,12 +5385,16 @@ async fn run_agent_with_ui<P: ModelProvider>(
         all_tools.extend(mcp_defs);
     }
     if args.enable_write_tools || args.allow_write {
+        let qual_cache_path = paths
+            .state_dir
+            .join("orchestrator_qualification_cache.json");
         ensure_orchestrator_qualified(
             &provider,
             provider_kind,
             base_url,
             &worker_model,
             &all_tools,
+            &qual_cache_path,
         )
         .await?;
     }
