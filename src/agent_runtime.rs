@@ -91,6 +91,16 @@ struct PlannerPhaseLaunch<'a> {
     planner_strict: bool,
     effective_plan_tool_enforcement: PlanToolEnforcementMode,
 }
+
+struct ReplannerPhaseLaunch<'a> {
+    run_id: &'a str,
+    planner_model: &'a str,
+    replanner_reason: &'a str,
+    replan_prompt: &'a str,
+    planner_max_steps: u32,
+    planner_output: planner::PlannerOutput,
+    planner_strict: bool,
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent<P: ModelProvider>(
     provider: P,
@@ -808,16 +818,6 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             .error
             .clone()
             .unwrap_or_else(|| "worker requested replan transition".to_string());
-        runtime_events::emit_event(
-            &mut agent.event_sink,
-            &run_id,
-            0,
-            EventKind::PlannerStart,
-            serde_json::json!({
-                "phase": "replan",
-                "reason": replanner_reason
-            }),
-        );
         let prior_plan_json = planner_record
             .as_ref()
             .map(|p| p.plan_json.clone())
@@ -831,14 +831,17 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         let replan_prompt = format!(
             "{prompt}\n\nREPLAN CONTEXT\nPrevious plan hash: {prior_plan_hash}\nPrevious normalized plan:\n{prior_plan_text}\n\nRuntime requested a replan because: {replanner_reason}\nReturn an updated openagent.plan.v1 JSON plan for remaining work only."
         );
-        match planner_runtime::run_planner_phase(
+        match run_replanner_phase_with_start_event(
             &agent.provider,
-            &run_id,
-            &planner_model,
-            &replan_prompt,
-            args.planner_max_steps,
-            args.planner_output,
-            planner_strict_effective,
+            ReplannerPhaseLaunch {
+                run_id: &run_id,
+                planner_model: &planner_model,
+                replanner_reason: &replanner_reason,
+                replan_prompt: &replan_prompt,
+                planner_max_steps: args.planner_max_steps,
+                planner_output: args.planner_output,
+                planner_strict: planner_strict_effective,
+            },
             &mut agent.event_sink,
         )
         .await
@@ -1210,6 +1213,34 @@ async fn run_planner_phase_with_start_event<P: ModelProvider>(
         launch.run_id,
         launch.planner_model,
         launch.prompt,
+        launch.planner_max_steps,
+        launch.planner_output,
+        launch.planner_strict,
+        event_sink,
+    )
+    .await
+}
+
+async fn run_replanner_phase_with_start_event<P: ModelProvider>(
+    provider: &P,
+    launch: ReplannerPhaseLaunch<'_>,
+    event_sink: &mut Option<Box<dyn crate::events::EventSink>>,
+) -> anyhow::Result<planner_runtime::PlannerPhaseOutput> {
+    runtime_events::emit_event(
+        event_sink,
+        launch.run_id,
+        0,
+        EventKind::PlannerStart,
+        serde_json::json!({
+            "phase": "replan",
+            "reason": launch.replanner_reason
+        }),
+    );
+    planner_runtime::run_planner_phase(
+        provider,
+        launch.run_id,
+        launch.planner_model,
+        launch.replan_prompt,
         launch.planner_max_steps,
         launch.planner_output,
         launch.planner_strict,
