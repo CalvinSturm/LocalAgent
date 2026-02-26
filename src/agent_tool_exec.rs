@@ -4,7 +4,7 @@ use crate::tools::{
     envelope_to_message, execute_tool, to_tool_result_envelope, tool_side_effects, ToolResultMeta,
     ToolRuntime,
 };
-use crate::types::{Message, ToolCall};
+use crate::types::{Message, Role, ToolCall};
 
 pub(crate) async fn run_tool_once(
     tool_rt: &ToolRuntime,
@@ -163,5 +163,54 @@ pub(crate) fn infer_truncated_flag(content: &str) -> bool {
             .and_then(|x| x.as_bool())
             .unwrap_or(false),
         Err(_) => false,
+    }
+}
+
+pub(crate) fn make_invalid_args_tool_message(
+    tc: &ToolCall,
+    err: &str,
+    exec_target_kind: crate::target::ExecTargetKind,
+) -> Message {
+    let source = if tc.name.starts_with("mcp.") {
+        "mcp"
+    } else {
+        "builtin"
+    };
+    envelope_to_message(to_tool_result_envelope(
+        tc,
+        source,
+        false,
+        format!("invalid tool arguments: {err}"),
+        false,
+        ToolResultMeta {
+            side_effects: tool_side_effects(&tc.name),
+            bytes: None,
+            exit_code: None,
+            stderr_truncated: None,
+            stdout_truncated: None,
+            source: source.to_string(),
+            execution_target: if source == "mcp" {
+                "host".to_string()
+            } else {
+                match exec_target_kind {
+                    crate::target::ExecTargetKind::Host => "host".to_string(),
+                    crate::target::ExecTargetKind::Docker => "docker".to_string(),
+                }
+            },
+            docker: None,
+        },
+    ))
+}
+
+pub(crate) fn schema_repair_instruction_message(tc: &ToolCall, err: &str) -> Message {
+    Message {
+        role: Role::Developer,
+        content: Some(format!(
+            "Schema repair required for tool '{}': {}. Re-emit exactly one corrected tool call for '{}' with valid arguments only.",
+            tc.name, err, tc.name
+        )),
+        tool_call_id: None,
+        tool_name: None,
+        tool_calls: None,
     }
 }

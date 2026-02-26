@@ -2,7 +2,8 @@ use uuid::Uuid;
 
 use crate::agent_tool_exec::{
     classify_tool_failure, infer_truncated_flag, is_apply_patch_invalid_format_error,
-    run_tool_once, tool_result_has_error,
+    make_invalid_args_tool_message, run_tool_once, schema_repair_instruction_message,
+    tool_result_has_error,
 };
 use crate::compaction::{context_size_chars, maybe_compact, CompactionReport, CompactionSettings};
 use crate::events::{EventKind, EventSink};
@@ -4285,55 +4286,6 @@ fn prompt_requires_tool_only(prompt: &str) -> bool {
         && (p.contains("no prose")
             || p.contains("do not output code")
             || p.contains("do not explain"))
-}
-
-fn make_invalid_args_tool_message(
-    tc: &ToolCall,
-    err: &str,
-    exec_target_kind: crate::target::ExecTargetKind,
-) -> Message {
-    let source = if tc.name.starts_with("mcp.") {
-        "mcp"
-    } else {
-        "builtin"
-    };
-    envelope_to_message(to_tool_result_envelope(
-        tc,
-        source,
-        false,
-        format!("invalid tool arguments: {err}"),
-        false,
-        ToolResultMeta {
-            side_effects: tool_side_effects(&tc.name),
-            bytes: None,
-            exit_code: None,
-            stderr_truncated: None,
-            stdout_truncated: None,
-            source: source.to_string(),
-            execution_target: if source == "mcp" {
-                "host".to_string()
-            } else {
-                match exec_target_kind {
-                    crate::target::ExecTargetKind::Host => "host".to_string(),
-                    crate::target::ExecTargetKind::Docker => "docker".to_string(),
-                }
-            },
-            docker: None,
-        },
-    ))
-}
-
-fn schema_repair_instruction_message(tc: &ToolCall, err: &str) -> Message {
-    Message {
-        role: Role::Developer,
-        content: Some(format!(
-            "Schema repair required for tool '{}': {}. Re-emit exactly one corrected tool call for '{}' with valid arguments only.",
-            tc.name, err, tc.name
-        )),
-        tool_call_id: None,
-        tool_name: None,
-        tool_calls: None,
-    }
 }
 
 fn provider_name(provider: crate::gate::ProviderKind) -> &'static str {
