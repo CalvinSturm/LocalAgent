@@ -211,6 +211,13 @@ pub struct CaptureLearningOutput {
 }
 
 #[derive(Debug, Clone)]
+pub struct ArchiveLearningResult {
+    pub learning_id: String,
+    pub previous_status: LearningStatusV1,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct PromoteToCheckResult {
     pub learning_id: String,
     pub slug: String,
@@ -331,6 +338,31 @@ pub fn emit_learning_captured_event(
         data,
     ))?;
     Ok(())
+}
+
+pub fn archive_learning_entry(state_dir: &Path, id: &str) -> anyhow::Result<ArchiveLearningResult> {
+    let mut entry = load_learning_entry(state_dir, id)?;
+    let previous_status = entry.status.clone();
+    let archived = previous_status != LearningStatusV1::Archived;
+    if archived {
+        update_learning_status(state_dir, &mut entry, LearningStatusV1::Archived)?;
+    }
+    Ok(ArchiveLearningResult {
+        learning_id: entry.id,
+        previous_status,
+        archived,
+    })
+}
+
+pub fn render_archive_confirmation(out: &ArchiveLearningResult) -> String {
+    if out.archived {
+        return format!(
+            "Archived learning {} (previous_status={})",
+            out.learning_id,
+            learning_status_str(&out.previous_status)
+        );
+    }
+    format!("Already archived (noop): {}", out.learning_id)
 }
 
 pub fn promote_learning_to_check(
@@ -1681,6 +1713,48 @@ mod tests {
             .map(|r| r.expect("dirent").file_name().to_string_lossy().to_string())
             .collect::<BTreeSet<_>>();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn archive_learning_entry_updates_status_to_archived() {
+        let tmp = tempdir().expect("tempdir");
+        let state_dir = tmp.path().join(".localagent");
+        let mut e = sample_entry();
+        e.status = LearningStatusV1::Promoted;
+        e.entry_hash_hex = compute_entry_hash_hex(&e).expect("hash");
+        write_entry(&state_dir, e.clone());
+
+        let out = archive_learning_entry(&state_dir, &e.id).expect("archive");
+        assert!(out.archived);
+        assert_eq!(out.previous_status, LearningStatusV1::Promoted);
+
+        let updated = load_learning_entry(&state_dir, &e.id).expect("reload");
+        assert_eq!(updated.status, LearningStatusV1::Archived);
+        let msg = render_archive_confirmation(&out);
+        assert!(msg.contains("Archived learning"));
+        assert!(msg.contains("previous_status=promoted"));
+    }
+
+    #[test]
+    fn archive_learning_entry_is_noop_when_already_archived() {
+        let tmp = tempdir().expect("tempdir");
+        let state_dir = tmp.path().join(".localagent");
+        let mut e = sample_entry();
+        e.status = LearningStatusV1::Archived;
+        e.entry_hash_hex = compute_entry_hash_hex(&e).expect("hash");
+        write_entry(&state_dir, e.clone());
+
+        let before = fs::read_to_string(learning_entry_path(&state_dir, &e.id)).expect("before");
+        let out = archive_learning_entry(&state_dir, &e.id).expect("archive noop");
+        let after = fs::read_to_string(learning_entry_path(&state_dir, &e.id)).expect("after");
+
+        assert!(!out.archived);
+        assert_eq!(out.previous_status, LearningStatusV1::Archived);
+        assert_eq!(before, after);
+        assert_eq!(
+            render_archive_confirmation(&out),
+            format!("Already archived (noop): {}", e.id)
+        );
     }
 
     #[test]

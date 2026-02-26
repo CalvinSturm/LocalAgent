@@ -141,6 +141,12 @@ pub(crate) async fn handle_learn_command(
                 )),
             }
         }
+        LearnSubcommand::Archive { id } => {
+            let out = learning::archive_learning_entry(&paths.state_dir, id)
+                .with_context(|| format!("failed to archive learning entry {id}"))?;
+            println!("{}", learning::render_archive_confirmation(&out));
+            Ok(())
+        }
         LearnSubcommand::Promote {
             id,
             to,

@@ -547,6 +547,9 @@ pub(crate) enum LearnSubcommand {
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         show_proposed: bool,
     },
+    Archive {
+        id: String,
+    },
     Promote {
         id: String,
 
