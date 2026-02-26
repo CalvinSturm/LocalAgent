@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -10,6 +9,7 @@ use crate::hooks::protocol::{
     HookAction, HookInput, HookInvocationReport, HookOutput, HookStageWire, PreModelModifyPayload,
     ToolResultModifyPayload,
 };
+use crate::store::sha256_hex;
 use crate::types::{Message, Role};
 
 #[derive(Debug, Clone)]
@@ -491,12 +491,6 @@ fn stable_workdir(path: &Path) -> String {
         Ok(p) => p.display().to_string(),
         Err(_) => path.display().to_string(),
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::store::sha256_hex;
 use crate::types::{Message, Role};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -213,12 +213,6 @@ fn tool_status(content: &str) -> &'static str {
         }
         Err(_) => "unknown",
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]
