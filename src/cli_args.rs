@@ -564,6 +564,18 @@ pub(crate) enum LearnSubcommand {
 
         #[arg(long, default_value_t = false)]
         force: bool,
+
+        #[arg(long, default_value_t = false)]
+        check_run: bool,
+
+        #[arg(long, default_value_t = false)]
+        replay_verify: bool,
+
+        #[arg(long = "replay-verify-run-id")]
+        replay_verify_run_id: Option<String>,
+
+        #[arg(long, default_value_t = false)]
+        replay_verify_strict: bool,
     },
 }
 
