@@ -83,27 +83,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
 ) -> anyhow::Result<RunExecutionResult> {
     let workdir = std::fs::canonicalize(&args.workdir)
         .with_context(|| format!("failed to resolve workdir: {}", args.workdir.display()))?;
-    let exec_target: std::sync::Arc<dyn ExecTarget> = match args.exec_target {
-        ExecTargetKind::Host => std::sync::Arc::new(HostTarget),
-        ExecTargetKind::Docker => {
-            DockerTarget::validate_available().with_context(|| {
-                "docker execution target requested. Install/start Docker or re-run with --exec-target host"
-            })?;
-            DockerTarget::validate_image_present_local(&args.docker_image).with_context(|| {
-                "docker execution target requested. Ensure the configured image is present locally or re-run with --exec-target host"
-            })?;
-            std::sync::Arc::new(DockerTarget::new(
-                args.docker_image.clone(),
-                args.docker_workdir.clone(),
-                match args.docker_network {
-                    DockerNetwork::None => "none",
-                    DockerNetwork::Bridge => "bridge",
-                }
-                .to_string(),
-                args.docker_user.clone(),
-            ))
-        }
-    };
+    let exec_target = build_exec_target(args)?;
     let resolved_target_kind = exec_target.kind();
     let _target_desc = exec_target.describe();
     let mut gate_ctx = GateContext {
@@ -1301,6 +1281,30 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         outcome,
         run_artifact_path,
     })
+}
+
+fn build_exec_target(args: &RunArgs) -> anyhow::Result<std::sync::Arc<dyn ExecTarget>> {
+    match args.exec_target {
+        ExecTargetKind::Host => Ok(std::sync::Arc::new(HostTarget)),
+        ExecTargetKind::Docker => {
+            DockerTarget::validate_available().with_context(|| {
+                "docker execution target requested. Install/start Docker or re-run with --exec-target host"
+            })?;
+            DockerTarget::validate_image_present_local(&args.docker_image).with_context(|| {
+                "docker execution target requested. Ensure the configured image is present locally or re-run with --exec-target host"
+            })?;
+            Ok(std::sync::Arc::new(DockerTarget::new(
+                args.docker_image.clone(),
+                args.docker_workdir.clone(),
+                match args.docker_network {
+                    DockerNetwork::None => "none",
+                    DockerNetwork::Bridge => "bridge",
+                }
+                .to_string(),
+                args.docker_user.clone(),
+            )))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
