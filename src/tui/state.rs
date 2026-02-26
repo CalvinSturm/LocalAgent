@@ -288,240 +288,28 @@ impl UiState {
                 ));
             }
             EventKind::McpDrift => {
-                let expected = ev
-                    .data
-                    .get("catalog_hash_expected")
-                    .or_else(|| ev.data.get("expected_hash_hex"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
-                let actual = ev
-                    .data
-                    .get("catalog_hash_live")
-                    .or_else(|| ev.data.get("actual_hash_hex"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
-                let docs_expected = ev
-                    .data
-                    .get("docs_hash_expected")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
-                let docs_actual = ev
-                    .data
-                    .get("docs_hash_live")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
-                let catalog_drift = ev
-                    .data
-                    .get("catalog_drift")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(actual != expected && actual != "-");
-                let docs_drift = ev
-                    .data
-                    .get("docs_drift")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let primary_code = ev
-                    .data
-                    .get("primary_code")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("MCP_DRIFT");
-                self.mcp_lifecycle = "DRIFT".to_string();
-                self.mcp_pin_state = "DRIFT".to_string();
-                self.mcp_stalled = false;
-                self.mcp_running_for_ms = 0;
-                let tool = ev
-                    .data
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("mcp.tool");
-                let summary = match (catalog_drift, docs_drift) {
-                    (true, true) => format!(
-                        "mcp_drift[{primary_code}]: catalog {}->{} docs {}->{} tool={tool}",
-                        truncate_chars(expected, 12),
-                        truncate_chars(actual, 12),
-                        truncate_chars(docs_expected, 12),
-                        truncate_chars(docs_actual, 12),
-                    ),
-                    (true, false) => format!(
-                        "mcp_drift[{primary_code}]: catalog {}->{} tool={tool}",
-                        truncate_chars(expected, 12),
-                        truncate_chars(actual, 12),
-                    ),
-                    (false, true) => format!(
-                        "mcp_drift[{primary_code}]: docs {}->{} tool={tool}",
-                        truncate_chars(docs_expected, 12),
-                        truncate_chars(docs_actual, 12),
-                    ),
-                    (false, false) => format!("mcp_drift[{primary_code}]: tool={tool}"),
-                };
-                self.push_log(summary);
+                self.apply_mcp_drift_event(ev);
             }
             EventKind::McpProgress => {
-                let ticks = ev
-                    .data
-                    .get("progress_ticks")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let elapsed_ms = ev
-                    .data
-                    .get("elapsed_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                self.mcp_lifecycle = "WAIT:TASK".to_string();
-                self.mcp_running_for_ms = elapsed_ms;
-                self.mcp_stalled = false;
-                self.mcp_stall_notice_emitted = false;
-                self.push_log(format!(
-                    "mcp_progress: tool={} ticks={} elapsed_ms={}",
-                    ev.data
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("mcp.tool"),
-                    ticks,
-                    elapsed_ms
-                ));
+                self.apply_mcp_progress_event(ev);
             }
             EventKind::McpCancelled => {
-                let reason = ev
-                    .data
-                    .get("reason")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("cancelled");
-                self.mcp_lifecycle = "CANCELLED".to_string();
-                self.mcp_running_for_ms = 0;
-                self.mcp_stalled = false;
-                self.mcp_stall_notice_emitted = false;
-                self.next_hint = "cancelled".to_string();
-                self.push_log(format!(
-                    "mcp_cancelled: tool={} reason={}",
-                    ev.data
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("mcp.tool"),
-                    reason
-                ));
+                self.apply_mcp_cancelled_event(ev);
             }
             EventKind::McpPinned => {
-                if let Some(enforcement) = ev.data.get("enforcement").and_then(|v| v.as_str()) {
-                    self.mcp_pin_enforcement = enforcement.to_ascii_uppercase();
-                }
-                let pinned = ev
-                    .data
-                    .get("pinned")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                self.mcp_pin_state = if pinned { "PINNED" } else { "UNPINNED" }.to_string();
-                self.push_log(format!(
-                    "mcp_pinned: configured={} startup_live={} pinned={}",
-                    ev.data
-                        .get("configured_hash_hex")
-                        .and_then(|v| v.as_str())
-                        .map(|s| truncate_chars(s, 12))
-                        .unwrap_or_else(|| "-".to_string()),
-                    ev.data
-                        .get("startup_live_hash_hex")
-                        .and_then(|v| v.as_str())
-                        .map(|s| truncate_chars(s, 12))
-                        .unwrap_or_else(|| "-".to_string()),
-                    pinned
-                ));
+                self.apply_mcp_pinned_event(ev);
             }
             EventKind::PackActivated => {
-                let pack_id = ev
-                    .data
-                    .get("pack_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("pack");
-                let truncated = ev
-                    .data
-                    .get("truncated")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let bytes_kept = ev
-                    .data
-                    .get("bytes_kept")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                self.push_log(format!(
-                    "pack_activated: id={} truncated={} bytes_kept={}",
-                    pack_id, truncated, bytes_kept
-                ));
+                self.apply_pack_activated_event(ev);
             }
             EventKind::QueueSubmitted => {
-                let queue_id = ev
-                    .data
-                    .get("queue_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("q?");
-                let kind = ev
-                    .data
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let truncated = ev
-                    .data
-                    .get("truncated")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let bytes_kept = ev
-                    .data
-                    .get("bytes_kept")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let boundary_phrase = ev
-                    .data
-                    .get("next_delivery")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
-                self.push_log(format!(
-                    "queue_submitted: id={} kind={} truncated={} bytes_kept={} next={}",
-                    queue_id, kind, truncated, bytes_kept, boundary_phrase
-                ));
+                self.apply_queue_submitted_event(ev);
             }
             EventKind::QueueDelivered => {
-                let queue_id = ev
-                    .data
-                    .get("queue_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("q?");
-                let kind = ev
-                    .data
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let boundary = ev
-                    .data
-                    .get("delivery_boundary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
-                self.push_log(format!(
-                    "queue_delivered: id={} kind={} boundary={}",
-                    queue_id, kind, boundary
-                ));
+                self.apply_queue_delivered_event(ev);
             }
             EventKind::QueueInterrupt => {
-                let queue_id = ev
-                    .data
-                    .get("queue_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("q?");
-                let reason = ev
-                    .data
-                    .get("cancelled_reason")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("operator_steer");
-                let cancelled_remaining_work = ev
-                    .data
-                    .get("cancelled_remaining_work")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                self.push_log(format!(
-                    "queue_interrupt: id={} cancelled_remaining_work={} reason={}",
-                    queue_id, cancelled_remaining_work, reason
-                ));
-                if cancelled_remaining_work {
-                    self.next_hint = "interrupt_applied".to_string();
-                }
+                self.apply_queue_interrupt_event(ev);
             }
             EventKind::Error => {
                 let msg = ev
@@ -754,6 +542,250 @@ impl UiState {
             .filter(|s| !s.is_empty())
             .unwrap_or("-")
             .to_string();
+    }
+
+    fn apply_mcp_drift_event(&mut self, ev: &Event) {
+        let expected = ev
+            .data
+            .get("catalog_hash_expected")
+            .or_else(|| ev.data.get("expected_hash_hex"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let actual = ev
+            .data
+            .get("catalog_hash_live")
+            .or_else(|| ev.data.get("actual_hash_hex"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let docs_expected = ev
+            .data
+            .get("docs_hash_expected")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let docs_actual = ev
+            .data
+            .get("docs_hash_live")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let catalog_drift = ev
+            .data
+            .get("catalog_drift")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(actual != expected && actual != "-");
+        let docs_drift = ev
+            .data
+            .get("docs_drift")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let primary_code = ev
+            .data
+            .get("primary_code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("MCP_DRIFT");
+        self.mcp_lifecycle = "DRIFT".to_string();
+        self.mcp_pin_state = "DRIFT".to_string();
+        self.mcp_stalled = false;
+        self.mcp_running_for_ms = 0;
+        let tool = ev
+            .data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("mcp.tool");
+        let summary = match (catalog_drift, docs_drift) {
+            (true, true) => format!(
+                "mcp_drift[{primary_code}]: catalog {}->{} docs {}->{} tool={tool}",
+                truncate_chars(expected, 12),
+                truncate_chars(actual, 12),
+                truncate_chars(docs_expected, 12),
+                truncate_chars(docs_actual, 12),
+            ),
+            (true, false) => format!(
+                "mcp_drift[{primary_code}]: catalog {}->{} tool={tool}",
+                truncate_chars(expected, 12),
+                truncate_chars(actual, 12),
+            ),
+            (false, true) => format!(
+                "mcp_drift[{primary_code}]: docs {}->{} tool={tool}",
+                truncate_chars(docs_expected, 12),
+                truncate_chars(docs_actual, 12),
+            ),
+            (false, false) => format!("mcp_drift[{primary_code}]: tool={tool}"),
+        };
+        self.push_log(summary);
+    }
+
+    fn apply_mcp_progress_event(&mut self, ev: &Event) {
+        let ticks = ev
+            .data
+            .get("progress_ticks")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let elapsed_ms = ev
+            .data
+            .get("elapsed_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        self.mcp_lifecycle = "WAIT:TASK".to_string();
+        self.mcp_running_for_ms = elapsed_ms;
+        self.mcp_stalled = false;
+        self.mcp_stall_notice_emitted = false;
+        self.push_log(format!(
+            "mcp_progress: tool={} ticks={} elapsed_ms={}",
+            ev.data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("mcp.tool"),
+            ticks,
+            elapsed_ms
+        ));
+    }
+
+    fn apply_mcp_cancelled_event(&mut self, ev: &Event) {
+        let reason = ev
+            .data
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("cancelled");
+        self.mcp_lifecycle = "CANCELLED".to_string();
+        self.mcp_running_for_ms = 0;
+        self.mcp_stalled = false;
+        self.mcp_stall_notice_emitted = false;
+        self.next_hint = "cancelled".to_string();
+        self.push_log(format!(
+            "mcp_cancelled: tool={} reason={}",
+            ev.data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("mcp.tool"),
+            reason
+        ));
+    }
+
+    fn apply_mcp_pinned_event(&mut self, ev: &Event) {
+        if let Some(enforcement) = ev.data.get("enforcement").and_then(|v| v.as_str()) {
+            self.mcp_pin_enforcement = enforcement.to_ascii_uppercase();
+        }
+        let pinned = ev
+            .data
+            .get("pinned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        self.mcp_pin_state = if pinned { "PINNED" } else { "UNPINNED" }.to_string();
+        self.push_log(format!(
+            "mcp_pinned: configured={} startup_live={} pinned={}",
+            ev.data
+                .get("configured_hash_hex")
+                .and_then(|v| v.as_str())
+                .map(|s| truncate_chars(s, 12))
+                .unwrap_or_else(|| "-".to_string()),
+            ev.data
+                .get("startup_live_hash_hex")
+                .and_then(|v| v.as_str())
+                .map(|s| truncate_chars(s, 12))
+                .unwrap_or_else(|| "-".to_string()),
+            pinned
+        ));
+    }
+
+    fn apply_pack_activated_event(&mut self, ev: &Event) {
+        let pack_id = ev
+            .data
+            .get("pack_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pack");
+        let truncated = ev
+            .data
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let bytes_kept = ev
+            .data
+            .get("bytes_kept")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        self.push_log(format!(
+            "pack_activated: id={} truncated={} bytes_kept={}",
+            pack_id, truncated, bytes_kept
+        ));
+    }
+
+    fn apply_queue_submitted_event(&mut self, ev: &Event) {
+        let queue_id = ev
+            .data
+            .get("queue_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("q?");
+        let kind = ev
+            .data
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let truncated = ev
+            .data
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let bytes_kept = ev
+            .data
+            .get("bytes_kept")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let boundary_phrase = ev
+            .data
+            .get("next_delivery")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        self.push_log(format!(
+            "queue_submitted: id={} kind={} truncated={} bytes_kept={} next={}",
+            queue_id, kind, truncated, bytes_kept, boundary_phrase
+        ));
+    }
+
+    fn apply_queue_delivered_event(&mut self, ev: &Event) {
+        let queue_id = ev
+            .data
+            .get("queue_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("q?");
+        let kind = ev
+            .data
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let boundary = ev
+            .data
+            .get("delivery_boundary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        self.push_log(format!(
+            "queue_delivered: id={} kind={} boundary={}",
+            queue_id, kind, boundary
+        ));
+    }
+
+    fn apply_queue_interrupt_event(&mut self, ev: &Event) {
+        let queue_id = ev
+            .data
+            .get("queue_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("q?");
+        let reason = ev
+            .data
+            .get("cancelled_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("operator_steer");
+        let cancelled_remaining_work = ev
+            .data
+            .get("cancelled_remaining_work")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        self.push_log(format!(
+            "queue_interrupt: id={} cancelled_remaining_work={} reason={}",
+            queue_id, cancelled_remaining_work, reason
+        ));
+        if cancelled_remaining_work {
+            self.next_hint = "interrupt_applied".to_string();
+        }
     }
 
     fn bump_usage(&mut self, side_effects: &str) {
