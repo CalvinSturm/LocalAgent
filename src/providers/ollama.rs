@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::providers::common::{
-    build_http_client, build_tool_envelopes, truncate_for_error, ToolEnvelope as SharedToolEnvelope,
+    build_http_client, build_tool_envelopes, truncate_error_display, truncate_for_error,
+    ToolEnvelope as SharedToolEnvelope,
 };
 use crate::providers::http::{
     classify_reqwest_error, classify_status, deterministic_backoff_ms, HttpConfig, ProviderError,
@@ -368,7 +369,7 @@ impl ModelProvider for OllamaProvider {
                                 max_attempts,
                                 message: format!(
                                     "malformed Ollama stream line: {}",
-                                    truncate_for_error(&format!("{e}"), 200)
+                                    truncate_error_display(&e, 200)
                                 ),
                                 retries: retries.clone(),
                             })
