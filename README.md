@@ -397,6 +397,7 @@ Need deeper setup, profiles, or reference docs? Start here.
 - [Templates](docs/TEMPLATES.md)
 - [CLI reference](docs/CLI_REFERENCE.md)
 - [Provider setup](docs/LLM_SETUP.md)
+- [Runtime architecture](docs/RUNTIME_ARCHITECTURE.md)
 - [Instruction profiles](docs/INSTRUCTION_PROFILES.md)
 - [Safe tool tuning profile](docs/SAFE_TOOL_TUNING_PROFILE.md)
 - [Contributing](CONTRIBUTING.md)

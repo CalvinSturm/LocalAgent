@@ -11,6 +11,7 @@ This directory contains deeper setup guides, reference docs, tuning guides, and 
 ## Reference
 
 - [CLI Reference](CLI_REFERENCE.md)
+- [Runtime Architecture](RUNTIME_ARCHITECTURE.md)
 
 ## Tuning and Reliability
 
