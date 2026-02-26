@@ -32,7 +32,7 @@ use crate::tools::{
     ToolResultMeta, ToolRuntime,
 };
 use crate::trust::policy::{McpAllowSummary, Policy};
-use crate::types::{GenerateRequest, Message, Role, SideEffects, TokenUsage, ToolCall, ToolDef};
+use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     let without_think = strip_tag_block(raw, "think");
@@ -218,50 +218,6 @@ pub(crate) struct WorkerStepStatus {
     pub(crate) status: String,
     pub(crate) next_step_id: Option<String>,
     pub(crate) user_output: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolFailureClass {
-    Schema,
-    Policy,
-    TimeoutTransient,
-    SelectorAmbiguous,
-    NetworkTransient,
-    NonIdempotent,
-    Other,
-}
-
-impl ToolFailureClass {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Schema => "E_SCHEMA",
-            Self::Policy => "E_POLICY",
-            Self::TimeoutTransient => "E_TIMEOUT_TRANSIENT",
-            Self::SelectorAmbiguous => "E_SELECTOR_AMBIGUOUS",
-            Self::NetworkTransient => "E_NETWORK_TRANSIENT",
-            Self::NonIdempotent => "E_NON_IDEMPOTENT",
-            Self::Other => "E_OTHER",
-        }
-    }
-
-    fn retry_limit_for(self, side_effects: SideEffects) -> u32 {
-        if matches!(
-            side_effects,
-            SideEffects::FilesystemWrite
-                | SideEffects::ShellExec
-                | SideEffects::Network
-                | SideEffects::Browser
-        ) {
-            return 0;
-        }
-        match self {
-            Self::Schema => 1,
-            Self::TimeoutTransient => 1,
-            Self::SelectorAmbiguous => 1,
-            Self::NetworkTransient => 1,
-            Self::Policy | Self::NonIdempotent | Self::Other => 0,
-        }
-    }
 }
 
 pub struct Agent<P: ModelProvider> {

@@ -392,17 +392,17 @@ fn tool_failure_classification_schema_and_network() {
 #[test]
 fn retry_policy_disables_blind_retries_for_side_effectful_tools() {
     assert_eq!(
-        super::ToolFailureClass::TimeoutTransient
+        crate::agent_tool_exec::ToolFailureClass::TimeoutTransient
             .retry_limit_for(crate::types::SideEffects::FilesystemRead),
         1
     );
     assert_eq!(
-        super::ToolFailureClass::TimeoutTransient
+        crate::agent_tool_exec::ToolFailureClass::TimeoutTransient
             .retry_limit_for(crate::types::SideEffects::ShellExec),
         0
     );
     assert_eq!(
-        super::ToolFailureClass::NetworkTransient
+        crate::agent_tool_exec::ToolFailureClass::NetworkTransient
             .retry_limit_for(crate::types::SideEffects::Browser),
         0
     );

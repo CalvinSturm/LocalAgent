@@ -1,10 +1,53 @@
-use crate::agent::ToolFailureClass;
 use crate::mcp::registry::McpRegistry;
 use crate::tools::{
     envelope_to_message, execute_tool, to_tool_result_envelope, tool_side_effects, ToolResultMeta,
     ToolRuntime,
 };
 use crate::types::{Message, Role, ToolCall};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolFailureClass {
+    Schema,
+    Policy,
+    TimeoutTransient,
+    SelectorAmbiguous,
+    NetworkTransient,
+    NonIdempotent,
+    Other,
+}
+
+impl ToolFailureClass {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Schema => "E_SCHEMA",
+            Self::Policy => "E_POLICY",
+            Self::TimeoutTransient => "E_TIMEOUT_TRANSIENT",
+            Self::SelectorAmbiguous => "E_SELECTOR_AMBIGUOUS",
+            Self::NetworkTransient => "E_NETWORK_TRANSIENT",
+            Self::NonIdempotent => "E_NON_IDEMPOTENT",
+            Self::Other => "E_OTHER",
+        }
+    }
+
+    pub(crate) fn retry_limit_for(self, side_effects: crate::types::SideEffects) -> u32 {
+        if matches!(
+            side_effects,
+            crate::types::SideEffects::FilesystemWrite
+                | crate::types::SideEffects::ShellExec
+                | crate::types::SideEffects::Network
+                | crate::types::SideEffects::Browser
+        ) {
+            return 0;
+        }
+        match self {
+            Self::Schema => 1,
+            Self::TimeoutTransient => 1,
+            Self::SelectorAmbiguous => 1,
+            Self::NetworkTransient => 1,
+            Self::Policy | Self::NonIdempotent | Self::Other => 0,
+        }
+    }
+}
 
 pub(crate) async fn run_tool_once(
     tool_rt: &ToolRuntime,
