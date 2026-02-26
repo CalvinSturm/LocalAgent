@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{collections::BTreeMap, fs};
 
@@ -10,6 +10,7 @@ use localagent::agent::{
     ToolCallBudget,
 };
 use localagent::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
+use localagent::events::{Event, EventKind, EventSink};
 use localagent::gate::{
     compute_policy_hash_hex, ApprovalKeyVersion, ApprovalMode, AutoApproveScope, GateContext,
     NoGate, ProviderKind, ToolGate, TrustGate, TrustMode,
@@ -19,6 +20,7 @@ use localagent::hooks::runner::{HookManager, HookRuntimeConfig};
 use localagent::mcp::registry::McpRegistry;
 use localagent::mcp::types::{McpConfigFile, McpServerConfig};
 use localagent::planner::RunMode;
+use localagent::providers::mock::MockProvider;
 use localagent::providers::ModelProvider;
 use localagent::store::{self, PolicyRecordInfo, RunCliConfig, ToolCatalogEntry, WorkerRunRecord};
 use localagent::taint::{TaintLevel, TaintMode, TaintToggle};
@@ -31,6 +33,62 @@ use localagent::types::SideEffects;
 use localagent::types::{GenerateRequest, GenerateResponse, Message, Role, ToolCall};
 use serde_json::Value;
 use tempfile::tempdir;
+
+struct EventCaptureSink {
+    events: Arc<Mutex<Vec<Event>>>,
+}
+
+impl EventSink for EventCaptureSink {
+    fn emit(&mut self, event: Event) -> anyhow::Result<()> {
+        self.events.lock().expect("lock").push(event);
+        Ok(())
+    }
+}
+
+fn project_event_tokens(events: &[Event]) -> Vec<String> {
+    let mut out = Vec::new();
+    for ev in events {
+        match ev.kind {
+            EventKind::RunStart => out.push("RUN_START".to_string()),
+            EventKind::ToolCallDetected => out.push(format!(
+                "TOOL_CALL_DETECTED:{}",
+                ev.data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+            )),
+            EventKind::ToolDecision => out.push(format!(
+                "GATE_DECISION:{}",
+                ev.data
+                    .get("decision")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+            )),
+            EventKind::RunEnd => out.push(format!(
+                "RUN_END:{}",
+                ev.data
+                    .get("exit_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+            )),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn assert_token_subsequence(haystack: &[String], needle: &[&str]) {
+    let mut pos = 0usize;
+    for n in needle {
+        let Some(found) = haystack[pos..].iter().position(|t| t == n) else {
+            panic!(
+                "missing token subsequence element '{}' in {:?}",
+                n, haystack
+            );
+        };
+        pos += found + 1;
+    }
+}
 
 #[derive(Clone)]
 enum ScriptStep {
@@ -548,6 +606,139 @@ rules:
         .tool_decisions
         .iter()
         .any(|d| d.decision == "require_approval"));
+}
+
+#[tokio::test]
+async fn pain_approval_required_mcp_path_emits_stable_event_strip() {
+    let tmp = tempdir().expect("tempdir");
+    let Some(reg) = build_stub_registry(tmp.path(), "stub").await else {
+        return;
+    };
+    let policy_yaml = r#"
+version: 1
+default: deny
+rules:
+  - tool: "mcp.stub.*"
+    decision: allow
+  - tool: "shell"
+    decision: require_approval
+"#;
+    let policy = Policy::from_yaml(policy_yaml).expect("policy");
+    let gate = TrustGate::new(
+        policy,
+        ApprovalsStore::new(tmp.path().join("approvals.json")),
+        AuditLog::new(tmp.path().join("audit.log")),
+        TrustMode::On,
+        compute_policy_hash_hex(policy_yaml.as_bytes()),
+    );
+    let provider = ScriptedProvider {
+        steps: vec![
+            ScriptStep::Tool {
+                id: "tc_mcp",
+                name: "mcp.stub.echo",
+                arguments: serde_json::json!({"msg":"hi"}),
+            },
+            ScriptStep::Tool {
+                id: "tc_shell",
+                name: "shell",
+                arguments: serde_json::json!({"cmd":"echo","args":["still gated"]}),
+            },
+        ],
+        next: AtomicUsize::new(0),
+    };
+    let events = Arc::new(Mutex::new(Vec::<Event>::new()));
+    let mut agent = make_agent_with_mcp(
+        provider,
+        tmp.path(),
+        Box::new(gate),
+        true,
+        false,
+        false,
+        Some(reg),
+    );
+    agent.event_sink = Some(Box::new(EventCaptureSink {
+        events: events.clone(),
+    }));
+
+    let out = agent
+        .run("Handle MCP output safely.", vec![], Vec::new())
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::ApprovalRequired));
+    let decisions = out
+        .tool_decisions
+        .iter()
+        .map(|d| d.decision.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(decisions, vec!["allow", "require_approval"]);
+
+    let tokens = project_event_tokens(&events.lock().expect("lock"));
+    assert_token_subsequence(
+        &tokens,
+        &[
+            "RUN_START",
+            "TOOL_CALL_DETECTED:mcp.stub.echo",
+            "GATE_DECISION:allow",
+            "TOOL_CALL_DETECTED:shell",
+            "GATE_DECISION:require_approval",
+            "RUN_END:approval_required",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn pain_tool_call_missing_when_needed_fails_with_protocol_violation_token() {
+    let tmp = tempdir().expect("tempdir");
+    let provider = MockProvider::new();
+    let mut agent = make_agent(
+        provider,
+        tmp.path(),
+        Box::new(NoGate::new()),
+        false,
+        false,
+        false,
+    );
+    let out = agent
+        .run(
+            "Emit exactly one tool call and no prose.",
+            vec![],
+            Vec::new(),
+        )
+        .await;
+
+    assert!(matches!(out.exit_reason, AgentExitReason::PlannerError));
+    assert!(out
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("MODEL_TOOL_PROTOCOL_VIOLATION"));
+}
+
+#[tokio::test]
+async fn pain_malformed_tool_call_payload_surfaces_stable_provider_error() {
+    let tmp = tempdir().expect("tempdir");
+    let provider = MockProvider::new();
+    let mut agent = make_agent(
+        provider,
+        tmp.path(),
+        Box::new(NoGate::new()),
+        false,
+        false,
+        false,
+    );
+    let out = agent
+        .run(
+            "__mock_tool_call__:read_file\n{not-json}",
+            vec![],
+            Vec::new(),
+        )
+        .await;
+
+    assert!(matches!(out.exit_reason, AgentExitReason::ProviderError));
+    assert!(out
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("mock provider invalid tool-call JSON:"));
 }
 
 #[tokio::test]

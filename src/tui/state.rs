@@ -1112,6 +1112,65 @@ mod tests {
     }
 
     #[test]
+    fn approvals_queue_multiple_entries_preserve_independent_statuses() {
+        let tmp = tempdir().expect("tmp");
+        let path = tmp.path().join("approvals.json");
+        let store = ApprovalsStore::new(path.clone());
+        let id1 = store
+            .create_pending("shell", &serde_json::json!({"cmd":"echo one"}), None, None)
+            .expect("pending1");
+        let id2 = store
+            .create_pending(
+                "write_file",
+                &serde_json::json!({"path":"x","content":"y"}),
+                None,
+                None,
+            )
+            .expect("pending2");
+
+        let mut s = UiState::new(10);
+        s.refresh_approvals(&path).expect("refresh");
+        assert_eq!(s.pending_approvals.len(), 2);
+        let rows = s
+            .pending_approvals
+            .iter()
+            .map(|r| (r.id.clone(), r.status.clone(), r.tool.clone()))
+            .collect::<Vec<_>>();
+        let rows = rows
+            .into_iter()
+            .map(|(id, status, tool)| (id, (status, tool)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            rows.get(&id1),
+            Some(&("pending".to_string(), "shell".to_string()))
+        );
+        assert_eq!(
+            rows.get(&id2),
+            Some(&("pending".to_string(), "write_file".to_string()))
+        );
+
+        store.deny(&id1).expect("deny1");
+        s.refresh_approvals(&path).expect("refresh2");
+        let rows2 = s
+            .pending_approvals
+            .iter()
+            .map(|r| (r.id.clone(), r.status.clone(), r.tool.clone()))
+            .collect::<Vec<_>>();
+        let rows2 = rows2
+            .into_iter()
+            .map(|(id, status, tool)| (id, (status, tool)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            rows2.get(&id1),
+            Some(&("denied".to_string(), "shell".to_string()))
+        );
+        assert_eq!(
+            rows2.get(&id2),
+            Some(&("pending".to_string(), "write_file".to_string()))
+        );
+    }
+
+    #[test]
     fn mcp_lifecycle_running_retry_done() {
         let mut s = UiState::new(10);
         s.mcp_catalog_hash = "abcdef123456".to_string();
