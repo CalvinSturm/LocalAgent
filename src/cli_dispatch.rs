@@ -182,10 +182,11 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
                 let provider_kind = match cli.run.provider {
                     Some(p) => p,
                     None => {
-                        let report = checks::runner::report_single_error(
+                        let mut report = checks::runner::report_single_error(
                             "CHECK_RUNNER_CONFIG_INVALID",
                             "--provider is required for `localagent check run`",
                         );
+                        apply_check_runner_report_meta(&mut report, &cli.run, None, None);
                         let json = serde_json::to_string_pretty(&report)?;
                         if let Some(out) = json_out {
                             std::fs::write(out, &json)?;
@@ -201,9 +202,15 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
                 let model = match &cli.run.model {
                     Some(m) => m.clone(),
                     None => {
-                        let report = checks::runner::report_single_error(
+                        let mut report = checks::runner::report_single_error(
                             "CHECK_RUNNER_CONFIG_INVALID",
                             "--model is required for `localagent check run`",
+                        );
+                        apply_check_runner_report_meta(
+                            &mut report,
+                            &cli.run,
+                            Some(provider_kind),
+                            None,
                         );
                         let json = serde_json::to_string_pretty(&report)?;
                         if let Some(out) = json_out {
@@ -228,7 +235,14 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
                     },
                 ) {
                     Ok(c) => c,
-                    Err((report, exit)) => {
+                    Err(boxed) => {
+                        let (mut report, exit) = *boxed;
+                        apply_check_runner_report_meta(
+                            &mut report,
+                            &cli.run,
+                            Some(provider_kind),
+                            Some(&model),
+                        );
                         let json = serde_json::to_string_pretty(&report)?;
                         if let Some(out) = json_out {
                             std::fs::write(out, &json)?;
@@ -324,6 +338,21 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
                     match run_res {
                         Ok(res) => {
                             let outcome = res.outcome;
+                            if let Some(msg) = check_allowed_tools_violation(&check, &outcome) {
+                                results.push(checks::report::CheckRunResult {
+                                    name: check.name,
+                                    path: check.path,
+                                    description: check.description,
+                                    status: "failed".to_string(),
+                                    reason_code: Some("CHECK_ALLOWED_TOOLS_VIOLATION".to_string()),
+                                    summary: msg,
+                                    required: check.required,
+                                    file_bytes_hash_hex: check.file_bytes_hash_hex,
+                                    frontmatter_hash_hex: check.frontmatter_hash_hex,
+                                    check_hash_hex: check.check_hash_hex,
+                                });
+                                continue;
+                            }
                             match checks::runner::evaluate_final_output(
                                 &check,
                                 &outcome.final_output,
@@ -375,7 +404,13 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
                     }
                 }
 
-                let report = checks::report::CheckRunReport::from_results(results);
+                let mut report = checks::report::CheckRunReport::from_results(results);
+                apply_check_runner_report_meta(
+                    &mut report,
+                    &cli.run,
+                    Some(provider_kind),
+                    Some(&model),
+                );
                 let exit = if report.errors > 0 {
                     checks::runner::CheckRunExit::RunnerError
                 } else if report.failed > 0 {
@@ -1273,6 +1308,80 @@ fn check_capability_denial(
                     ));
                 }
             }
+        }
+    }
+    None
+}
+
+fn apply_check_runner_report_meta(
+    report: &mut checks::report::CheckRunReport,
+    run: &RunArgs,
+    provider_kind: Option<ProviderKind>,
+    model: Option<&str>,
+) {
+    let provider = provider_kind
+        .or(run.provider)
+        .map(provider_runtime::provider_cli_name)
+        .unwrap_or("unset");
+    let base_url = run.base_url.clone().unwrap_or_else(|| {
+        provider_kind
+            .or(run.provider)
+            .map(provider_runtime::default_base_url)
+            .unwrap_or("unset")
+            .to_string()
+    });
+    let cfg = serde_json::json!({
+        "schema": "localagent.check_runner.config.v1",
+        "provider": provider,
+        "base_url": base_url,
+        "model": model.or(run.model.as_deref()).unwrap_or("unset"),
+        "approval_mode": "fail",
+        "no_session": true,
+        "reset_session": false,
+        "allow_shell": run.allow_shell,
+        "allow_shell_in_workdir": run.allow_shell_in_workdir,
+        "allow_write": run.allow_write,
+        "enable_write_tools": run.enable_write_tools,
+        "trust_mode": format!("{:?}", run.trust).to_lowercase(),
+        "tool_args_strict": format!("{:?}", run.tool_args_strict).to_lowercase(),
+        "mcp": run.mcp,
+        "max_tool_output_bytes": run.max_tool_output_bytes,
+        "max_read_bytes": run.max_read_bytes,
+        "max_steps": run.max_steps,
+        "max_total_tool_calls": run.max_total_tool_calls,
+        "max_wall_time_ms": run.max_wall_time_ms
+    });
+    let canonical = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
+    report.runner_profile = "localagent_check_v1".to_string();
+    report.runner_config_hash_hex = crate::store::sha256_hex(canonical.as_bytes());
+}
+
+fn check_allowed_tools_violation(
+    check: &checks::loader::LoadedCheck,
+    outcome: &crate::agent::AgentOutcome,
+) -> Option<String> {
+    let Some(allowed_tools) = &check.frontmatter.allowed_tools else {
+        return None;
+    };
+    let mut used_tools = outcome
+        .tool_decisions
+        .iter()
+        .map(|d| d.tool.as_str())
+        .collect::<Vec<_>>();
+    if used_tools.is_empty() {
+        used_tools.extend(outcome.tool_calls.iter().map(|c| c.name.as_str()));
+    }
+    for tool_name in used_tools {
+        if !allowed_tools.iter().any(|t| t == tool_name) {
+            let allowed = if allowed_tools.is_empty() {
+                "(no tools allowed)".to_string()
+            } else {
+                allowed_tools.join(", ")
+            };
+            return Some(format!(
+                "tool '{}' is not allowed by check allowed_tools [{}]",
+                tool_name, allowed
+            ));
         }
     }
     None

@@ -21,13 +21,13 @@ pub enum CheckRunExit {
 pub fn load_checks_for_run(
     root: &Path,
     args: &CheckRunArgs,
-) -> Result<Vec<LoadedCheck>, (CheckRunReport, CheckRunExit)> {
+) -> Result<Vec<LoadedCheck>, Box<(CheckRunReport, CheckRunExit)>> {
     let loaded = load_checks(root, args.path.as_deref());
     if !loaded.errors.is_empty() {
-        return Err((
+        return Err(Box::new((
             report_from_loader_errors(loaded.errors),
             CheckRunExit::InvalidChecks,
-        ));
+        )));
     }
     let mut checks = loaded.checks;
     if let Some(max) = args.max_checks {

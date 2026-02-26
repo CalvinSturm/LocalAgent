@@ -18,6 +18,8 @@ pub struct CheckRunResult {
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckRunReport {
     pub schema_version: String,
+    pub runner_profile: String,
+    pub runner_config_hash_hex: String,
     pub checks: Vec<CheckRunResult>,
     pub passed: usize,
     pub failed: usize,
@@ -27,6 +29,18 @@ pub struct CheckRunReport {
 
 impl CheckRunReport {
     pub fn from_results(checks: Vec<CheckRunResult>) -> Self {
+        Self::from_results_with_runner_meta(
+            checks,
+            "localagent_check_v1".to_string(),
+            String::new(),
+        )
+    }
+
+    pub fn from_results_with_runner_meta(
+        checks: Vec<CheckRunResult>,
+        runner_profile: String,
+        runner_config_hash_hex: String,
+    ) -> Self {
         let mut passed = 0;
         let mut failed = 0;
         let mut skipped = 0;
@@ -41,6 +55,8 @@ impl CheckRunReport {
         }
         Self {
             schema_version: "localagent.checks.report.v1".to_string(),
+            runner_profile,
+            runner_config_hash_hex,
             checks,
             passed,
             failed,
