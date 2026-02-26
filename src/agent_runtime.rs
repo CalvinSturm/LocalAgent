@@ -86,38 +86,13 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     let exec_target = build_exec_target(args)?;
     let resolved_target_kind = exec_target.kind();
     let _target_desc = exec_target.describe();
-    let mut gate_ctx = GateContext {
-        workdir: workdir.clone(),
-        allow_shell: args.allow_shell || args.allow_shell_in_workdir,
-        allow_write: args.allow_write,
-        approval_mode: args.approval_mode,
-        auto_approve_scope: args.auto_approve_scope,
-        unsafe_mode: args.unsafe_mode,
-        unsafe_bypass_allow_flags: args.unsafe_bypass_allow_flags,
-        run_id: None,
-        enable_write_tools: args.enable_write_tools,
-        max_tool_output_bytes: if args.no_limits {
-            0
-        } else {
-            args.max_tool_output_bytes
-        },
-        max_read_bytes: if args.no_limits {
-            0
-        } else {
-            args.max_read_bytes
-        },
-        provider: provider_kind,
-        model: default_model.to_string(),
-        exec_target: resolved_target_kind,
-        approval_key_version: args.approval_key,
-        tool_schema_hashes: std::collections::BTreeMap::new(),
-        hooks_config_hash_hex: None,
-        planner_hash_hex: None,
-        taint_enabled: matches!(args.taint, TaintToggle::On),
-        taint_mode: args.taint_mode,
-        taint_overall: taint::TaintLevel::Clean,
-        taint_sources: Vec::new(),
-    };
+    let mut gate_ctx = build_gate_context(
+        args,
+        &workdir,
+        provider_kind,
+        default_model,
+        resolved_target_kind,
+    );
     let gate_build = runtime_wiring::build_gate(args, paths)?;
     let policy_hash_hex = gate_build.policy_hash_hex.clone();
     let policy_source = gate_build.policy_source.to_string();
@@ -1304,6 +1279,47 @@ fn build_exec_target(args: &RunArgs) -> anyhow::Result<std::sync::Arc<dyn ExecTa
                 args.docker_user.clone(),
             )))
         }
+    }
+}
+
+fn build_gate_context(
+    args: &RunArgs,
+    workdir: &std::path::Path,
+    provider_kind: ProviderKind,
+    default_model: &str,
+    resolved_target_kind: ExecTargetKind,
+) -> GateContext {
+    GateContext {
+        workdir: workdir.to_path_buf(),
+        allow_shell: args.allow_shell || args.allow_shell_in_workdir,
+        allow_write: args.allow_write,
+        approval_mode: args.approval_mode,
+        auto_approve_scope: args.auto_approve_scope,
+        unsafe_mode: args.unsafe_mode,
+        unsafe_bypass_allow_flags: args.unsafe_bypass_allow_flags,
+        run_id: None,
+        enable_write_tools: args.enable_write_tools,
+        max_tool_output_bytes: if args.no_limits {
+            0
+        } else {
+            args.max_tool_output_bytes
+        },
+        max_read_bytes: if args.no_limits {
+            0
+        } else {
+            args.max_read_bytes
+        },
+        provider: provider_kind,
+        model: default_model.to_string(),
+        exec_target: resolved_target_kind,
+        approval_key_version: args.approval_key,
+        tool_schema_hashes: std::collections::BTreeMap::new(),
+        hooks_config_hash_hex: None,
+        planner_hash_hex: None,
+        taint_enabled: matches!(args.taint, TaintToggle::On),
+        taint_mode: args.taint_mode,
+        taint_overall: taint::TaintLevel::Clean,
+        taint_sources: Vec::new(),
     }
 }
 
