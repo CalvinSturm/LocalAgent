@@ -28,6 +28,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 diffy = "0.4"
 sha2 = "0.10"
 hex = "0.4"
+regex = "1"
 futures-util = "0.3"
 ratatui = "0.29"
 crossterm = "0.28"

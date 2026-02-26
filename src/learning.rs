@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{anyhow, Context};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -24,6 +26,10 @@ const MAX_TAG_CHARS: usize = 32;
 const LIST_SUMMARY_PREVIEW_CHARS: usize = 96;
 const LEARN_SHOW_MAX_BYTES: usize = 8 * 1024;
 const MAX_REDACTIONS_IN_DISPLAY: usize = 3;
+const MAX_SCAN_BUNDLE_BYTES: usize = 64 * 1024;
+const REDACTED_SECRET_TOKEN: &str = "[REDACTED_SECRET]";
+#[allow(dead_code)]
+pub const LEARN_PROMOTE_SENSITIVE_REQUIRES_FORCE: &str = "LEARN_PROMOTE_SENSITIVE_REQUIRES_FORCE";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningEntryV1 {
@@ -113,6 +119,34 @@ pub struct FieldTruncationV1 {
     pub original_len: u32,
     pub truncated_to: u32,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum LearningPromoteError {
+    SensitiveRequiresForce,
+}
+
+impl LearningPromoteError {
+    #[allow(dead_code)]
+    pub fn code(&self) -> &'static str {
+        match self {
+            LearningPromoteError::SensitiveRequiresForce => LEARN_PROMOTE_SENSITIVE_REQUIRES_FORCE,
+        }
+    }
+}
+
+impl std::fmt::Display for LearningPromoteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LearningPromoteError::SensitiveRequiresForce => write!(
+                f,
+                "Sensitive content suspected (contains_secrets_suspected). Re-run with --force to promote."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LearningPromoteError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LearningEntryHashInputV1 {
@@ -456,37 +490,11 @@ fn infer_sensitivity_flags(
     evidence: &[EvidenceRefV1],
     proposed: &ProposedMemoryV1,
 ) -> SensitivityFlagsV1 {
-    let mut text = String::new();
-    text.push_str(summary);
-    text.push('\n');
-    if let Some(v) = &source.task_summary {
-        text.push_str(v);
-        text.push('\n');
-    }
-    if let Some(v) = &proposed.guidance_text {
-        text.push_str(v);
-        text.push('\n');
-    }
-    if let Some(v) = &proposed.check_text {
-        text.push_str(v);
-        text.push('\n');
-    }
-    for ev in evidence {
-        text.push_str(&ev.value);
-        text.push('\n');
-        if let Some(note) = &ev.note {
-            text.push_str(note);
-            text.push('\n');
-        }
-    }
-    let lower = text.to_ascii_lowercase();
+    let text = build_sensitivity_scan_bundle(summary, source, evidence, proposed);
     SensitivityFlagsV1 {
-        contains_paths: text.contains('\\') || text.contains('/') || text.contains(":\\"),
-        contains_secrets_suspected: lower.contains("begin private key")
-            || lower.contains("ghp_")
-            || lower.contains("github_pat_")
-            || (lower.contains("aws") && lower.contains("secret")),
-        contains_user_data: lower.contains("email") || lower.contains("phone"),
+        contains_paths: detect_contains_paths(&text),
+        contains_secrets_suspected: detect_contains_secrets_suspected(&text),
+        contains_user_data: false,
     }
 }
 
@@ -710,49 +718,135 @@ fn redact_and_bound_terminal_output(input: &str, max_bytes: usize) -> String {
 }
 
 fn redact_secrets_for_display(input: &str) -> String {
-    let patterns = ["BEGIN PRIVATE KEY", "github_pat_", "ghp_"];
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0usize;
-    let mut redactions = 0usize;
-    while i < input.len() {
-        if redactions < MAX_REDACTIONS_IN_DISPLAY {
-            let rest = &input[i..];
-            if rest.starts_with("BEGIN PRIVATE KEY") {
-                out.push_str("[REDACTED_SECRET]");
-                i += "BEGIN PRIVATE KEY".len();
-                redactions += 1;
-                continue;
-            }
-            if rest.starts_with("github_pat_") || rest.starts_with("ghp_") {
-                out.push_str("[REDACTED_SECRET]");
-                let mut j = i;
-                for (off, ch) in rest.char_indices() {
-                    if off == 0 {
-                        continue;
-                    }
-                    if ch.is_whitespace() || ['"', '\'', ',', ';', ')', ']', '}'].contains(&ch) {
-                        j = i + off;
-                        break;
-                    }
-                    j = i + off + ch.len_utf8();
-                }
-                if j <= i {
-                    j = i + patterns
-                        .iter()
-                        .find(|p| rest.starts_with(**p))
-                        .map(|p| p.len())
-                        .unwrap_or(0);
-                }
-                i = j;
-                redactions += 1;
-                continue;
-            }
+    let mut matches = collect_secret_matches(input);
+    matches.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
+    let mut chosen = Vec::new();
+    for m in matches {
+        if chosen.len() >= MAX_REDACTIONS_IN_DISPLAY {
+            break;
         }
-        let ch = input[i..].chars().next().expect("char");
-        out.push(ch);
-        i += ch.len_utf8();
+        let overlaps = chosen
+            .last()
+            .map(|prev: &MatchRange| m.start < prev.end)
+            .unwrap_or(false);
+        if overlaps {
+            continue;
+        }
+        chosen.push(m);
+    }
+    if chosen.is_empty() {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0usize;
+    for m in chosen {
+        out.push_str(&input[cursor..m.start]);
+        out.push_str(REDACTED_SECRET_TOKEN);
+        cursor = m.end;
+    }
+    out.push_str(&input[cursor..]);
+    out
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MatchRange {
+    start: usize,
+    end: usize,
+}
+
+fn build_sensitivity_scan_bundle(
+    summary: &str,
+    source: &LearningSourceV1,
+    evidence: &[EvidenceRefV1],
+    proposed: &ProposedMemoryV1,
+) -> String {
+    let mut out = String::new();
+    out.push_str("summary:\n");
+    out.push_str(summary);
+    out.push_str("\n\n");
+    out.push_str("task_summary:\n");
+    out.push_str(source.task_summary.as_deref().unwrap_or(""));
+    out.push_str("\n\n");
+    out.push_str("guidance_text:\n");
+    out.push_str(proposed.guidance_text.as_deref().unwrap_or(""));
+    out.push_str("\n\n");
+    out.push_str("check_text:\n");
+    out.push_str(proposed.check_text.as_deref().unwrap_or(""));
+    out.push_str("\n\n");
+    out.push_str("evidence:\n");
+    for ev in evidence {
+        out.push_str("- value: ");
+        out.push_str(&ev.value);
+        out.push('\n');
+        if let Some(note) = &ev.note {
+            out.push_str("  note: ");
+            out.push_str(note);
+            out.push('\n');
+        }
+    }
+    truncate_utf8_bytes(out, MAX_SCAN_BUNDLE_BYTES)
+}
+
+fn detect_contains_secrets_suspected(text: &str) -> bool {
+    secret_detection_patterns()
+        .iter()
+        .any(|re| re.find(text).is_some())
+}
+
+fn detect_contains_paths(text: &str) -> bool {
+    if windows_path_pattern().is_match(text) {
+        return true;
+    }
+    unix_path_pattern().is_match(text) || text.contains("~/")
+}
+
+fn collect_secret_matches(input: &str) -> Vec<MatchRange> {
+    let mut out = Vec::new();
+    for re in secret_detection_patterns() {
+        for m in re.find_iter(input) {
+            out.push(MatchRange {
+                start: m.start(),
+                end: m.end(),
+            });
+        }
     }
     out
+}
+
+fn secret_detection_patterns() -> &'static [Regex] {
+    static PATS: OnceLock<Vec<Regex>> = OnceLock::new();
+    PATS.get_or_init(|| {
+        vec![
+            Regex::new(r"BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY").expect("private key regex"),
+            Regex::new(r"ghp_[A-Za-z0-9]{20,}").expect("ghp regex"),
+            Regex::new(r"github_pat_[A-Za-z0-9_]{20,}").expect("github pat regex"),
+            Regex::new(r"AKIA[0-9A-Z]{16}").expect("aws akia regex"),
+            Regex::new(r"ASIA[0-9A-Z]{16}").expect("aws asia regex"),
+        ]
+    })
+}
+
+fn windows_path_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?:^|[^A-Za-z0-9_])[A-Za-z]:\\").expect("windows path regex"))
+}
+
+fn unix_path_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?m)(?:^|[\s"'(\[{])/(?:home|Users|etc|var)/"#).expect("unix path regex")
+    })
+}
+
+#[allow(dead_code)]
+pub fn require_force_for_sensitive_promotion(
+    entry: &LearningEntryV1,
+    force: bool,
+) -> anyhow::Result<()> {
+    if entry.sensitivity_flags.contains_secrets_suspected && !force {
+        return Err(LearningPromoteError::SensitiveRequiresForce.into());
+    }
+    Ok(())
 }
 
 fn truncate_utf8_bytes(input: String, max_bytes: usize) -> String {
@@ -941,10 +1035,13 @@ mod tests {
     #[test]
     fn learn_show_redacts_and_bounds_output() {
         let mut e = sample_entry();
-        e.summary = format!("token ghp_ABC123456 and {}", "x".repeat(20_000));
+        e.summary = format!(
+            "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 and {}",
+            "x".repeat(20_000)
+        );
         let out = render_learning_show_text(&e, true, true);
-        assert!(out.contains("[REDACTED_SECRET]"));
-        assert!(!out.contains("ghp_ABC123456"));
+        assert!(out.contains(REDACTED_SECRET_TOKEN));
+        assert!(!out.contains("ghp_"));
         assert!(out.len() <= LEARN_SHOW_MAX_BYTES + "\n...[truncated]".len());
     }
 
@@ -975,5 +1072,86 @@ mod tests {
             .map(|r| r.expect("dirent").file_name().to_string_lossy().to_string())
             .collect::<BTreeSet<_>>();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn sensitivity_detects_private_key_and_tokens_case_sensitive() {
+        let flags = detect_contains_secrets_suspected("BEGIN PRIVATE KEY");
+        assert!(flags);
+        assert!(!detect_contains_secrets_suspected("Begin Private Key"));
+        assert!(detect_contains_secrets_suspected(
+            "x ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 y"
+        ));
+        assert!(detect_contains_secrets_suspected(
+            "github_pat_abcdefghijklmnopqrstuvwxyz_1234567890"
+        ));
+    }
+
+    #[test]
+    fn sensitivity_detects_paths_but_not_urls() {
+        assert!(detect_contains_paths(r"C:\Users\Calvin\project"));
+        assert!(detect_contains_paths("/home/calvin/project"));
+        assert!(!detect_contains_paths("https://example.com/var/test"));
+    }
+
+    #[test]
+    fn redaction_replaces_non_overlapping_left_to_right_with_cap() {
+        let input = concat!(
+            "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 ",
+            "github_pat_abcdefghijklmnopqrstuvwxyz_1234567890 ",
+            "BEGIN PRIVATE KEY ",
+            "AKIAABCDEFGHIJKLMNOP ",
+            "ASIAABCDEFGHIJKLMNOP"
+        );
+        let out = redact_secrets_for_display(input);
+        assert_eq!(
+            out.matches(REDACTED_SECRET_TOKEN).count(),
+            MAX_REDACTIONS_IN_DISPLAY
+        );
+        assert!(!out.contains("ghp_"));
+        assert!(!out.contains("github_pat_"));
+        assert!(!out.contains("BEGIN PRIVATE KEY"));
+    }
+
+    #[test]
+    fn promotion_gating_requires_force_for_sensitive_entries() {
+        let mut e = sample_entry();
+        e.sensitivity_flags.contains_secrets_suspected = true;
+        let err = require_force_for_sensitive_promotion(&e, false).expect_err("must fail");
+        let typed = err
+            .downcast_ref::<LearningPromoteError>()
+            .expect("typed learning promote error");
+        assert_eq!(typed.code(), "LEARN_PROMOTE_SENSITIVE_REQUIRES_FORCE");
+        require_force_for_sensitive_promotion(&e, true).expect("force should pass");
+        e.sensitivity_flags.contains_secrets_suspected = false;
+        require_force_for_sensitive_promotion(&e, false).expect("non-sensitive should pass");
+    }
+
+    #[test]
+    fn capture_persists_sensitivity_flags_from_secret_patterns() {
+        let tmp = tempdir().expect("tempdir");
+        let state_dir = tmp.path().join(".localagent");
+        let out = capture_learning_entry(
+            &state_dir,
+            CaptureLearningInput {
+                category: LearningCategoryV1::PromptGuidance,
+                summary: "Contains ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234".to_string(),
+                ..CaptureLearningInput::default()
+            },
+        )
+        .expect("capture");
+        assert!(out.entry.sensitivity_flags.contains_secrets_suspected);
+    }
+
+    #[test]
+    fn build_sensitivity_scan_bundle_is_bounded() {
+        let summary = "x".repeat(MAX_SCAN_BUNDLE_BYTES * 2);
+        let bundle = build_sensitivity_scan_bundle(
+            &summary,
+            &LearningSourceV1::default(),
+            &[],
+            &ProposedMemoryV1::default(),
+        );
+        assert!(bundle.len() <= MAX_SCAN_BUNDLE_BYTES + "\n...[truncated]".len());
     }
 }
