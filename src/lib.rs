@@ -18,6 +18,7 @@ pub mod events;
 pub mod gate;
 pub mod hooks;
 pub mod instructions;
+pub mod learning;
 pub mod mcp;
 pub mod operator_queue;
 pub mod packs;

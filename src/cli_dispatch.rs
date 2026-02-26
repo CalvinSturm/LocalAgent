@@ -332,6 +332,11 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
             return Ok(());
         }
 
+        Some(Commands::Learn(args)) => {
+            crate::cli_dispatch_learn::handle_learn_command(args).await?;
+            return Ok(());
+        }
+
         Some(Commands::Eval(eval_cmd)) => {
             crate::cli_dispatch_eval_replay::handle_eval_command(eval_cmd, &paths).await?;
             return Ok(());

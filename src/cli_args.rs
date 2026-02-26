@@ -53,6 +53,8 @@ pub(crate) enum Commands {
 
     Pack(PackArgs),
 
+    Learn(LearnArgs),
+
     Hooks(HooksArgs),
 
     Policy(PolicyArgs),
@@ -451,6 +453,99 @@ pub(crate) enum PackSubcommand {
 pub(crate) struct PackArgs {
     #[command(subcommand)]
     pub(crate) command: PackSubcommand,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub(crate) enum LearnCategoryArg {
+    WorkflowHint,
+    PromptGuidance,
+    CheckCandidate,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub(crate) enum LearnStatusArg {
+    Captured,
+    Promoted,
+    Archived,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub(crate) enum LearnEvidenceKindArg {
+    RunId,
+    EventId,
+    ArtifactPath,
+    ToolCallId,
+    ReasonCode,
+    ExitReason,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum LearnSubcommand {
+    Capture {
+        #[arg(long)]
+        run: Option<String>,
+
+        #[arg(long, value_enum)]
+        category: LearnCategoryArg,
+
+        #[arg(long)]
+        summary: String,
+
+        #[arg(long = "task-summary")]
+        task_summary: Option<String>,
+
+        #[arg(long)]
+        profile: Option<String>,
+
+        #[arg(long = "guidance-text")]
+        guidance_text: Option<String>,
+
+        #[arg(long = "check-text")]
+        check_text: Option<String>,
+
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+
+        #[arg(long = "evidence")]
+        evidence: Vec<String>,
+
+        #[arg(long = "evidence-note")]
+        evidence_notes: Vec<String>,
+    },
+    List {
+        #[arg(long = "status", value_enum)]
+        statuses: Vec<LearnStatusArg>,
+
+        #[arg(long = "category", value_enum)]
+        categories: Vec<LearnCategoryArg>,
+
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        #[arg(long, default_value_t = false)]
+        show_archived: bool,
+
+        #[arg(long, default_value = "table")]
+        format: String,
+    },
+    Show {
+        id: String,
+
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        show_evidence: bool,
+
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        show_proposed: bool,
+    },
+}
+
+#[derive(Debug, Parser)]
+pub(crate) struct LearnArgs {
+    #[command(subcommand)]
+    pub(crate) command: LearnSubcommand,
 }
 
 #[derive(Debug, Subcommand)]
