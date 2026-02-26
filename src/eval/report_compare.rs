@@ -156,9 +156,8 @@ fn render_markdown(rep: &CompareReport) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::eval::runner::{
-        EvalAggregateMetrics, EvalMetrics, EvalResults, EvalResultsConfig, EvalSummary,
-    };
+    use crate::eval::runner::{EvalAggregateMetrics, EvalResults, EvalResultsConfig, EvalSummary};
+    use crate::eval::types::EvalMetrics;
 
     use super::build_compare_report;
 

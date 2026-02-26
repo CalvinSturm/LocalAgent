@@ -4,6 +4,7 @@ pub mod bundle;
 pub mod cost;
 pub mod fixtures;
 pub mod fixtures_repo;
+pub mod metrics;
 pub mod profile;
 pub mod report;
 pub mod report_compare;
