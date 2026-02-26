@@ -320,15 +320,24 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
 
     finalize_summary(&mut results);
     results.metrics = Some(compute_eval_metrics(&results));
-    write_results(&out_path, &results)?;
-    if let Some(junit) = &config.junit {
-        write_junit(junit, &results)?;
-    }
-    if let Some(md) = &config.summary_md {
-        write_summary_md(md, &results)?;
-    }
+    write_eval_outputs(&config, &out_path, &results)?;
     println!("eval results written: {}", out_path.display());
     Ok(out_path)
+}
+
+fn write_eval_outputs(
+    config: &EvalConfig,
+    out_path: &Path,
+    results: &EvalResults,
+) -> anyhow::Result<()> {
+    write_results(out_path, results)?;
+    if let Some(junit) = &config.junit {
+        write_junit(junit, results)?;
+    }
+    if let Some(md) = &config.summary_md {
+        write_summary_md(md, results)?;
+    }
+    Ok(())
 }
 
 fn write_synthetic_error_artifact(
