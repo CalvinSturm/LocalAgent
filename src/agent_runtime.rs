@@ -1250,12 +1250,14 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         }
     };
 
-    if args.tui {
-        if !outcome.final_output.is_empty() {
+    if !suppress_stdout_stream {
+        if args.tui {
+            if !outcome.final_output.is_empty() {
+                println!("{}", outcome.final_output);
+            }
+        } else if !args.stream {
             println!("{}", outcome.final_output);
         }
-    } else if !args.stream {
-        println!("{}", outcome.final_output);
     }
 
     Ok(RunExecutionResult {

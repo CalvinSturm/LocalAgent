@@ -171,6 +171,199 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
             }
         }
 
+        Some(Commands::Check(args)) => match &args.command {
+            CheckSubcommand::Run {
+                path,
+                json_out,
+                junit_out,
+                max_checks,
+            } => {
+                let provider_kind = match cli.run.provider {
+                    Some(p) => p,
+                    None => {
+                        let report = checks::runner::report_single_error(
+                            "CHECK_RUNNER_CONFIG_INVALID",
+                            "--provider is required for `localagent check run`",
+                        );
+                        let json = serde_json::to_string_pretty(&report)?;
+                        if let Some(out) = json_out {
+                            std::fs::write(out, &json)?;
+                        } else {
+                            println!("{json}");
+                        }
+                        if let Some(junit) = junit_out {
+                            checks::report::write_junit(junit, &report)?;
+                        }
+                        std::process::exit(checks::runner::CheckRunExit::InvalidChecks as i32);
+                    }
+                };
+                let model = match &cli.run.model {
+                    Some(m) => m.clone(),
+                    None => {
+                        let report = checks::runner::report_single_error(
+                            "CHECK_RUNNER_CONFIG_INVALID",
+                            "--model is required for `localagent check run`",
+                        );
+                        let json = serde_json::to_string_pretty(&report)?;
+                        if let Some(out) = json_out {
+                            std::fs::write(out, &json)?;
+                        } else {
+                            println!("{json}");
+                        }
+                        if let Some(junit) = junit_out {
+                            checks::report::write_junit(junit, &report)?;
+                        }
+                        std::process::exit(checks::runner::CheckRunExit::InvalidChecks as i32);
+                    }
+                };
+                let base_url = cli.run.base_url.clone().unwrap_or_else(|| {
+                    provider_runtime::default_base_url(provider_kind).to_string()
+                });
+                let checks = match checks::runner::load_checks_for_run(
+                    &workdir,
+                    &checks::runner::CheckRunArgs {
+                        path: path.clone(),
+                        max_checks: *max_checks,
+                    },
+                ) {
+                    Ok(c) => c,
+                    Err((report, exit)) => {
+                        let json = serde_json::to_string_pretty(&report)?;
+                        if let Some(out) = json_out {
+                            std::fs::write(out, &json)?;
+                        } else {
+                            println!("{json}");
+                        }
+                        if let Some(junit) = junit_out {
+                            checks::report::write_junit(junit, &report)?;
+                        }
+                        std::process::exit(exit as i32);
+                    }
+                };
+
+                let mut results = Vec::new();
+                for check in checks {
+                    if let Some((status, summary)) = check_capability_denial(&check, &cli.run) {
+                        results.push(checks::report::CheckRunResult {
+                            name: check.name,
+                            path: check.path,
+                            description: check.description,
+                            status: status.to_string(),
+                            reason_code: Some("CHECK_CAPABILITY_DENIED".to_string()),
+                            summary,
+                            required: check.required,
+                            file_bytes_hash_hex: check.file_bytes_hash_hex,
+                            frontmatter_hash_hex: check.frontmatter_hash_hex,
+                            check_hash_hex: check.check_hash_hex,
+                        });
+                        continue;
+                    }
+
+                    let mut run_args = cli.run.clone();
+                    run_args.no_session = true;
+                    run_args.reset_session = false;
+                    run_args.approval_mode = crate::gate::ApprovalMode::Fail;
+                    if let Some(b) = &check.frontmatter.budget {
+                        if let Some(ms) = b.max_steps {
+                            run_args.max_steps = ms as usize;
+                        }
+                        if let Some(mt) = b.max_tool_calls {
+                            run_args.max_total_tool_calls = mt as usize;
+                        }
+                        if let Some(t) = b.max_time_ms {
+                            run_args.max_wall_time_ms = t;
+                        }
+                    }
+
+                    let run_res = execute_check_agent_run(
+                        provider_kind,
+                        &base_url,
+                        &model,
+                        &check.body,
+                        &run_args,
+                        &paths,
+                    )
+                    .await;
+
+                    match run_res {
+                        Ok(res) => {
+                            let outcome = res.outcome;
+                            match checks::runner::evaluate_final_output(
+                                &check,
+                                &outcome.final_output,
+                            ) {
+                                Ok(()) => results.push(checks::report::CheckRunResult {
+                                    name: check.name,
+                                    path: check.path,
+                                    description: check.description,
+                                    status: "passed".to_string(),
+                                    reason_code: None,
+                                    summary: format!(
+                                        "exit_reason={} final_output_len={}",
+                                        outcome.exit_reason.as_str(),
+                                        outcome.final_output.len()
+                                    ),
+                                    required: check.required,
+                                    file_bytes_hash_hex: check.file_bytes_hash_hex,
+                                    frontmatter_hash_hex: check.frontmatter_hash_hex,
+                                    check_hash_hex: check.check_hash_hex,
+                                }),
+                                Err(msg) => results.push(checks::report::CheckRunResult {
+                                    name: check.name,
+                                    path: check.path,
+                                    description: check.description,
+                                    status: "failed".to_string(),
+                                    reason_code: Some("CHECK_PASS_CRITERIA_FAILED".to_string()),
+                                    summary: msg,
+                                    required: check.required,
+                                    file_bytes_hash_hex: check.file_bytes_hash_hex,
+                                    frontmatter_hash_hex: check.frontmatter_hash_hex,
+                                    check_hash_hex: check.check_hash_hex,
+                                }),
+                            }
+                        }
+                        Err(e) => {
+                            results.push(checks::report::CheckRunResult {
+                                name: check.name,
+                                path: check.path,
+                                description: check.description,
+                                status: "error".to_string(),
+                                reason_code: Some("CHECK_RUNNER_INTERNAL_ERROR".to_string()),
+                                summary: e.to_string(),
+                                required: check.required,
+                                file_bytes_hash_hex: check.file_bytes_hash_hex,
+                                frontmatter_hash_hex: check.frontmatter_hash_hex,
+                                check_hash_hex: check.check_hash_hex,
+                            });
+                        }
+                    }
+                }
+
+                let report = checks::report::CheckRunReport::from_results(results);
+                let exit = if report.errors > 0 {
+                    checks::runner::CheckRunExit::RunnerError
+                } else if report.failed > 0 {
+                    checks::runner::CheckRunExit::FailedChecks
+                } else {
+                    checks::runner::CheckRunExit::Ok
+                };
+
+                let json = serde_json::to_string_pretty(&report)?;
+                if let Some(out) = json_out {
+                    std::fs::write(out, &json)?;
+                } else {
+                    println!("{json}");
+                }
+                if let Some(junit) = junit_out {
+                    checks::report::write_junit(junit, &report)?;
+                }
+                match exit {
+                    checks::runner::CheckRunExit::Ok => return Ok(()),
+                    _ => std::process::exit(exit as i32),
+                }
+            }
+        },
+
         Some(Commands::Repo(args)) => match &args.command {
             RepoSubcommand::Map {
                 print_content,
@@ -1004,4 +1197,124 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn check_capability_denial(
+    check: &checks::loader::LoadedCheck,
+    run: &RunArgs,
+) -> Option<(&'static str, String)> {
+    for flag in &check.frontmatter.required_flags {
+        match flag.as_str() {
+            "shell" => {
+                if !run.allow_shell {
+                    return Some((
+                        if check.required { "failed" } else { "skipped" },
+                        "shell capability not enabled (requires --allow-shell)".to_string(),
+                    ));
+                }
+                return Some((
+                    if check.required { "failed" } else { "skipped" },
+                    "shell checks require isolated scratch execution (not implemented yet)"
+                        .to_string(),
+                ));
+            }
+            "write" => {
+                if !(run.allow_write && run.enable_write_tools) {
+                    return Some((
+                        if check.required { "failed" } else { "skipped" },
+                        "write capability not enabled (requires --allow-write and --enable-write-tools)"
+                            .to_string(),
+                    ));
+                }
+                return Some((
+                    if check.required { "failed" } else { "skipped" },
+                    "write checks require isolated scratch execution (not implemented yet)"
+                        .to_string(),
+                ));
+            }
+            other => {
+                if let Some(server) = other.strip_prefix("mcp:") {
+                    if !run.mcp.iter().any(|m| m == server) {
+                        return Some((
+                            if check.required { "failed" } else { "skipped" },
+                            format!("required MCP server not enabled: {server}"),
+                        ));
+                    }
+                } else {
+                    return Some((
+                        if check.required { "failed" } else { "skipped" },
+                        format!("unknown required flag: {other}"),
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn execute_check_agent_run(
+    provider_kind: ProviderKind,
+    base_url: &str,
+    model: &str,
+    prompt: &str,
+    run_args: &RunArgs,
+    paths: &store::StatePaths,
+) -> anyhow::Result<RunExecutionResult> {
+    match provider_kind {
+        ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
+            let provider = OpenAiCompatProvider::new(
+                base_url.to_string(),
+                run_args.api_key.clone(),
+                provider_runtime::http_config_from_run_args(run_args),
+            )?;
+            run_agent_with_ui(
+                provider,
+                provider_kind,
+                base_url,
+                model,
+                prompt,
+                run_args,
+                paths,
+                None,
+                None,
+                true,
+            )
+            .await
+        }
+        ProviderKind::Ollama => {
+            let provider = OllamaProvider::new(
+                base_url.to_string(),
+                provider_runtime::http_config_from_run_args(run_args),
+            )?;
+            run_agent_with_ui(
+                provider,
+                provider_kind,
+                base_url,
+                model,
+                prompt,
+                run_args,
+                paths,
+                None,
+                None,
+                true,
+            )
+            .await
+        }
+        ProviderKind::Mock => {
+            let provider = MockProvider::new();
+            run_agent_with_ui(
+                provider,
+                provider_kind,
+                base_url,
+                model,
+                prompt,
+                run_args,
+                paths,
+                None,
+                None,
+                true,
+            )
+            .await
+        }
+    }
 }

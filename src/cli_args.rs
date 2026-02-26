@@ -45,6 +45,8 @@ pub(crate) enum Commands {
 
     Mcp(McpArgs),
 
+    Check(CheckArgs),
+
     Repo(RepoArgs),
 
     Hooks(HooksArgs),
@@ -372,6 +374,29 @@ pub(crate) enum McpSubcommand {
 pub(crate) struct McpArgs {
     #[command(subcommand)]
     pub(crate) command: McpSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum CheckSubcommand {
+    Run {
+        #[arg(long)]
+        path: Option<PathBuf>,
+
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+
+        #[arg(long)]
+        junit_out: Option<PathBuf>,
+
+        #[arg(long)]
+        max_checks: Option<usize>,
+    },
+}
+
+#[derive(Debug, Parser)]
+pub(crate) struct CheckArgs {
+    #[command(subcommand)]
+    pub(crate) command: CheckSubcommand,
 }
 
 #[derive(Debug, Subcommand)]

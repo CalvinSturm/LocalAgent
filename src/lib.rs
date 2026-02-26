@@ -1,6 +1,7 @@
 #![deny(unreachable_pub)]
 
 pub mod agent;
+pub mod checks;
 pub mod compaction;
 pub mod diagnostics;
 pub mod eval;

@@ -15,6 +15,7 @@ mod chat_tui_runtime;
 mod chat_ui;
 
 mod chat_view_utils;
+mod checks;
 
 mod cli_args;
 
