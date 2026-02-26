@@ -103,6 +103,22 @@ pub struct AgentOutcome {
     pub taint: Option<AgentTaintRecord>,
 }
 
+struct AgentOutcomeBuilderInput {
+    run_id: String,
+    started_at: String,
+    exit_reason: AgentExitReason,
+    final_output: String,
+    error: Option<String>,
+    messages: Vec<Message>,
+    tool_calls: Vec<ToolCall>,
+    tool_decisions: Vec<ToolDecisionRecord>,
+    final_prompt_size_chars: usize,
+    compaction_report: Option<CompactionReport>,
+    hook_invocations: Vec<HookInvocationReport>,
+    provider_retry_count: u32,
+    provider_error_count: u32,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentTaintRecord {
     pub enabled: bool,
@@ -470,6 +486,43 @@ impl<P: ModelProvider> Agent<P> {
         self.operator_queue.clear();
     }
 
+    fn finalize_run_outcome(
+        &self,
+        input: AgentOutcomeBuilderInput,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+    ) -> AgentOutcome {
+        AgentOutcome {
+            run_id: input.run_id,
+            started_at: input.started_at,
+            finished_at: crate::trust::now_rfc3339(),
+            exit_reason: input.exit_reason,
+            final_output: input.final_output,
+            error: input.error,
+            messages: input.messages,
+            tool_calls: input.tool_calls,
+            tool_decisions: input.tool_decisions,
+            compaction_settings: self.compaction_settings.clone(),
+            final_prompt_size_chars: input.final_prompt_size_chars,
+            compaction_report: input.compaction_report,
+            hook_invocations: input.hook_invocations,
+            provider_retry_count: input.provider_retry_count,
+            provider_error_count: input.provider_error_count,
+            token_usage: if saw_token_usage {
+                Some(total_token_usage.clone())
+            } else {
+                None
+            },
+            taint: taint_record_from_state(
+                self.taint_toggle,
+                self.taint_mode,
+                self.taint_digest_bytes,
+                taint_state,
+            ),
+        }
+    }
+
     pub async fn run(
         &mut self,
         user_prompt: &str,
@@ -518,34 +571,26 @@ impl<P: ModelProvider> Agent<P> {
                 self.check_wall_time_budget_exceeded(&run_id, step as u32, &run_started)
             {
                 let final_prompt_size_chars = context_size_chars(&messages);
-                return AgentOutcome {
-                    run_id,
-                    started_at,
-                    finished_at: crate::trust::now_rfc3339(),
-                    exit_reason: AgentExitReason::BudgetExceeded,
-                    final_output: reason.clone(),
-                    error: Some(reason),
-                    messages,
-                    tool_calls: observed_tool_calls,
-                    tool_decisions: observed_tool_decisions,
-                    compaction_settings: self.compaction_settings.clone(),
-                    final_prompt_size_chars,
-                    compaction_report: last_compaction_report,
-                    hook_invocations,
-                    provider_retry_count,
-                    provider_error_count,
-                    token_usage: if saw_token_usage {
-                        Some(total_token_usage.clone())
-                    } else {
-                        None
+                return self.finalize_run_outcome(
+                    AgentOutcomeBuilderInput {
+                        run_id,
+                        started_at,
+                        exit_reason: AgentExitReason::BudgetExceeded,
+                        final_output: reason.clone(),
+                        error: Some(reason),
+                        messages,
+                        tool_calls: observed_tool_calls,
+                        tool_decisions: observed_tool_decisions,
+                        final_prompt_size_chars,
+                        compaction_report: last_compaction_report,
+                        hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
                     },
-                    taint: taint_record_from_state(
-                        self.taint_toggle,
-                        self.taint_mode,
-                        self.taint_digest_bytes,
-                        &taint_state,
-                    ),
-                };
+                    saw_token_usage,
+                    &total_token_usage,
+                    &taint_state,
+                );
             }
             self.emit_plan_step_started_if_needed(
                 &run_id,
@@ -562,34 +607,26 @@ impl<P: ModelProvider> Agent<P> {
             ) {
                 Ok(c) => c,
                 Err(err_text) => {
-                    return AgentOutcome {
-                        run_id,
-                        started_at,
-                        finished_at: crate::trust::now_rfc3339(),
-                        exit_reason: AgentExitReason::ProviderError,
-                        final_output: String::new(),
-                        error: Some(err_text),
-                        messages,
-                        tool_calls: observed_tool_calls,
-                        tool_decisions: observed_tool_decisions,
-                        compaction_settings: self.compaction_settings.clone(),
-                        final_prompt_size_chars: 0,
-                        compaction_report: last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        token_usage: if saw_token_usage {
-                            Some(total_token_usage.clone())
-                        } else {
-                            None
+                    return self.finalize_run_outcome(
+                        AgentOutcomeBuilderInput {
+                            run_id,
+                            started_at,
+                            exit_reason: AgentExitReason::ProviderError,
+                            final_output: String::new(),
+                            error: Some(err_text),
+                            messages,
+                            tool_calls: observed_tool_calls,
+                            tool_decisions: observed_tool_decisions,
+                            final_prompt_size_chars: 0,
+                            compaction_report: last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
                         },
-                        taint: taint_record_from_state(
-                            self.taint_toggle,
-                            self.taint_mode,
-                            self.taint_digest_bytes,
-                            &taint_state,
-                        ),
-                    };
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    );
                 }
             };
             if let Some(report) = compacted.report.clone() {
