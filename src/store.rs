@@ -257,6 +257,22 @@ pub struct RunCliConfig {
     pub project_guidance_bytes_loaded: u64,
     #[serde(default)]
     pub project_guidance_bytes_kept: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_map_hash_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_map_format: Option<String>,
+    #[serde(default)]
+    pub repo_map_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_map_truncated_reason: Option<String>,
+    #[serde(default)]
+    pub repo_map_bytes_scanned: u64,
+    #[serde(default)]
+    pub repo_map_bytes_kept: u64,
+    #[serde(default)]
+    pub repo_map_file_count_included: u64,
+    #[serde(default)]
+    pub repo_map_injected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -945,6 +961,14 @@ mod tests {
                 project_guidance_truncated: false,
                 project_guidance_bytes_loaded: 0,
                 project_guidance_bytes_kept: 0,
+                repo_map_hash_hex: None,
+                repo_map_format: None,
+                repo_map_truncated: false,
+                repo_map_truncated_reason: None,
+                repo_map_bytes_scanned: 0,
+                repo_map_bytes_kept: 0,
+                repo_map_file_count_included: 0,
+                repo_map_injected: false,
             },
             PolicyRecordInfo {
                 source: "none".to_string(),
@@ -1118,6 +1142,14 @@ mod tests {
                 project_guidance_truncated: false,
                 project_guidance_bytes_loaded: 0,
                 project_guidance_bytes_kept: 0,
+                repo_map_hash_hex: None,
+                repo_map_format: None,
+                repo_map_truncated: false,
+                repo_map_truncated_reason: None,
+                repo_map_bytes_scanned: 0,
+                repo_map_bytes_kept: 0,
+                repo_map_file_count_included: 0,
+                repo_map_injected: false,
             },
             resolved_paths: RunResolvedPaths {
                 state_dir: ".".to_string(),

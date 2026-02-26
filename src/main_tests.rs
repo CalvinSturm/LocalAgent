@@ -786,6 +786,10 @@ fn default_run_args() -> super::RunArgs {
 
         max_context_chars: 0,
 
+        use_repomap: false,
+
+        repomap_max_bytes: 32 * 1024,
+
         compaction_mode: crate::compaction::CompactionMode::Off,
 
         compaction_keep_last: 20,

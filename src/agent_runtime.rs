@@ -17,6 +17,7 @@ use crate::ops_helpers;
 use crate::planner;
 use crate::project_guidance;
 use crate::providers::ModelProvider;
+use crate::repo_map;
 use crate::repro;
 use crate::repro::ReproEnvMode;
 use crate::run_prep;
@@ -213,6 +214,19 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     )
     .ok()
     .filter(|g| !g.merged_text.is_empty());
+    let repo_map_resolution = if args.use_repomap {
+        repo_map::resolve_repo_map(
+            &args.workdir,
+            repo_map::RepoMapLimits {
+                max_out_bytes: args.repomap_max_bytes,
+                ..repo_map::RepoMapLimits::default()
+            },
+        )
+        .ok()
+        .filter(|m| !m.content.is_empty())
+    } else {
+        None
+    };
 
     let mcp_config_path = runtime_paths::resolved_mcp_config_path(args, &paths.state_dir);
     let mcp_registry = if let Some(reg) = shared_mcp_registry {
@@ -483,6 +497,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                             ),
                             instructions: &instruction_resolution,
                             project_guidance: project_guidance_resolution.as_ref(),
+                            repo_map: repo_map_resolution.as_ref(),
                         });
                     let config_fingerprint = runtime_paths::build_config_fingerprint(
                         &cli_config,
@@ -669,6 +684,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                         ),
                         instructions: &instruction_resolution,
                         project_guidance: project_guidance_resolution.as_ref(),
+                        repo_map: repo_map_resolution.as_ref(),
                     });
                 let config_fingerprint = runtime_paths::build_config_fingerprint(
                     &cli_config,
@@ -784,10 +800,14 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     let project_guidance_message = project_guidance_resolution
         .as_ref()
         .and_then(project_guidance::project_guidance_message);
+    let repo_map_message = repo_map_resolution
+        .as_ref()
+        .and_then(repo_map::repo_map_message);
     let base_task_memory = task_memory.clone();
     let initial_injected_messages = runtime_paths::merge_injected_messages(
         base_instruction_messages.clone(),
         project_guidance_message.clone(),
+        repo_map_message.clone(),
         base_task_memory.clone(),
         planner_injected_message.clone(),
     );
@@ -964,6 +984,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                 let replan_injected = runtime_paths::merge_injected_messages(
                     base_instruction_messages.clone(),
                     project_guidance_message.clone(),
+                    repo_map_message.clone(),
                     base_task_memory.clone(),
                     Some(Message {
                         role: Role::Developer,
@@ -1135,6 +1156,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         enforce_plan_tools: Some(format!("{:?}", effective_plan_tool_enforcement).to_lowercase()),
         instructions: &instruction_resolution,
         project_guidance: project_guidance_resolution.as_ref(),
+        repo_map: repo_map_resolution.as_ref(),
     });
     let config_fingerprint =
         runtime_paths::build_config_fingerprint(&cli_config, args, &worker_model, paths);

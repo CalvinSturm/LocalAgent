@@ -12,6 +12,7 @@ pub mod mcp;
 pub mod planner;
 pub mod project_guidance;
 pub mod providers;
+pub mod repo_map;
 pub mod repro;
 pub mod scaffold;
 pub mod session;

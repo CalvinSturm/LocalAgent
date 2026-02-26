@@ -171,6 +171,42 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
             }
         }
 
+        Some(Commands::Repo(args)) => match &args.command {
+            RepoSubcommand::Map {
+                print_content,
+                no_write,
+                max_files,
+                max_scan_bytes,
+                max_out_bytes,
+            } => {
+                let map = repo_map::resolve_repo_map(
+                    &workdir,
+                    repo_map::RepoMapLimits {
+                        max_files: *max_files,
+                        max_scan_bytes: *max_scan_bytes,
+                        max_out_bytes: *max_out_bytes,
+                        ..repo_map::RepoMapLimits::default()
+                    },
+                )?;
+
+                let cache_path = if *no_write {
+                    None
+                } else {
+                    Some(repo_map::write_repo_map_cache(&paths.state_dir, &map)?)
+                };
+
+                print!(
+                    "{}",
+                    repo_map::render_repo_map_summary_text(&map, cache_path.as_deref())
+                );
+                if *print_content {
+                    println!("repo_map:");
+                    print!("{}", map.content);
+                }
+                return Ok(());
+            }
+        },
+
         Some(Commands::Hooks(args)) => {
             let hooks_path = runtime_paths::resolved_hooks_config_path(&cli.run, &paths.state_dir);
 

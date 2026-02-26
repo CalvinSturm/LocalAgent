@@ -45,6 +45,8 @@ pub(crate) enum Commands {
 
     Mcp(McpArgs),
 
+    Repo(RepoArgs),
+
     Hooks(HooksArgs),
 
     Policy(PolicyArgs),
@@ -373,6 +375,32 @@ pub(crate) struct McpArgs {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum RepoSubcommand {
+    Map {
+        #[arg(long, default_value_t = false)]
+        print_content: bool,
+
+        #[arg(long, default_value_t = false)]
+        no_write: bool,
+
+        #[arg(long, default_value_t = 2000)]
+        max_files: usize,
+
+        #[arg(long, default_value_t = 4 * 1024 * 1024)]
+        max_scan_bytes: usize,
+
+        #[arg(long, default_value_t = 64 * 1024)]
+        max_out_bytes: usize,
+    },
+}
+
+#[derive(Debug, Parser)]
+pub(crate) struct RepoArgs {
+    #[command(subcommand)]
+    pub(crate) command: RepoSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
 
 pub(crate) enum HooksSubcommand {
     List,
@@ -594,6 +622,12 @@ pub(crate) struct EvalArgs {
 
     #[arg(long, default_value_t = 0)]
     pub(crate) max_context_chars: usize,
+
+    #[arg(long, default_value_t = false)]
+    pub(crate) use_repomap: bool,
+
+    #[arg(long, default_value_t = 32 * 1024)]
+    pub(crate) repomap_max_bytes: usize,
 
     #[arg(long, value_enum, default_value_t = CompactionMode::Off)]
     pub(crate) compaction_mode: CompactionMode,
@@ -865,6 +899,12 @@ pub(crate) struct RunArgs {
 
     #[arg(long, default_value_t = 0)]
     pub(crate) max_context_chars: usize,
+
+    #[arg(long, default_value_t = false)]
+    pub(crate) use_repomap: bool,
+
+    #[arg(long, default_value_t = 32 * 1024)]
+    pub(crate) repomap_max_bytes: usize,
 
     #[arg(long, value_enum, default_value_t = CompactionMode::Off)]
     pub(crate) compaction_mode: CompactionMode,

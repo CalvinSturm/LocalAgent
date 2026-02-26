@@ -4,6 +4,7 @@ use crate::gate::ProviderKind;
 use crate::instructions::InstructionResolution;
 use crate::planner;
 use crate::project_guidance::ResolvedProjectGuidance;
+use crate::repo_map::ResolvedRepoMap;
 use crate::session;
 use crate::store::{
     self, provider_to_string, stable_path_string, ConfigFingerprintV1, RunCliConfig,
@@ -16,10 +17,14 @@ use crate::RunArgs;
 pub(crate) fn merge_injected_messages(
     mut instruction_messages: Vec<Message>,
     project_guidance: Option<Message>,
+    repo_map: Option<Message>,
     task_memory: Option<Message>,
     planner_handoff: Option<Message>,
 ) -> Vec<Message> {
     if let Some(m) = project_guidance {
+        instruction_messages.push(m);
+    }
+    if let Some(m) = repo_map {
         instruction_messages.push(m);
     }
     if let Some(m) = task_memory {
@@ -54,6 +59,7 @@ pub(crate) struct RunCliConfigInput<'a> {
     pub enforce_plan_tools: Option<String>,
     pub instructions: &'a InstructionResolution,
     pub project_guidance: Option<&'a ResolvedProjectGuidance>,
+    pub repo_map: Option<&'a ResolvedRepoMap>,
 }
 
 pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig {
@@ -80,6 +86,7 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         enforce_plan_tools,
         instructions,
         project_guidance,
+        repo_map,
     } = input;
     RunCliConfig {
         mode: format!("{:?}", mode).to_lowercase(),
@@ -195,6 +202,14 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         project_guidance_truncated: project_guidance.map(|g| g.truncated).unwrap_or(false),
         project_guidance_bytes_loaded: project_guidance.map(|g| g.bytes_loaded).unwrap_or(0),
         project_guidance_bytes_kept: project_guidance.map(|g| g.bytes_kept).unwrap_or(0),
+        repo_map_hash_hex: repo_map.map(|m| m.repomap_hash_hex.clone()),
+        repo_map_format: repo_map.map(|m| m.format.clone()),
+        repo_map_truncated: repo_map.map(|m| m.truncated).unwrap_or(false),
+        repo_map_truncated_reason: repo_map.and_then(|m| m.truncated_reason.clone()),
+        repo_map_bytes_scanned: repo_map.map(|m| m.bytes_scanned).unwrap_or(0),
+        repo_map_bytes_kept: repo_map.map(|m| m.bytes_kept).unwrap_or(0),
+        repo_map_file_count_included: repo_map.map(|m| m.file_count_included).unwrap_or(0),
+        repo_map_injected: repo_map.is_some(),
     }
 }
 

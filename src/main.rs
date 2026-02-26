@@ -50,6 +50,7 @@ mod providers;
 
 mod qualification;
 
+mod repo_map;
 mod repro;
 
 mod run_prep;

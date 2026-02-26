@@ -116,6 +116,14 @@ fn build_run_cli_config() -> RunCliConfig {
         project_guidance_truncated: false,
         project_guidance_bytes_loaded: 0,
         project_guidance_bytes_kept: 0,
+        repo_map_hash_hex: None,
+        repo_map_format: None,
+        repo_map_truncated: false,
+        repo_map_truncated_reason: None,
+        repo_map_bytes_scanned: 0,
+        repo_map_bytes_kept: 0,
+        repo_map_file_count_included: 0,
+        repo_map_injected: false,
     }
 }
 
