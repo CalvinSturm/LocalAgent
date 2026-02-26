@@ -39,6 +39,14 @@ use crate::trust;
 use crate::trust::policy::Policy;
 use crate::types::{Message, Role};
 use crate::{instruction_runtime, planner_runtime, tui, DockerNetwork, RunArgs};
+
+struct SessionBootstrap {
+    session_store: SessionStore,
+    session_data: session::SessionData,
+    resolved_settings: session::RunSettingResolution,
+    session_messages: Vec<Message>,
+    task_memory: Option<Message>,
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent<P: ModelProvider>(
     provider: P,
@@ -133,42 +141,13 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     );
     gate_ctx.model = worker_model.clone();
 
-    let session_path = paths.sessions_dir.join(format!("{}.json", args.session));
-    let session_store = SessionStore::new(session_path.clone(), args.session.clone());
-    if !args.no_session && args.reset_session {
-        session_store.reset()?;
-    }
-    let mut session_data = if args.no_session {
-        session::SessionData::empty(&args.session)
-    } else {
-        session_store.load()?
-    };
-    let explicit_flags = runtime_flags::parse_explicit_flags();
-    let resolved_settings = session::resolve_run_settings(
-        args.use_session_settings,
-        !args.no_session,
-        &session_data,
-        &explicit_flags,
-        RunSettingInputs {
-            max_context_chars: args.max_context_chars,
-            compaction_mode: args.compaction_mode,
-            compaction_keep_last: args.compaction_keep_last,
-            tool_result_persist: args.tool_result_persist,
-            tool_args_strict: args.tool_args_strict,
-            caps_mode: args.caps,
-            hooks_mode: args.hooks,
-        },
-    );
-    let session_messages = if args.no_session {
-        Vec::new()
-    } else {
-        session_data.messages.clone()
-    };
-    let task_memory = if args.no_session {
-        None
-    } else {
-        task_memory_message(&session_data.task_memory)
-    };
+    let SessionBootstrap {
+        session_store,
+        mut session_data,
+        resolved_settings,
+        session_messages,
+        task_memory,
+    } = build_session_bootstrap(args, paths)?;
     let instruction_resolution =
         instruction_runtime::resolve_instruction_messages(args, &paths.state_dir, &worker_model)?;
     let project_guidance_resolution = project_guidance::resolve_project_guidance(
@@ -1331,6 +1310,55 @@ async fn resolve_mcp_runtime_registry(
         ))
     };
     Ok((mcp_config_path, mcp_registry))
+}
+
+fn build_session_bootstrap(
+    args: &RunArgs,
+    paths: &store::StatePaths,
+) -> anyhow::Result<SessionBootstrap> {
+    let session_path = paths.sessions_dir.join(format!("{}.json", args.session));
+    let session_store = SessionStore::new(session_path, args.session.clone());
+    if !args.no_session && args.reset_session {
+        session_store.reset()?;
+    }
+    let session_data = if args.no_session {
+        session::SessionData::empty(&args.session)
+    } else {
+        session_store.load()?
+    };
+    let explicit_flags = runtime_flags::parse_explicit_flags();
+    let resolved_settings = session::resolve_run_settings(
+        args.use_session_settings,
+        !args.no_session,
+        &session_data,
+        &explicit_flags,
+        RunSettingInputs {
+            max_context_chars: args.max_context_chars,
+            compaction_mode: args.compaction_mode,
+            compaction_keep_last: args.compaction_keep_last,
+            tool_result_persist: args.tool_result_persist,
+            tool_args_strict: args.tool_args_strict,
+            caps_mode: args.caps,
+            hooks_mode: args.hooks,
+        },
+    );
+    let session_messages = if args.no_session {
+        Vec::new()
+    } else {
+        session_data.messages.clone()
+    };
+    let task_memory = if args.no_session {
+        None
+    } else {
+        task_memory_message(&session_data.task_memory)
+    };
+    Ok(SessionBootstrap {
+        session_store,
+        session_data,
+        resolved_settings,
+        session_messages,
+        task_memory,
+    })
 }
 
 #[derive(Debug, Clone)]
