@@ -931,6 +931,59 @@ mod tests {
     }
 
     #[test]
+    fn tool_decision_reflects_deny_and_approval_in_tui_state() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolCallDetected,
+            serde_json::json!({"tool_call_id":"tc_mcp","name":"mcp.stub.echo","side_effects":"network"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolDecision,
+            serde_json::json!({
+                "tool_call_id":"tc_mcp",
+                "name":"mcp.stub.echo",
+                "side_effects":"network",
+                "decision":"require_approval",
+                "reason":"shell requires approval",
+                "source":"policy"
+            }),
+        ));
+        assert_eq!(s.tool_calls.len(), 1);
+        assert_eq!(s.tool_calls[0].decision.as_deref(), Some("require_approval"));
+        assert_eq!(s.tool_calls[0].status, "PEND:approval");
+        assert_eq!(s.next_hint, "pending_approval");
+        assert_eq!(s.mcp_lifecycle, "WAIT:APPROVAL");
+
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            2,
+            EventKind::ToolCallDetected,
+            serde_json::json!({"tool_call_id":"tc2","name":"write_file","side_effects":"filesystem_write"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            2,
+            EventKind::ToolDecision,
+            serde_json::json!({
+                "tool_call_id":"tc2",
+                "name":"write_file",
+                "side_effects":"filesystem_write",
+                "decision":"deny",
+                "reason":"writes denied",
+                "source":"policy"
+            }),
+        ));
+        assert_eq!(s.tool_calls.len(), 2);
+        assert_eq!(s.tool_calls[1].decision.as_deref(), Some("deny"));
+        assert!(s.tool_calls[1].status.starts_with("DENY:"));
+        assert_eq!(s.next_hint, "blocked(policy)");
+    }
+
+    #[test]
     fn schema_repair_flag_turns_on_from_retry_event() {
         let mut s = UiState::new(10);
         s.apply_event(&Event::new(

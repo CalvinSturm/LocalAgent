@@ -512,4 +512,42 @@ mod tests {
             .expect("consume v2")
             .is_some());
     }
+
+    #[test]
+    fn ttl_and_max_use_matrix_is_deterministic() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("approvals.json");
+        let store = ApprovalsStore::new(path);
+
+        let ttl_id = store
+            .create_pending("shell", &json!({"cmd":"echo ttl"}), Some("ttl".to_string()), None)
+            .expect("ttl pending");
+        store
+            .approve(&ttl_id, Some(0), None)
+            .expect("ttl approve expired");
+        assert!(store
+            .consume_matching_approved("ttl", "v1")
+            .expect("ttl consume")
+            .is_none());
+
+        let single_use_id = store
+            .create_pending(
+                "shell",
+                &json!({"cmd":"echo once"}),
+                Some("once".to_string()),
+                None,
+            )
+            .expect("single use pending");
+        store
+            .approve(&single_use_id, None, Some(1))
+            .expect("single use approve");
+        assert!(store
+            .consume_matching_approved("once", "v1")
+            .expect("once first")
+            .is_some());
+        assert!(store
+            .consume_matching_approved("once", "v1")
+            .expect("once second")
+            .is_none());
+    }
 }

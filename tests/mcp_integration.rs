@@ -162,6 +162,35 @@ rules:
 }
 
 #[test]
+fn mcp_policy_allow_deny_approval_matrix_is_deterministic() {
+    let policy = Policy::from_yaml(
+        r#"
+version: 2
+default: deny
+rules:
+  - tool: "mcp.safe.*"
+    decision: allow
+  - tool: "mcp.risky.*"
+    decision: require_approval
+  - tool: "mcp.blocked.*"
+    decision: deny
+"#,
+    )
+    .expect("parse policy");
+
+    let cases = vec![
+        ("mcp.safe.echo", PolicyDecision::Allow),
+        ("mcp.risky.browser_snapshot", PolicyDecision::RequireApproval),
+        ("mcp.blocked.exec", PolicyDecision::Deny),
+    ];
+
+    for (tool, expected) in cases {
+        let got = policy.evaluate(tool, &json!({})).decision;
+        assert_eq!(got, expected, "tool={tool}");
+    }
+}
+
+#[test]
 fn b5_negative_assertion_fails_when_shell_attempted() {
     let outcome = AgentOutcome {
         run_id: "r".to_string(),

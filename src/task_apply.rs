@@ -152,3 +152,69 @@ fn parse_enum<T: ValueEnum + Clone>(value: &str, field: &str) -> anyhow::Result<
     let normalized = value.replace('_', "-");
     T::from_str(&normalized, true).map_err(|_| anyhow!("invalid value '{}' for {}", value, field))
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{apply_node_overrides, apply_task_defaults};
+
+    #[test]
+    fn task_defaults_and_node_overrides_preserve_permission_inheritance() {
+        let mut args = crate::RunArgs::parse_from(["localagent"]);
+        assert!(!args.allow_shell);
+        assert!(!args.allow_write);
+        assert!(!args.enable_write_tools);
+
+        let defaults = crate::taskgraph::TaskDefaults {
+            flags: crate::taskgraph::TaskFlags {
+                allow_shell: Some(true),
+                allow_write: Some(false),
+                enable_write_tools: Some(true),
+                stream: Some(true),
+            },
+            mcp: vec!["playwright".to_string()],
+            ..crate::taskgraph::TaskDefaults::default()
+        };
+        apply_task_defaults(&mut args, &defaults).expect("apply defaults");
+        assert!(args.allow_shell);
+        assert!(!args.allow_write);
+        assert!(args.enable_write_tools);
+        assert!(args.stream);
+        assert_eq!(args.mcp, vec!["playwright".to_string()]);
+
+        let node = crate::taskgraph::TaskNodeSettings {
+            flags: crate::taskgraph::TaskFlags {
+                allow_shell: Some(false),
+                allow_write: Some(true),
+                enable_write_tools: None,
+                stream: None,
+            },
+            mcp: None,
+            ..crate::taskgraph::TaskNodeSettings::default()
+        };
+        apply_node_overrides(&mut args, &node).expect("apply node overrides");
+
+        assert!(!args.allow_shell);
+        assert!(args.allow_write);
+        assert!(args.enable_write_tools);
+        assert!(args.stream);
+        assert_eq!(args.mcp, vec!["playwright".to_string()]);
+    }
+
+    #[test]
+    fn node_explicit_mcp_override_replaces_defaults_deterministically() {
+        let mut args = crate::RunArgs::parse_from(["localagent"]);
+        let defaults = crate::taskgraph::TaskDefaults {
+            mcp: vec!["playwright".to_string(), "filesystem".to_string()],
+            ..crate::taskgraph::TaskDefaults::default()
+        };
+        apply_task_defaults(&mut args, &defaults).expect("defaults");
+        let node = crate::taskgraph::TaskNodeSettings {
+            mcp: Some(vec!["stub".to_string()]),
+            ..crate::taskgraph::TaskNodeSettings::default()
+        };
+        apply_node_overrides(&mut args, &node).expect("node override");
+        assert_eq!(args.mcp, vec!["stub".to_string()]);
+    }
+}
