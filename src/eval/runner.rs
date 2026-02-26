@@ -1231,6 +1231,7 @@ fn write_run_artifact_for_eval(
         docker_workdir: None,
         docker_network: None,
         docker_user: None,
+        docker_config_summary: None,
         max_tool_output_bytes: if config.no_limits { 0 } else { 200_000 },
         max_read_bytes: if config.no_limits { 0 } else { 200_000 },
         max_wall_time_ms: config.max_wall_time_ms,

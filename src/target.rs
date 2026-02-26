@@ -418,22 +418,75 @@ impl DockerTarget {
             .context("failed to execute `docker version`")?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(anyhow!(
-                "docker execution target requested but Docker is unavailable: {}",
+            return Err(anyhow!(format!(
+                "DOCKER_DAEMON_UNREACHABLE: docker execution target requested but Docker is unavailable: {}",
                 stderr.trim()
-            ));
+            )));
         }
         Ok(())
     }
 
-    async fn run_container(
+    pub fn validate_image_present_local(image: &str) -> anyhow::Result<()> {
+        if image.trim().is_empty() {
+            return Err(anyhow!(
+                "DOCKER_SANDBOX_CONFIG_INVALID: docker image is required (pass --docker-image <image>)"
+            ));
+        }
+        let out = std::process::Command::new("docker")
+            .arg("image")
+            .arg("inspect")
+            .arg(image)
+            .output()
+            .context("failed to execute `docker image inspect`")?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(anyhow!(format!(
+                "DOCKER_IMAGE_MISSING_LOCAL: docker image not available locally: {} (run `docker pull {}`)",
+                stderr.trim(),
+                image
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_host_mount_path(host_workdir: &Path) -> anyhow::Result<()> {
+        let path = host_workdir;
+        if path.parent().is_none() {
+            return Err(anyhow!(
+                "DOCKER_SANDBOX_CONFIG_INVALID: refusing to mount filesystem root as docker workdir"
+            ));
+        }
+        #[cfg(windows)]
+        {
+            use std::path::Component;
+            let mut comps = path.components();
+            if matches!(comps.next(), Some(Component::Prefix(_)))
+                && matches!(comps.next(), Some(Component::RootDir))
+                && comps.next().is_none()
+            {
+                return Err(anyhow!(
+                    "DOCKER_SANDBOX_CONFIG_INVALID: refusing to mount drive root as docker workdir"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn docker_mount_arg(&self, host_workdir: &Path) -> anyhow::Result<String> {
+        Self::validate_host_mount_path(host_workdir)?;
+        Ok(format!(
+            "{}:{}",
+            host_workdir.to_string_lossy(),
+            self.meta.workdir
+        ))
+    }
+
+    fn build_run_command(
         &self,
         host_workdir: &Path,
         shell_script: &str,
-        stdin_bytes: Option<&[u8]>,
-        max_tool_output_bytes: usize,
-    ) -> TargetResult {
-        let mount = format!("{}:{}", host_workdir.display(), self.meta.workdir);
+    ) -> anyhow::Result<Command> {
+        let mount = self.docker_mount_arg(host_workdir)?;
         let mut cmd = Command::new("docker");
         cmd.arg("run").arg("--rm");
         if self.meta.network == "none" {
@@ -451,12 +504,67 @@ impl DockerTarget {
             .arg(&self.meta.image)
             .arg("sh")
             .arg("-lc")
-            .arg(shell_script)
-            .stdin(if stdin_bytes.is_some() {
-                Stdio::piped()
+            .arg(shell_script);
+        Ok(cmd)
+    }
+
+    #[cfg(test)]
+    fn build_run_argv_for_test(
+        &self,
+        host_workdir: &Path,
+        shell_script: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let mount = self.docker_mount_arg(host_workdir)?;
+        let mut argv = vec![
+            "docker".to_string(),
+            "run".to_string(),
+            "--rm".to_string(),
+            "--network".to_string(),
+            if self.meta.network == "none" {
+                "none".to_string()
             } else {
-                Stdio::null()
-            });
+                "bridge".to_string()
+            },
+        ];
+        if let Some(user) = &self.meta.user {
+            argv.push("--user".to_string());
+            argv.push(user.clone());
+        }
+        argv.extend([
+            "-v".to_string(),
+            mount,
+            "-w".to_string(),
+            self.meta.workdir.clone(),
+            self.meta.image.clone(),
+            "sh".to_string(),
+            "-lc".to_string(),
+            shell_script.to_string(),
+        ]);
+        Ok(argv)
+    }
+
+    async fn run_container(
+        &self,
+        host_workdir: &Path,
+        shell_script: &str,
+        stdin_bytes: Option<&[u8]>,
+        max_tool_output_bytes: usize,
+    ) -> TargetResult {
+        let mut cmd = match self.build_run_command(host_workdir, shell_script) {
+            Ok(c) => c,
+            Err(e) => {
+                return TargetResult::failed(
+                    ExecTargetKind::Docker,
+                    e.to_string(),
+                    Some(self.meta.clone()),
+                )
+            }
+        };
+        cmd.stdin(if stdin_bytes.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
         match cmd.spawn() {
             Ok(mut child) => {
                 if let Some(data) = stdin_bytes {
@@ -464,7 +572,9 @@ impl DockerTarget {
                         if let Err(e) = stdin.write_all(data).await {
                             return TargetResult::failed(
                                 ExecTargetKind::Docker,
-                                format!("docker stdin write failed: {e}"),
+                                format!(
+                                    "DOCKER_SANDBOX_EXEC_FAILED: docker stdin write failed: {e}"
+                                ),
                                 Some(self.meta.clone()),
                             );
                         }
@@ -500,14 +610,14 @@ impl DockerTarget {
                     }
                     Err(e) => TargetResult::failed(
                         ExecTargetKind::Docker,
-                        format!("docker command failed: {e}"),
+                        format!("DOCKER_SANDBOX_EXEC_FAILED: docker command failed: {e}"),
                         Some(self.meta.clone()),
                     ),
                 }
             }
             Err(e) => TargetResult::failed(
                 ExecTargetKind::Docker,
-                format!("failed to spawn docker: {e}"),
+                format!("DOCKER_SANDBOX_EXEC_FAILED: failed to spawn docker: {e}"),
                 Some(self.meta.clone()),
             ),
         }
@@ -758,7 +868,7 @@ fn shell_escape(s: &str) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{resolve_path_scoped, ExecTargetKind, HostTarget, ReadReq, ShellReq};
+    use super::{resolve_path_scoped, DockerTarget, ExecTargetKind, HostTarget, ReadReq, ShellReq};
     use crate::target::ExecTarget;
     use clap::ValueEnum;
 
@@ -805,5 +915,55 @@ mod tests {
             .await;
         assert!(!out.ok);
         assert!(out.content.contains("must stay within workdir"));
+    }
+
+    #[test]
+    fn docker_command_assembly_is_deterministic() {
+        let t = DockerTarget::new(
+            "ubuntu:24.04".to_string(),
+            "/work".to_string(),
+            "none".to_string(),
+            Some("1000:1000".to_string()),
+        );
+        let argv = t
+            .build_run_argv_for_test(&PathBuf::from("C:/demo"), "echo hi")
+            .expect("argv");
+        assert_eq!(
+            argv,
+            vec![
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--user",
+                "1000:1000",
+                "-v",
+                "C:/demo:/work",
+                "-w",
+                "/work",
+                "ubuntu:24.04",
+                "sh",
+                "-lc",
+                "echo hi"
+            ]
+        );
+    }
+
+    #[test]
+    fn docker_mount_rejects_root_paths() {
+        let t = DockerTarget::new(
+            "ubuntu:24.04".to_string(),
+            "/work".to_string(),
+            "none".to_string(),
+            None,
+        );
+        let root = if cfg!(windows) {
+            PathBuf::from("C:\\")
+        } else {
+            PathBuf::from("/")
+        };
+        let err = t.docker_mount_arg(&root).expect_err("should reject root");
+        assert!(err.to_string().contains("DOCKER_SANDBOX_CONFIG_INVALID"));
     }
 }

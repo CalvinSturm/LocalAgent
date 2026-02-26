@@ -1103,8 +1103,11 @@ pub(crate) enum DockerNetwork {
 #[derive(Debug, Parser)]
 
 pub(crate) struct DoctorArgs {
-    #[arg(long, value_enum)]
-    pub(crate) provider: ProviderKind,
+    #[arg(long, default_value_t = false)]
+    pub(crate) docker: bool,
+
+    #[arg(long, value_enum, required_unless_present = "docker")]
+    pub(crate) provider: Option<ProviderKind>,
 
     #[arg(long)]
     pub(crate) base_url: Option<String>,

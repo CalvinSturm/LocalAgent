@@ -204,7 +204,13 @@ Note: `localagent` auto-initializes `.localagent/` on first use in a project. `i
 
 ```bash
 localagent doctor --provider <lmstudio|llamacpp|ollama> [--base-url <URL>] [--api-key <KEY>]
+localagent doctor --docker
 ```
+
+Notes:
+- `doctor --docker` checks that the Docker daemon is reachable and that the configured Docker image (from `--docker-image`, default runtime config, or profile-resolved run config) exists locally.
+- Docker shell sandbox runs do not fall back to host shell execution if Docker fails.
+- Windows: Docker Desktop must be running and the workdir drive must be shared/mountable. If Docker mount checks fail, inspect the resolved workdir path and Docker config summary in the error output/artifacts.
 
 ### `mcp`
 

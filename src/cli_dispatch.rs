@@ -134,19 +134,40 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
             return Ok(());
         }
 
-        Some(Commands::Doctor(args)) => match provider_runtime::doctor_check(args).await {
-            Ok(ok_msg) => {
-                println!("{ok_msg}");
-
-                return Ok(());
+        Some(Commands::Doctor(args)) => {
+            if args.docker {
+                match crate::target::DockerTarget::validate_available().and_then(|_| {
+                    crate::target::DockerTarget::validate_image_present_local(&cli.run.docker_image)
+                }) {
+                    Ok(()) => {
+                        println!(
+                            "OK: docker daemon reachable; image={} present locally; network={} ; workdir_mount={}",
+                            cli.run.docker_image,
+                            format!("{:?}", cli.run.docker_network).to_lowercase(),
+                            workdir.display()
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        println!("FAIL: {e}");
+                        std::process::exit(1);
+                    }
+                }
             }
+            match provider_runtime::doctor_check(args).await {
+                Ok(ok_msg) => {
+                    println!("{ok_msg}");
 
-            Err(fail_reason) => {
-                println!("FAIL: {fail_reason}");
+                    return Ok(());
+                }
 
-                std::process::exit(1);
+                Err(fail_reason) => {
+                    println!("FAIL: {fail_reason}");
+
+                    std::process::exit(1);
+                }
             }
-        },
+        }
 
         Some(Commands::Mcp(args)) => {
             let mcp_config_path =
@@ -769,10 +790,9 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
                                     });
 
                                 match provider_runtime::doctor_check(&DoctorArgs {
-                                    provider,
-
+                                    docker: false,
+                                    provider: Some(provider),
                                     base_url: Some(base_url.clone()),
-
                                     api_key: None,
                                 })
                                 .await

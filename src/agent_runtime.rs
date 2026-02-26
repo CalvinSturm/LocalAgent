@@ -89,6 +89,9 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             DockerTarget::validate_available().with_context(|| {
                 "docker execution target requested. Install/start Docker or re-run with --exec-target host"
             })?;
+            DockerTarget::validate_image_present_local(&args.docker_image).with_context(|| {
+                "docker execution target requested. Ensure the configured image is present locally or re-run with --exec-target host"
+            })?;
             std::sync::Arc::new(DockerTarget::new(
                 args.docker_image.clone(),
                 args.docker_workdir.clone(),

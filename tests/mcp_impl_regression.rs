@@ -318,6 +318,7 @@ fn minimal_cli_config_for_mcp_test() -> RunCliConfig {
         docker_workdir: None,
         docker_network: None,
         docker_user: None,
+        docker_config_summary: None,
         max_tool_output_bytes: 200_000,
         max_read_bytes: 200_000,
         max_wall_time_ms: 0,

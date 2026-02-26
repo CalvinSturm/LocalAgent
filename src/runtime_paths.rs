@@ -95,6 +95,17 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         repo_map,
         activated_packs,
     } = input;
+    let docker_config_summary = if matches!(args.exec_target, ExecTargetKind::Docker) {
+        Some(format!(
+            "docker image={} network={} workdir={} user={} per_call=true",
+            args.docker_image,
+            format!("{:?}", args.docker_network).to_lowercase(),
+            args.docker_workdir,
+            args.docker_user.as_deref().unwrap_or("(default)")
+        ))
+    } else {
+        None
+    };
     RunCliConfig {
         mode: format!("{:?}", mode).to_lowercase(),
         provider: provider_to_string(provider_kind),
@@ -132,6 +143,7 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         } else {
             None
         },
+        docker_config_summary,
         max_tool_output_bytes: args.max_tool_output_bytes,
         max_read_bytes: args.max_read_bytes,
         max_wall_time_ms: if args.no_limits {

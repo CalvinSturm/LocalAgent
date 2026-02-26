@@ -7,19 +7,22 @@ use crate::providers::http::HttpConfig;
 use crate::{DoctorArgs, EvalArgs, RunArgs};
 
 pub(crate) async fn doctor_check(args: &DoctorArgs) -> Result<String, String> {
+    let provider = args
+        .provider
+        .ok_or_else(|| "--provider is required unless --docker is used".to_string())?;
     let base_url = args
         .base_url
         .clone()
-        .unwrap_or_else(|| default_base_url(args.provider).to_string());
+        .unwrap_or_else(|| default_base_url(provider).to_string());
     let client = Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
-    match args.provider {
+    match provider {
         ProviderKind::Mock => Ok(format!("OK: mock provider ready at {}", base_url)),
         ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
-            let urls = doctor_probe_urls(args.provider, &base_url);
+            let urls = doctor_probe_urls(provider, &base_url);
             let models_url = &urls[0];
             let health_url = &urls[1];
 
@@ -28,7 +31,7 @@ pub(crate) async fn doctor_check(args: &DoctorArgs) -> Result<String, String> {
                     if models_resp.status().is_success() {
                         return Ok(format!(
                             "OK: {} reachable at {}",
-                            provider_cli_name(args.provider),
+                            provider_cli_name(provider),
                             base_url
                         ));
                     }
@@ -43,7 +46,7 @@ pub(crate) async fn doctor_check(args: &DoctorArgs) -> Result<String, String> {
                         if health_resp.status().is_success() {
                             return Ok(format!(
                                 "OK: {} reachable at {} (reachable but endpoint differs)",
-                                provider_cli_name(args.provider),
+                                provider_cli_name(provider),
                                 base_url
                             ));
                         }
@@ -51,7 +54,7 @@ pub(crate) async fn doctor_check(args: &DoctorArgs) -> Result<String, String> {
 
                     Err(format!(
                         "{} responded with HTTP {} at {}",
-                        provider_cli_name(args.provider),
+                        provider_cli_name(provider),
                         models_resp.status(),
                         models_url
                     ))
@@ -69,13 +72,13 @@ pub(crate) async fn doctor_check(args: &DoctorArgs) -> Result<String, String> {
                     if health_resp.status().is_success() {
                         Ok(format!(
                             "OK: {} reachable at {} (reachable but endpoint differs)",
-                            provider_cli_name(args.provider),
+                            provider_cli_name(provider),
                             base_url
                         ))
                     } else {
                         Err(format!(
                             "{} responded with HTTP {} at fallback {}",
-                            provider_cli_name(args.provider),
+                            provider_cli_name(provider),
                             health_resp.status(),
                             health_url
                         ))
@@ -84,7 +87,7 @@ pub(crate) async fn doctor_check(args: &DoctorArgs) -> Result<String, String> {
             }
         }
         ProviderKind::Ollama => {
-            let tags_url = doctor_probe_urls(args.provider, &base_url)
+            let tags_url = doctor_probe_urls(provider, &base_url)
                 .into_iter()
                 .next()
                 .ok_or_else(|| "internal error building Ollama doctor URL".to_string())?;

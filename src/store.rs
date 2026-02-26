@@ -174,6 +174,8 @@ pub struct RunCliConfig {
     pub docker_network: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_config_summary: Option<String>,
     pub max_tool_output_bytes: usize,
     pub max_read_bytes: usize,
     #[serde(default)]
@@ -547,6 +549,9 @@ pub fn render_replay(record: &RunRecord) -> String {
         record.cli.unsafe_bypass_allow_flags
     ));
     out.push_str(&format!("exec_target: {}\n", record.cli.exec_target));
+    if let Some(summary) = &record.cli.docker_config_summary {
+        out.push_str(&format!("docker_config: {}\n", summary));
+    }
     out.push_str(&format!("tui_enabled: {}\n", record.cli.tui_enabled));
     out.push_str(&format!(
         "taint: {} mode={} digest_bytes={}\n",
@@ -914,6 +919,7 @@ mod tests {
                 docker_workdir: None,
                 docker_network: None,
                 docker_user: None,
+                docker_config_summary: None,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
                 max_wall_time_ms: 0,
@@ -1099,6 +1105,7 @@ mod tests {
                 docker_workdir: None,
                 docker_network: None,
                 docker_user: None,
+                docker_config_summary: None,
                 max_tool_output_bytes: 200_000,
                 max_read_bytes: 200_000,
                 max_wall_time_ms: 0,
