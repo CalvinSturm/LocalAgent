@@ -1,6 +1,7 @@
 use uuid::Uuid;
 
 use crate::agent_impl_guard::{implementation_integrity_violation, prompt_requires_tool_only};
+use crate::agent_taint_helpers::{compute_taint_spans_for_tool, taint_record_from_state};
 use crate::agent_tool_exec::{
     classify_tool_failure, contains_tool_wrapper_markers, extract_content_tool_calls,
     infer_truncated_flag, is_apply_patch_invalid_format_error, make_invalid_args_tool_message,
@@ -21,7 +22,7 @@ use crate::operator_queue::{
 };
 use crate::providers::http::{message_short, ProviderError};
 use crate::providers::{ModelProvider, StreamDelta};
-use crate::taint::{digest_prefix_hex, TaintMode, TaintSpan, TaintState, TaintToggle};
+use crate::taint::{TaintMode, TaintSpan, TaintState, TaintToggle};
 use crate::tools::{
     envelope_to_message, to_tool_result_envelope, tool_side_effects, validate_builtin_tool_args,
     ToolResultMeta, ToolRuntime,
@@ -4013,77 +4014,6 @@ fn parse_worker_step_status(
     })
 }
 
-fn taint_record_from_state(
-    toggle: TaintToggle,
-    mode: TaintMode,
-    digest_bytes: usize,
-    state: &TaintState,
-) -> Option<AgentTaintRecord> {
-    if !matches!(toggle, TaintToggle::On) {
-        return None;
-    }
-    Some(AgentTaintRecord {
-        enabled: true,
-        mode: match mode {
-            TaintMode::Propagate => "propagate".to_string(),
-            TaintMode::PropagateAndEnforce => "propagate_and_enforce".to_string(),
-        },
-        digest_bytes,
-        overall: state.overall_str().to_string(),
-        spans_by_tool_call_id: state.spans_by_tool_call_id.clone(),
-    })
-}
-
-fn compute_taint_spans_for_tool(
-    tc: &ToolCall,
-    tool_message_content: &str,
-    policy: Option<&Policy>,
-    digest_bytes: usize,
-) -> Vec<TaintSpan> {
-    let mut spans = Vec::new();
-    let side_effects = tool_side_effects(&tc.name);
-    let content_for_digest = extract_tool_envelope_content(tool_message_content);
-    let digest = digest_prefix_hex(&content_for_digest, digest_bytes);
-
-    match side_effects {
-        crate::types::SideEffects::Browser => spans.push(TaintSpan {
-            source: "browser".to_string(),
-            detail: tc.name.clone(),
-            digest,
-        }),
-        crate::types::SideEffects::Network => spans.push(TaintSpan {
-            source: "network".to_string(),
-            detail: tc.name.clone(),
-            digest,
-        }),
-        _ => {
-            if tc.name == "read_file" {
-                if let Some(path) = tc.arguments.get("path").and_then(|v| v.as_str()) {
-                    if let Some(p) = policy.and_then(|p| p.taint_file_match(path)) {
-                        spans.push(TaintSpan {
-                            source: "file".to_string(),
-                            detail: format!("matched taint glob: {p}"),
-                            digest,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    spans
-}
-
-fn extract_tool_envelope_content(raw: &str) -> String {
-    match serde_json::from_str::<serde_json::Value>(raw) {
-        Ok(v) => v
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or(raw)
-            .to_string(),
-        Err(_) => raw.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6311,8 +6241,8 @@ mod tests {
             "content":"OPENAGENT_FIXTURE_OK"
         })
         .to_string();
-        let a = super::compute_taint_spans_for_tool(&tc, &content, None, 8);
-        let b = super::compute_taint_spans_for_tool(&tc, &content, None, 8);
+        let a = crate::agent_taint_helpers::compute_taint_spans_for_tool(&tc, &content, None, 8);
+        let b = crate::agent_taint_helpers::compute_taint_spans_for_tool(&tc, &content, None, 8);
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].source, "browser");
         assert_eq!(a[0].digest, b[0].digest);
@@ -6334,7 +6264,12 @@ taint:
             name: "read_file".to_string(),
             arguments: serde_json::json!({"path":"repo/.env"}),
         };
-        let spans = super::compute_taint_spans_for_tool(&tc, "secret", Some(&policy), 16);
+        let spans = crate::agent_taint_helpers::compute_taint_spans_for_tool(
+            &tc,
+            "secret",
+            Some(&policy),
+            16,
+        );
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].source, "file");
         assert!(spans[0].detail.contains("matched taint glob"));
