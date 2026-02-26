@@ -118,6 +118,34 @@ struct RunArtifactWriteInput {
     mcp_runtime_trace: Vec<crate::agent::McpRuntimeTraceEntry>,
     mcp_pin_snapshot: Option<store::McpPinSnapshotRecord>,
 }
+
+struct RunCliFingerprintBuildInput<'a> {
+    provider_kind: ProviderKind,
+    base_url: &'a str,
+    worker_model: &'a str,
+    args: &'a RunArgs,
+    paths: &'a store::StatePaths,
+    resolved_settings: &'a session::RunSettingResolution,
+    hooks_config_path: &'a std::path::Path,
+    mcp_config_path: &'a std::path::Path,
+    tool_catalog: &'a [store::ToolCatalogEntry],
+    mcp_tool_snapshot: &'a [store::McpToolSnapshotEntry],
+    mcp_tool_catalog_hash_hex: &'a Option<String>,
+    policy_version: Option<u32>,
+    includes_resolved: &'a [String],
+    mcp_allowlist: &'a Option<trust::policy::McpAllowSummary>,
+    mode: planner::RunMode,
+    planner_model: Option<&'a str>,
+    worker_model_override: Option<&'a str>,
+    planner_max_steps: Option<u32>,
+    planner_output: Option<String>,
+    planner_strict: Option<bool>,
+    enforce_plan_tools: Option<String>,
+    instruction_resolution: &'a crate::instructions::InstructionResolution,
+    project_guidance_resolution: Option<&'a project_guidance::ResolvedProjectGuidance>,
+    repo_map_resolution: Option<&'a repo_map::ResolvedRepoMap>,
+    activated_packs: &'a [packs::ActivatedPack],
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent<P: ModelProvider>(
     provider: P,
@@ -423,24 +451,25 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                         step_result_json: None,
                         step_result_error: None,
                     });
-                    let cli_config =
-                        runtime_paths::build_run_cli_config(runtime_paths::RunCliConfigInput {
+                    let (cli_config, config_fingerprint, cfg_hash) =
+                        build_run_cli_config_fingerprint_bundle(RunCliFingerprintBuildInput {
                             provider_kind,
                             base_url,
-                            model: &worker_model,
+                            worker_model: &worker_model,
                             args,
+                            paths,
                             resolved_settings: &resolved_settings,
                             hooks_config_path: &hooks_config_path,
                             mcp_config_path: &mcp_config_path,
-                            tool_catalog: tool_catalog.clone(),
-                            mcp_tool_snapshot: mcp_tool_snapshot.clone(),
-                            mcp_tool_catalog_hash_hex: mcp_tool_catalog_hash_hex.clone(),
+                            tool_catalog: &tool_catalog,
+                            mcp_tool_snapshot: &mcp_tool_snapshot,
+                            mcp_tool_catalog_hash_hex: &mcp_tool_catalog_hash_hex,
                             policy_version,
-                            includes_resolved: includes_resolved.clone(),
-                            mcp_allowlist: mcp_allowlist.clone(),
+                            includes_resolved: &includes_resolved,
+                            mcp_allowlist: &mcp_allowlist,
                             mode: args.mode,
-                            planner_model: Some(planner_model.clone()),
-                            worker_model: Some(worker_model.clone()),
+                            planner_model: Some(&planner_model),
+                            worker_model_override: Some(&worker_model),
                             planner_max_steps: Some(args.planner_max_steps),
                             planner_output: Some(
                                 format!("{:?}", args.planner_output).to_lowercase(),
@@ -449,18 +478,11 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                             enforce_plan_tools: Some(
                                 format!("{:?}", effective_plan_tool_enforcement).to_lowercase(),
                             ),
-                            instructions: &instruction_resolution,
-                            project_guidance: project_guidance_resolution.as_ref(),
-                            repo_map: repo_map_resolution.as_ref(),
+                            instruction_resolution: &instruction_resolution,
+                            project_guidance_resolution: project_guidance_resolution.as_ref(),
+                            repo_map_resolution: repo_map_resolution.as_ref(),
                             activated_packs: &activated_packs,
-                        });
-                    let config_fingerprint = runtime_paths::build_config_fingerprint(
-                        &cli_config,
-                        args,
-                        &worker_model,
-                        paths,
-                    );
-                    let cfg_hash = config_hash_hex(&config_fingerprint)?;
+                        })?;
                     let run_artifact_path =
                         write_run_artifact_with_warning(RunArtifactWriteInput {
                             paths: paths.clone(),
@@ -590,42 +612,36 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                     token_usage: None,
                     taint: None,
                 };
-                let cli_config =
-                    runtime_paths::build_run_cli_config(runtime_paths::RunCliConfigInput {
+                let (cli_config, config_fingerprint, cfg_hash) =
+                    build_run_cli_config_fingerprint_bundle(RunCliFingerprintBuildInput {
                         provider_kind,
                         base_url,
-                        model: &worker_model,
+                        worker_model: &worker_model,
                         args,
+                        paths,
                         resolved_settings: &resolved_settings,
                         hooks_config_path: &hooks_config_path,
                         mcp_config_path: &mcp_config_path,
-                        tool_catalog: tool_catalog.clone(),
-                        mcp_tool_snapshot: mcp_tool_snapshot.clone(),
-                        mcp_tool_catalog_hash_hex: mcp_tool_catalog_hash_hex.clone(),
+                        tool_catalog: &tool_catalog,
+                        mcp_tool_snapshot: &mcp_tool_snapshot,
+                        mcp_tool_catalog_hash_hex: &mcp_tool_catalog_hash_hex,
                         policy_version,
-                        includes_resolved: includes_resolved.clone(),
-                        mcp_allowlist: mcp_allowlist.clone(),
+                        includes_resolved: &includes_resolved,
+                        mcp_allowlist: &mcp_allowlist,
                         mode: args.mode,
-                        planner_model: Some(planner_model.clone()),
-                        worker_model: Some(worker_model.clone()),
+                        planner_model: Some(&planner_model),
+                        worker_model_override: Some(&worker_model),
                         planner_max_steps: Some(args.planner_max_steps),
                         planner_output: Some(format!("{:?}", args.planner_output).to_lowercase()),
                         planner_strict: Some(planner_strict_effective),
                         enforce_plan_tools: Some(
                             format!("{:?}", effective_plan_tool_enforcement).to_lowercase(),
                         ),
-                        instructions: &instruction_resolution,
-                        project_guidance: project_guidance_resolution.as_ref(),
-                        repo_map: repo_map_resolution.as_ref(),
+                        instruction_resolution: &instruction_resolution,
+                        project_guidance_resolution: project_guidance_resolution.as_ref(),
+                        repo_map_resolution: repo_map_resolution.as_ref(),
                         activated_packs: &activated_packs,
-                    });
-                let config_fingerprint = runtime_paths::build_config_fingerprint(
-                    &cli_config,
-                    args,
-                    &worker_model,
-                    paths,
-                );
-                let cfg_hash = config_hash_hex(&config_fingerprint)?;
+                    })?;
                 let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
                     paths: paths.clone(),
                     cli_config,
@@ -954,35 +970,36 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             step_result_error: None,
         });
     }
-    let cli_config = runtime_paths::build_run_cli_config(runtime_paths::RunCliConfigInput {
-        provider_kind,
-        base_url,
-        model: &worker_model,
-        args,
-        resolved_settings: &resolved_settings,
-        hooks_config_path: &hooks_config_path,
-        mcp_config_path: &mcp_config_path,
-        tool_catalog: tool_catalog.clone(),
-        mcp_tool_snapshot: mcp_tool_snapshot.clone(),
-        mcp_tool_catalog_hash_hex: mcp_tool_catalog_hash_hex.clone(),
-        policy_version,
-        includes_resolved: includes_resolved.clone(),
-        mcp_allowlist: mcp_allowlist.clone(),
-        mode: args.mode,
-        planner_model: Some(planner_model.clone()),
-        worker_model: Some(worker_model.clone()),
-        planner_max_steps: Some(args.planner_max_steps),
-        planner_output: Some(format!("{:?}", args.planner_output).to_lowercase()),
-        planner_strict: Some(planner_strict_effective),
-        enforce_plan_tools: Some(format!("{:?}", effective_plan_tool_enforcement).to_lowercase()),
-        instructions: &instruction_resolution,
-        project_guidance: project_guidance_resolution.as_ref(),
-        repo_map: repo_map_resolution.as_ref(),
-        activated_packs: &activated_packs,
-    });
-    let config_fingerprint =
-        runtime_paths::build_config_fingerprint(&cli_config, args, &worker_model, paths);
-    let config_hash_hex = config_hash_hex(&config_fingerprint)?;
+    let (cli_config, config_fingerprint, config_hash_hex) =
+        build_run_cli_config_fingerprint_bundle(RunCliFingerprintBuildInput {
+            provider_kind,
+            base_url,
+            worker_model: &worker_model,
+            args,
+            paths,
+            resolved_settings: &resolved_settings,
+            hooks_config_path: &hooks_config_path,
+            mcp_config_path: &mcp_config_path,
+            tool_catalog: &tool_catalog,
+            mcp_tool_snapshot: &mcp_tool_snapshot,
+            mcp_tool_catalog_hash_hex: &mcp_tool_catalog_hash_hex,
+            policy_version,
+            includes_resolved: &includes_resolved,
+            mcp_allowlist: &mcp_allowlist,
+            mode: args.mode,
+            planner_model: Some(&planner_model),
+            worker_model_override: Some(&worker_model),
+            planner_max_steps: Some(args.planner_max_steps),
+            planner_output: Some(format!("{:?}", args.planner_output).to_lowercase()),
+            planner_strict: Some(planner_strict_effective),
+            enforce_plan_tools: Some(
+                format!("{:?}", effective_plan_tool_enforcement).to_lowercase(),
+            ),
+            instruction_resolution: &instruction_resolution,
+            project_guidance_resolution: project_guidance_resolution.as_ref(),
+            repo_map_resolution: repo_map_resolution.as_ref(),
+            activated_packs: &activated_packs,
+        })?;
     let repro_record = repro::build_repro_record(
         args.repro,
         args.repro_env,
@@ -1289,6 +1306,45 @@ fn finalize_early_run_result(
         outcome,
         run_artifact_path,
     })
+}
+
+fn build_run_cli_config_fingerprint_bundle(
+    input: RunCliFingerprintBuildInput<'_>,
+) -> anyhow::Result<(store::RunCliConfig, store::ConfigFingerprintV1, String)> {
+    let cli_config = runtime_paths::build_run_cli_config(runtime_paths::RunCliConfigInput {
+        provider_kind: input.provider_kind,
+        base_url: input.base_url,
+        model: input.worker_model,
+        args: input.args,
+        resolved_settings: input.resolved_settings,
+        hooks_config_path: input.hooks_config_path,
+        mcp_config_path: input.mcp_config_path,
+        tool_catalog: input.tool_catalog.to_vec(),
+        mcp_tool_snapshot: input.mcp_tool_snapshot.to_vec(),
+        mcp_tool_catalog_hash_hex: input.mcp_tool_catalog_hash_hex.clone(),
+        policy_version: input.policy_version,
+        includes_resolved: input.includes_resolved.to_vec(),
+        mcp_allowlist: input.mcp_allowlist.clone(),
+        mode: input.mode,
+        planner_model: input.planner_model.map(ToOwned::to_owned),
+        worker_model: input.worker_model_override.map(ToOwned::to_owned),
+        planner_max_steps: input.planner_max_steps,
+        planner_output: input.planner_output,
+        planner_strict: input.planner_strict,
+        enforce_plan_tools: input.enforce_plan_tools,
+        instructions: input.instruction_resolution,
+        project_guidance: input.project_guidance_resolution,
+        repo_map: input.repo_map_resolution,
+        activated_packs: input.activated_packs,
+    });
+    let config_fingerprint = runtime_paths::build_config_fingerprint(
+        &cli_config,
+        input.args,
+        input.worker_model,
+        input.paths,
+    );
+    let cfg_hash = config_hash_hex(&config_fingerprint)?;
+    Ok((cli_config, config_fingerprint, cfg_hash))
 }
 
 fn build_exec_target(args: &RunArgs) -> anyhow::Result<std::sync::Arc<dyn ExecTarget>> {
