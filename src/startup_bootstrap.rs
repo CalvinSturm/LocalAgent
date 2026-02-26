@@ -62,6 +62,7 @@ pub(crate) async fn run_startup_bootstrap(
     base_run: &RunArgs,
     paths: &store::StatePaths,
 ) -> anyhow::Result<()> {
+    let downloads_cwd_warning = startup_downloads_cwd_warning(base_run);
     let mut detection = startup_detect::detect_startup_provider(
         provider_runtime::http_config_from_run_args(base_run),
     )
@@ -97,6 +98,7 @@ pub(crate) async fn run_startup_bootstrap(
                     provider_details_open,
                     tick,
                     error_line.as_deref(),
+                    downloads_cwd_warning.as_deref(),
                 );
             })?;
 
@@ -292,6 +294,23 @@ pub(crate) async fn run_startup_bootstrap(
     Ok(())
 }
 
+fn startup_downloads_cwd_warning(base_run: &RunArgs) -> Option<String> {
+    let cwd = std::fs::canonicalize(&base_run.workdir)
+        .ok()
+        .unwrap_or_else(|| base_run.workdir.clone());
+    let is_downloads = cwd
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("downloads"))
+        .unwrap_or(false);
+    if !is_downloads {
+        return None;
+    }
+    Some(
+        "Running from Downloads: LocalAgent will create .localagent/ here. Move localagent.exe to a tools folder (or add it to PATH), then run localagent from your project directory.".to_string(),
+    )
+}
+
 async fn refresh_startup_web_status(
     base_run: &RunArgs,
     paths: &store::StatePaths,
@@ -381,6 +400,7 @@ fn draw_startup_bootstrap_frame(
     provider_details_open: bool,
     tick: u64,
     error_line: Option<&str>,
+    downloads_cwd_warning: Option<&str>,
 ) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -620,6 +640,13 @@ fn draw_startup_bootstrap_frame(
             "I'll connect automatically.",
             Style::default().fg(Color::Green),
         )]));
+        if let Some(warn) = downloads_cwd_warning {
+            conn_lines.push(Line::from(""));
+            conn_lines.push(Line::from(vec![Span::styled(
+                warn,
+                Style::default().fg(Color::Yellow),
+            )]));
+        }
         conn_lines.push(Line::from(""));
         conn_lines.push(Line::from(vec![
             Span::styled("R:", Style::default().fg(Color::White)),
@@ -684,6 +711,13 @@ fn draw_startup_bootstrap_frame(
                 )])),
                 StartupWebStatus::NotRequired => {}
             }
+        }
+        if let Some(warn) = downloads_cwd_warning {
+            conn_lines.push(Line::from(""));
+            conn_lines.push(Line::from(vec![Span::styled(
+                warn,
+                Style::default().fg(Color::Yellow),
+            )]));
         }
         conn_lines.push(Line::from(""));
         conn_lines.push(Line::from(vec![
