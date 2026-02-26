@@ -25,3 +25,9 @@ Release date: 2026-02-22
 - Refreshed layout with compact `Mode` + `Provider` panes and footer controls
 - Added provider details toggle (`D`)
 - Centered footer control rows
+
+## Schema Notes
+
+- Compatibility impact: additive-only runtime schema evolution in the `v0.2.1` line.
+- Run artifact records and event streams gained new optional fields/events used for reliability and operator-control features (for example MCP metadata/drift reporting, project guidance/repomap/profile/pack metadata, queue events, and Docker config summaries).
+- No intentional breaking schema ID replacement was introduced; consumers should continue to parse successfully if they ignore unknown fields.

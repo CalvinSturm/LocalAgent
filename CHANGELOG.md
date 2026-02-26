@@ -31,6 +31,12 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
   - refreshed layout with compact `Mode` + `Provider` panes and footer controls
   - centered footer control rows
 
+### Schema Notes
+
+- Compatibility: additive-only schema changes across run artifacts and event streams in later `v0.2.1` patch work.
+- New fields/events were added for operator-visible metadata (for example MCP/tooling diagnostics, guidance/repomap/profile/pack metadata, queue events, and Docker config summaries) without removing prior keys.
+- Existing consumers should tolerate these additions if they ignore unknown fields; no intentional breaking schema ID replacements were introduced in this line.
+
 ## v0.2.0 - 2026-02-25
 
 ### Added
