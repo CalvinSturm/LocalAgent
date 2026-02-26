@@ -81,6 +81,16 @@ struct HookToolSetup {
     hook_manager: HookManager,
     tool_catalog: Vec<store::ToolCatalogEntry>,
 }
+
+struct PlannerPhaseLaunch<'a> {
+    run_id: &'a str,
+    planner_model: &'a str,
+    prompt: &'a str,
+    planner_max_steps: u32,
+    planner_output: planner::PlannerOutput,
+    planner_strict: bool,
+    effective_plan_tool_enforcement: PlanToolEnforcementMode,
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent<P: ModelProvider>(
     provider: P,
@@ -310,27 +320,17 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     }
 
     if matches!(args.mode, planner::RunMode::PlannerWorker) {
-        runtime_events::emit_event(
-            &mut event_sink,
-            &run_id,
-            0,
-            EventKind::PlannerStart,
-            serde_json::json!({
-                "planner_model": planner_model,
-                "planner_max_steps": args.planner_max_steps,
-                "planner_output": format!("{:?}", args.planner_output).to_lowercase(),
-                "planner_strict": planner_strict_effective,
-                "enforce_plan_tools_effective": format!("{:?}", effective_plan_tool_enforcement).to_lowercase()
-            }),
-        );
-        let planner_out = planner_runtime::run_planner_phase(
+        let planner_out = run_planner_phase_with_start_event(
             &provider,
-            &run_id,
-            &planner_model,
-            prompt,
-            args.planner_max_steps,
-            args.planner_output,
-            planner_strict_effective,
+            PlannerPhaseLaunch {
+                run_id: &run_id,
+                planner_model: &planner_model,
+                prompt,
+                planner_max_steps: args.planner_max_steps,
+                planner_output: args.planner_output,
+                planner_strict: planner_strict_effective,
+                effective_plan_tool_enforcement,
+            },
             &mut event_sink,
         )
         .await;
@@ -1200,6 +1200,37 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         outcome,
         run_artifact_path,
     })
+}
+
+async fn run_planner_phase_with_start_event<P: ModelProvider>(
+    provider: &P,
+    launch: PlannerPhaseLaunch<'_>,
+    event_sink: &mut Option<Box<dyn crate::events::EventSink>>,
+) -> anyhow::Result<planner_runtime::PlannerPhaseOutput> {
+    runtime_events::emit_event(
+        event_sink,
+        launch.run_id,
+        0,
+        EventKind::PlannerStart,
+        serde_json::json!({
+            "planner_model": launch.planner_model,
+            "planner_max_steps": launch.planner_max_steps,
+            "planner_output": format!("{:?}", launch.planner_output).to_lowercase(),
+            "planner_strict": launch.planner_strict,
+            "enforce_plan_tools_effective": format!("{:?}", launch.effective_plan_tool_enforcement).to_lowercase()
+        }),
+    );
+    planner_runtime::run_planner_phase(
+        provider,
+        launch.run_id,
+        launch.planner_model,
+        launch.prompt,
+        launch.planner_max_steps,
+        launch.planner_output,
+        launch.planner_strict,
+        event_sink,
+    )
+    .await
 }
 
 fn build_exec_target(args: &RunArgs) -> anyhow::Result<std::sync::Arc<dyn ExecTarget>> {
