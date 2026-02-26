@@ -2,6 +2,7 @@ mod agent;
 mod agent_budget;
 mod agent_events;
 mod agent_impl_guard;
+mod agent_output_sanitize;
 mod agent_queue_runtime;
 mod agent_taint_helpers;
 mod agent_tool_exec;

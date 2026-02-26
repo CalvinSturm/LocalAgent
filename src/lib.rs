@@ -4,6 +4,7 @@ pub mod agent;
 pub(crate) mod agent_budget;
 pub(crate) mod agent_events;
 pub(crate) mod agent_impl_guard;
+pub(crate) mod agent_output_sanitize;
 pub(crate) mod agent_queue_runtime;
 pub(crate) mod agent_taint_helpers;
 pub(crate) mod agent_tool_exec;

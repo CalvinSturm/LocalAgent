@@ -4,6 +4,7 @@ use crate::agent_budget::{
 use uuid::Uuid;
 
 use crate::agent_impl_guard::{implementation_integrity_violation, prompt_requires_tool_only};
+use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 use crate::agent_taint_helpers::{compute_taint_spans_for_tool, taint_record_from_state};
 use crate::agent_tool_exec::{
     classify_tool_failure, contains_tool_wrapper_markers, extract_content_tool_calls,
@@ -34,43 +35,6 @@ use crate::tools::{
 use crate::trust::policy::{McpAllowSummary, Policy};
 use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
 
-pub fn sanitize_user_visible_output(raw: &str) -> String {
-    let without_think = strip_tag_block(raw, "think");
-    let trimmed = without_think.trim();
-    let upper = trimmed.to_uppercase();
-    if let Some(thought_idx) = upper.find("THOUGHT:") {
-        if let Some(response_rel) = upper[thought_idx..].find("RESPONSE:") {
-            let start = thought_idx + response_rel + "RESPONSE:".len();
-            return trimmed[start..].trim().to_string();
-        }
-    }
-    trimmed.to_string()
-}
-
-fn strip_tag_block(input: &str, tag: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let mut i = 0usize;
-    while i < input.len() {
-        let rest = &input[i..];
-        if rest.starts_with(&open) {
-            if let Some(end_rel) = rest.find(&close) {
-                i += end_rel + close.len();
-                continue;
-            }
-            break;
-        }
-        if let Some(ch) = rest.chars().next() {
-            out.push(ch);
-            i += ch.len_utf8();
-        } else {
-            break;
-        }
-    }
-    out
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum AgentExitReason {
     Ok,
@@ -82,6 +46,10 @@ pub enum AgentExitReason {
     MaxSteps,
     BudgetExceeded,
     Cancelled,
+}
+
+pub fn sanitize_user_visible_output(raw: &str) -> String {
+    sanitize_user_visible_output_impl(raw)
 }
 
 impl AgentExitReason {
