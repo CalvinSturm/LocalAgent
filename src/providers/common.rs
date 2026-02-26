@@ -44,6 +44,10 @@ pub(crate) fn truncate_error_display<E: std::fmt::Display>(err: E, max: usize) -
     truncate_for_error(&err.to_string(), max)
 }
 
+pub(crate) fn format_http_error_body(body: &str) -> String {
+    truncate_for_error(body, 200)
+}
+
 pub(crate) fn build_tool_envelopes(tools: Option<Vec<ToolDef>>) -> Option<Vec<ToolEnvelope>> {
     tools.map(|list| {
         list.into_iter()

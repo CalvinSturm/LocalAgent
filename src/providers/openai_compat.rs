@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::providers::common::{
-    build_http_client, build_tool_envelopes, map_token_usage_triplet, truncate_error_display,
-    truncate_for_error, ToolEnvelope as SharedToolEnvelope,
+    build_http_client, build_tool_envelopes, format_http_error_body, map_token_usage_triplet,
+    truncate_error_display, ToolEnvelope as SharedToolEnvelope,
 };
 use crate::providers::http::{
     classify_reqwest_error, classify_status, deterministic_backoff_ms, HttpConfig, ProviderError,
@@ -175,7 +175,7 @@ impl ModelProvider for OpenAiCompatProvider {
                     message: format!(
                         "OpenAI-compatible endpoint returned HTTP {}: {}",
                         status.as_u16(),
-                        truncate_for_error(&body, 200)
+                        format_http_error_body(&body)
                     ),
                     retries,
                 }));
@@ -292,7 +292,7 @@ impl ModelProvider for OpenAiCompatProvider {
                     message: format!(
                         "OpenAI-compatible endpoint returned HTTP {}: {}",
                         status.as_u16(),
-                        truncate_for_error(&body, 200)
+                        format_http_error_body(&body)
                     ),
                     retries,
                 }));
