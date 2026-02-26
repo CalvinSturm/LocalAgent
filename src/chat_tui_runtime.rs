@@ -756,6 +756,141 @@ struct TuiOuterKeyDispatchInput<'a> {
     logs: &'a mut Vec<String>,
 }
 
+struct TuiRenderFrameInput<'a> {
+    mode_label: &'a str,
+    provider_label: &'a str,
+    provider_connected: bool,
+    model: &'a str,
+    status: &'a str,
+    status_detail: &'a str,
+    transcript: &'a Vec<(String, String)>,
+    streaming_assistant: &'a str,
+    ui_state: &'a UiState,
+    tools_selected: usize,
+    tools_focus: bool,
+    show_tool_details: bool,
+    approvals_selected: usize,
+    cwd_label: &'a str,
+    input: &'a str,
+    logs: &'a Vec<String>,
+    think_tick: u64,
+    tui_refresh_ms: u64,
+    show_tools: bool,
+    show_approvals: bool,
+    show_logs: bool,
+    transcript_scroll: usize,
+    compact_tools: bool,
+    show_banner: bool,
+    ui_tick: u64,
+    overlay_text: Option<String>,
+}
+
+struct TuiRenderFrameBuildInput<'a> {
+    active_run: &'a RunArgs,
+    provider_kind: ProviderKind,
+    provider_connected: bool,
+    model: &'a str,
+    status: &'a str,
+    status_detail: &'a str,
+    transcript: &'a Vec<(String, String)>,
+    streaming_assistant: &'a str,
+    ui_state: &'a UiState,
+    tools_selected: &'a mut usize,
+    tools_focus: &'a mut bool,
+    show_tool_details: &'a mut bool,
+    approvals_selected: &'a mut usize,
+    cwd_label: &'a str,
+    input: &'a str,
+    logs: &'a Vec<String>,
+    think_tick: u64,
+    tui_refresh_ms: u64,
+    show_tools: &'a mut bool,
+    show_approvals: &'a mut bool,
+    show_logs: bool,
+    transcript_scroll: usize,
+    compact_tools: bool,
+    show_banner: bool,
+    ui_tick: u64,
+    palette_open: bool,
+    palette_items: &'a [&'a str],
+    palette_selected: usize,
+    search_mode: bool,
+    search_query: &'a str,
+    slash_menu_index: usize,
+}
+
+fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRenderFrameInput<'_> {
+    let tool_row_count = if input.compact_tools { 20 } else { 12 };
+    let visible_tool_count = input.ui_state.tool_calls.len().min(tool_row_count);
+    if visible_tool_count == 0 {
+        *input.tools_selected = 0;
+        *input.show_tool_details = false;
+    } else {
+        *input.tools_selected = (*input.tools_selected).min(visible_tool_count.saturating_sub(1));
+    }
+    if input.ui_state.pending_approvals.is_empty() {
+        *input.approvals_selected = 0;
+    } else {
+        *input.approvals_selected = (*input.approvals_selected)
+            .min(input.ui_state.pending_approvals.len().saturating_sub(1));
+    }
+    if *input.show_tools && !*input.show_approvals {
+        *input.tools_focus = true;
+    } else if *input.show_approvals && !*input.show_tools {
+        *input.tools_focus = false;
+    }
+    if !*input.show_tools {
+        *input.show_tool_details = false;
+    }
+
+    let overlay_text = if input.palette_open {
+        Some(format!(
+            "⌘ {}  (Up/Down, Enter, Esc)",
+            input.palette_items[input.palette_selected]
+        ))
+    } else if input.search_mode {
+        Some(format!(
+            "🔎 {}  (Enter next, Esc close)",
+            input.search_query
+        ))
+    } else if input.input.starts_with('/') {
+        chat_commands::slash_overlay_text(input.input, input.slash_menu_index)
+    } else if input.input.starts_with('?') {
+        chat_commands::keybinds_overlay_text()
+    } else {
+        None
+    };
+
+    TuiRenderFrameInput {
+        mode_label: chat_runtime::chat_mode_label(input.active_run),
+        provider_label: provider_runtime::provider_cli_name(input.provider_kind),
+        provider_connected: input.provider_connected,
+        model: input.model,
+        status: input.status,
+        status_detail: input.status_detail,
+        transcript: input.transcript,
+        streaming_assistant: input.streaming_assistant,
+        ui_state: input.ui_state,
+        tools_selected: *input.tools_selected,
+        tools_focus: *input.tools_focus,
+        show_tool_details: *input.show_tool_details,
+        approvals_selected: *input.approvals_selected,
+        cwd_label: input.cwd_label,
+        input: input.input,
+        logs: input.logs,
+        think_tick: input.think_tick,
+        tui_refresh_ms: input.tui_refresh_ms,
+        show_tools: *input.show_tools,
+        show_approvals: *input.show_approvals,
+        show_logs: input.show_logs,
+        transcript_scroll: input.transcript_scroll,
+        compact_tools: input.compact_tools,
+        show_banner: input.show_banner,
+        ui_tick: input.ui_tick,
+        overlay_text,
+    }
+}
+
 fn handle_tui_outer_key_dispatch(
     input: TuiOuterKeyDispatchInput<'_>,
 ) -> TuiOuterKeyDispatchOutcome {
@@ -1496,71 +1631,75 @@ pub(crate) async fn run_chat_tui(
     let run_result: anyhow::Result<()> = async {
         loop {
             ui_state.on_tick(Instant::now());
-            let tool_row_count = if compact_tools { 20 } else { 12 };
-            let visible_tool_count = ui_state.tool_calls.len().min(tool_row_count);
-            if visible_tool_count == 0 {
-                tools_selected = 0;
-                show_tool_details = false;
-            } else {
-                tools_selected = tools_selected.min(visible_tool_count.saturating_sub(1));
-            }
-            if ui_state.pending_approvals.is_empty() {
-                approvals_selected = 0;
-            } else {
-                approvals_selected =
-                    approvals_selected.min(ui_state.pending_approvals.len().saturating_sub(1));
-            }
-            if show_tools && !show_approvals {
-                tools_focus = true;
-            } else if show_approvals && !show_tools {
-                tools_focus = false;
-            }
-            if !show_tools {
-                show_tool_details = false;
-            }
+            let frame = build_tui_render_frame_input(TuiRenderFrameBuildInput {
+                active_run: &active_run,
+                provider_kind,
+                provider_connected,
+                model: &model,
+                status: &status,
+                status_detail: &status_detail,
+                transcript: &transcript,
+                streaming_assistant: &streaming_assistant,
+                ui_state: &ui_state,
+                tools_selected: &mut tools_selected,
+                tools_focus: &mut tools_focus,
+                show_tool_details: &mut show_tool_details,
+                approvals_selected: &mut approvals_selected,
+                cwd_label: &cwd_label,
+                input: &input,
+                logs: &logs,
+                think_tick,
+                tui_refresh_ms: base_run.tui_refresh_ms,
+                show_tools: &mut show_tools,
+                show_approvals: &mut show_approvals,
+                show_logs,
+                transcript_scroll,
+                compact_tools,
+                show_banner,
+                ui_tick,
+                palette_open,
+                palette_items: &palette_items,
+                palette_selected,
+                search_mode,
+                search_query: &search_query,
+                slash_menu_index,
+            });
+            let visible_tool_count =
+                frame
+                    .ui_state
+                    .tool_calls
+                    .len()
+                    .min(if frame.compact_tools { 20 } else { 12 });
 
             terminal.draw(|f| {
                 chat_ui::draw_chat_frame(
                     f,
-                    chat_runtime::chat_mode_label(&active_run),
-                    provider_runtime::provider_cli_name(provider_kind),
-                    provider_connected,
-                    &model,
-                    &status,
-                    &status_detail,
-                    &transcript,
-                    &streaming_assistant,
-                    &ui_state,
-                    tools_selected,
-                    tools_focus,
-                    show_tool_details,
-                    approvals_selected,
-                    &cwd_label,
-                    &input,
-                    &logs,
-                    think_tick,
-                    base_run.tui_refresh_ms,
-                    show_tools,
-                    show_approvals,
-                    show_logs,
-                    transcript_scroll,
-                    compact_tools,
-                    show_banner,
-                    ui_tick,
-                    if palette_open {
-                        Some(format!(
-                            "⌘ {}  (Up/Down, Enter, Esc)",
-                            palette_items[palette_selected]
-                        ))
-                    } else if search_mode {
-                        Some(format!("🔎 {}  (Enter next, Esc close)", search_query))
-                    } else if input.starts_with('/') {
-                        chat_commands::slash_overlay_text(&input, slash_menu_index)
-                    } else if input.starts_with('?') {
-                        chat_commands::keybinds_overlay_text()
-                    } else {
-                        None
-                    },
+                    frame.mode_label,
+                    frame.provider_label,
+                    frame.provider_connected,
+                    frame.model,
+                    frame.status,
+                    frame.status_detail,
+                    frame.transcript,
+                    frame.streaming_assistant,
+                    frame.ui_state,
+                    frame.tools_selected,
+                    frame.tools_focus,
+                    frame.show_tool_details,
+                    frame.approvals_selected,
+                    frame.cwd_label,
+                    frame.input,
+                    frame.logs,
+                    frame.think_tick,
+                    frame.tui_refresh_ms,
+                    frame.show_tools,
+                    frame.show_approvals,
+                    frame.show_logs,
+                    frame.transcript_scroll,
+                    frame.compact_tools,
+                    frame.show_banner,
+                    frame.ui_tick,
+                    frame.overlay_text.clone(),
                 );
             })?;
 
