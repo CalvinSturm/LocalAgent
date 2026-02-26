@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context};
+use serde::Serialize;
 use serde_json::json;
 
 use crate::mcp::client::McpClient;
@@ -135,6 +136,26 @@ impl McpRegistry {
         mcp_tool_snapshot_hash_hex(&snapshot)
     }
 
+    #[allow(dead_code)]
+    pub fn configured_tool_docs_hash_hex(&self) -> anyhow::Result<String> {
+        let mut snapshot = self
+            .tool_defs
+            .iter()
+            .map(|t| McpToolDocsSnapshotEntry {
+                name: t.name.clone(),
+                parameters: t.parameters.clone(),
+                description_preview: self
+                    .tool_doc_meta_map
+                    .get(&t.name)
+                    .and_then(|m| m.raw_description.as_deref())
+                    .map(normalized_description_preview)
+                    .unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        snapshot.sort_by(|a, b| a.name.cmp(&b.name));
+        mcp_tool_docs_snapshot_hash_hex(&snapshot)
+    }
+
     pub async fn live_tool_catalog_hash_hex(&self) -> anyhow::Result<String> {
         let mut snapshot: Vec<McpToolSnapshotEntry> = Vec::new();
         for (server, client) in &self.clients {
@@ -150,6 +171,26 @@ impl McpRegistry {
             }
         }
         mcp_tool_snapshot_hash_hex(&snapshot)
+    }
+
+    #[allow(dead_code)]
+    pub async fn live_tool_docs_hash_hex(&self) -> anyhow::Result<String> {
+        let mut snapshot: Vec<McpToolDocsSnapshotEntry> = Vec::new();
+        for (server, client) in &self.clients {
+            let tools = client.tools_list(self.timeout).await?;
+            for tool in tools {
+                snapshot.push(McpToolDocsSnapshotEntry {
+                    name: format!("mcp.{}.{}", server, tool.name),
+                    parameters: tool
+                        .input_schema
+                        .clone()
+                        .unwrap_or_else(|| json!({"type":"object"})),
+                    description_preview: normalized_description_preview(&tool.description),
+                });
+            }
+        }
+        snapshot.sort_by(|a, b| a.name.cmp(&b.name));
+        mcp_tool_docs_snapshot_hash_hex(&snapshot)
     }
 
     pub async fn call_namespaced_tool(
@@ -275,6 +316,8 @@ impl McpRegistry {
 
 const MCP_MAX_MODEL_RESULT_BYTES: usize = 64 * 1024;
 const MCP_MAX_RAW_DESCRIPTION_BYTES: usize = 8 * 1024;
+#[allow(dead_code)]
+const MCP_DOCS_HASH_PREVIEW_BYTES: usize = 1024;
 
 fn model_facing_mcp_tool_description(server: &str, namespaced_tool: &str) -> String {
     format!("MCP tool from {server}. Use /tool docs {namespaced_tool} for details.")
@@ -290,6 +333,32 @@ fn build_mcp_tool_doc_meta(raw: &str) -> McpToolDocMeta {
         raw_description_hash: Some(sha256_hex(raw.as_bytes())),
         raw_description_truncated: truncated,
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
+struct McpToolDocsSnapshotEntry {
+    name: String,
+    parameters: serde_json::Value,
+    description_preview: String,
+}
+
+#[allow(dead_code)]
+fn mcp_tool_docs_snapshot_hash_hex(
+    snapshot: &[McpToolDocsSnapshotEntry],
+) -> anyhow::Result<String> {
+    let canonical = serde_json::to_string(snapshot)?;
+    Ok(sha256_hex(canonical.as_bytes()))
+}
+
+#[allow(dead_code)]
+fn normalized_description_preview(raw: &str) -> String {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    truncate_utf8_to_bytes(trimmed, MCP_DOCS_HASH_PREVIEW_BYTES).0
 }
 
 fn truncate_utf8_to_bytes(input: &str, max_bytes: usize) -> (String, bool) {
@@ -495,5 +564,70 @@ mod tests {
             meta.raw_description_hash,
             Some(crate::store::sha256_hex(raw.as_bytes()))
         );
+    }
+
+    #[test]
+    fn docs_hash_changes_when_only_description_changes() {
+        let defs = vec![ToolDef {
+            name: "mcp.stub.echo".to_string(),
+            description: "MCP tool from stub. Use /tool docs mcp.stub.echo for details."
+                .to_string(),
+            parameters: json!({"type":"object","properties":{"x":{"type":"string"}}}),
+            side_effects: SideEffects::Network,
+        }];
+        let mut docs_a = BTreeMap::new();
+        docs_a.insert(
+            "mcp.stub.echo".to_string(),
+            super::McpToolDocMeta {
+                raw_description: Some("Echo arguments".to_string()),
+                raw_description_hash: Some(crate::store::sha256_hex("Echo arguments".as_bytes())),
+                raw_description_truncated: false,
+            },
+        );
+        let mut docs_b = BTreeMap::new();
+        docs_b.insert(
+            "mcp.stub.echo".to_string(),
+            super::McpToolDocMeta {
+                raw_description: Some("Echo arguments but different docs".to_string()),
+                raw_description_hash: Some(crate::store::sha256_hex(
+                    "Echo arguments but different docs".as_bytes(),
+                )),
+                raw_description_truncated: false,
+            },
+        );
+        let reg_a = super::McpRegistry {
+            clients: BTreeMap::new(),
+            tool_map: BTreeMap::new(),
+            tool_schema_map: BTreeMap::new(),
+            tool_doc_meta_map: docs_a,
+            tool_defs: defs.clone(),
+            timeout: std::time::Duration::from_secs(1),
+            mcp_spool_dir: std::path::PathBuf::from("."),
+        };
+        let reg_b = super::McpRegistry {
+            clients: BTreeMap::new(),
+            tool_map: BTreeMap::new(),
+            tool_schema_map: BTreeMap::new(),
+            tool_doc_meta_map: docs_b,
+            tool_defs: defs,
+            timeout: std::time::Duration::from_secs(1),
+            mcp_spool_dir: std::path::PathBuf::from("."),
+        };
+        assert_eq!(
+            reg_a.configured_tool_catalog_hash_hex().expect("catalog a"),
+            reg_b.configured_tool_catalog_hash_hex().expect("catalog b")
+        );
+        assert_ne!(
+            reg_a.configured_tool_docs_hash_hex().expect("docs a"),
+            reg_b.configured_tool_docs_hash_hex().expect("docs b")
+        );
+    }
+
+    #[test]
+    fn normalized_description_preview_collapses_whitespace() {
+        let a = super::normalized_description_preview("Line1\n\n  Line2\tLine3");
+        let b = super::normalized_description_preview("Line1 Line2 Line3");
+        assert_eq!(a, "Line1 Line2 Line3");
+        assert_eq!(a, b);
     }
 }
