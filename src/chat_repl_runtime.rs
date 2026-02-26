@@ -7,6 +7,7 @@ use anyhow::anyhow;
 use crate::chat_runtime;
 use crate::chat_tui_runtime;
 use crate::mcp::registry::McpRegistry;
+use crate::project_guidance;
 use crate::provider_runtime;
 use crate::providers::mock::MockProvider;
 use crate::providers::ollama::OllamaProvider;
@@ -49,7 +50,7 @@ pub(crate) async fn run_chat_repl(
         chat.tui
     );
     println!(
-        "Commands: /help, /mode <safe|coding|web|custom>, /timeout [seconds|+N|-N|off], /params [key value], /tool docs <name>, /dismiss, /exit, /clear"
+        "Commands: /help, /mode <safe|coding|web|custom>, /timeout [seconds|+N|-N|off], /params [key value], /project guidance, /tool docs <name>, /dismiss, /exit, /clear"
     );
 
     loop {
@@ -112,6 +113,7 @@ pub(crate) async fn run_chat_repl(
                         "/params  show current tuning params and wait for '<key> <value>' input"
                     );
                     println!("/params <key> <value>  set a tuning param");
+                    println!("/project guidance  show resolved AGENTS.md guidance snapshot");
                     println!("/tool docs <name>  show tool docs from local MCP registry snapshot");
                     println!("/dismiss  dismiss timeout notification");
                     println!("/clear clear current session messages");
@@ -146,6 +148,15 @@ pub(crate) async fn run_chat_repl(
                 }
                 "/tool docs" => {
                     println!("usage: /tool docs <name> (example: /tool docs mcp.stub.echo)");
+                }
+                "/project guidance" => {
+                    match project_guidance::resolve_project_guidance(
+                        &active_run.workdir,
+                        project_guidance::ProjectGuidanceLimits::default(),
+                    ) {
+                        Ok(g) => println!("{}", project_guidance::render_project_guidance_text(&g)),
+                        Err(e) => println!("project guidance unavailable: {e}"),
+                    }
                 }
                 "/clear" => {
                     if active_run.no_session {

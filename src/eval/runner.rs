@@ -1297,6 +1297,11 @@ fn write_run_artifact_for_eval(
         instruction_model_profile: None,
         instruction_task_profile: None,
         instruction_message_count: 0,
+        project_guidance_hash_hex: None,
+        project_guidance_sources: Vec::new(),
+        project_guidance_truncated: false,
+        project_guidance_bytes_loaded: 0,
+        project_guidance_bytes_kept: 0,
     };
     let fingerprint = ConfigFingerprintV1 {
         schema_version: "openagent.confighash.v1".to_string(),

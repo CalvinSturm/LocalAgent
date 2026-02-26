@@ -42,6 +42,8 @@ mod planner;
 
 mod planner_runtime;
 
+mod project_guidance;
+
 mod provider_runtime;
 
 mod providers;

@@ -10,6 +10,7 @@ pub mod hooks;
 pub mod instructions;
 pub mod mcp;
 pub mod planner;
+pub mod project_guidance;
 pub mod providers;
 pub mod repro;
 pub mod scaffold;

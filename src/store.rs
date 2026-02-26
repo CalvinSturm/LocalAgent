@@ -247,6 +247,16 @@ pub struct RunCliConfig {
     pub instruction_task_profile: Option<String>,
     #[serde(default)]
     pub instruction_message_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_guidance_hash_hex: Option<String>,
+    #[serde(default)]
+    pub project_guidance_sources: Vec<String>,
+    #[serde(default)]
+    pub project_guidance_truncated: bool,
+    #[serde(default)]
+    pub project_guidance_bytes_loaded: u64,
+    #[serde(default)]
+    pub project_guidance_bytes_kept: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -930,6 +940,11 @@ mod tests {
                 instruction_model_profile: None,
                 instruction_task_profile: None,
                 instruction_message_count: 0,
+                project_guidance_hash_hex: None,
+                project_guidance_sources: Vec::new(),
+                project_guidance_truncated: false,
+                project_guidance_bytes_loaded: 0,
+                project_guidance_bytes_kept: 0,
             },
             PolicyRecordInfo {
                 source: "none".to_string(),
@@ -1098,6 +1113,11 @@ mod tests {
                 instruction_model_profile: None,
                 instruction_task_profile: None,
                 instruction_message_count: 0,
+                project_guidance_hash_hex: None,
+                project_guidance_sources: Vec::new(),
+                project_guidance_truncated: false,
+                project_guidance_bytes_loaded: 0,
+                project_guidance_bytes_kept: 0,
             },
             resolved_paths: RunResolvedPaths {
                 state_dir: ".".to_string(),

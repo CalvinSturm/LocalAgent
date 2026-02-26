@@ -15,6 +15,7 @@ use crate::hooks::runner::{HookManager, HookRuntimeConfig};
 use crate::mcp::registry::McpRegistry;
 use crate::ops_helpers;
 use crate::planner;
+use crate::project_guidance;
 use crate::providers::ModelProvider;
 use crate::repro;
 use crate::repro::ReproEnvMode;
@@ -206,6 +207,12 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     };
     let instruction_resolution =
         instruction_runtime::resolve_instruction_messages(args, &paths.state_dir, &worker_model)?;
+    let project_guidance_resolution = project_guidance::resolve_project_guidance(
+        &args.workdir,
+        project_guidance::ProjectGuidanceLimits::default(),
+    )
+    .ok()
+    .filter(|g| !g.merged_text.is_empty());
 
     let mcp_config_path = runtime_paths::resolved_mcp_config_path(args, &paths.state_dir);
     let mcp_registry = if let Some(reg) = shared_mcp_registry {
@@ -475,6 +482,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                                 format!("{:?}", effective_plan_tool_enforcement).to_lowercase(),
                             ),
                             instructions: &instruction_resolution,
+                            project_guidance: project_guidance_resolution.as_ref(),
                         });
                     let config_fingerprint = runtime_paths::build_config_fingerprint(
                         &cli_config,
@@ -660,6 +668,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                             format!("{:?}", effective_plan_tool_enforcement).to_lowercase(),
                         ),
                         instructions: &instruction_resolution,
+                        project_guidance: project_guidance_resolution.as_ref(),
                     });
                 let config_fingerprint = runtime_paths::build_config_fingerprint(
                     &cli_config,
@@ -772,9 +781,13 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     };
 
     let base_instruction_messages = instruction_resolution.messages.clone();
+    let project_guidance_message = project_guidance_resolution
+        .as_ref()
+        .and_then(project_guidance::project_guidance_message);
     let base_task_memory = task_memory.clone();
     let initial_injected_messages = runtime_paths::merge_injected_messages(
         base_instruction_messages.clone(),
+        project_guidance_message.clone(),
         base_task_memory.clone(),
         planner_injected_message.clone(),
     );
@@ -950,6 +963,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                 let resume_session_messages = extract_session_messages(&outcome.messages);
                 let replan_injected = runtime_paths::merge_injected_messages(
                     base_instruction_messages.clone(),
+                    project_guidance_message.clone(),
                     base_task_memory.clone(),
                     Some(Message {
                         role: Role::Developer,
@@ -1120,6 +1134,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         planner_strict: Some(planner_strict_effective),
         enforce_plan_tools: Some(format!("{:?}", effective_plan_tool_enforcement).to_lowercase()),
         instructions: &instruction_resolution,
+        project_guidance: project_guidance_resolution.as_ref(),
     });
     let config_fingerprint =
         runtime_paths::build_config_fingerprint(&cli_config, args, &worker_model, paths);

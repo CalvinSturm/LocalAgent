@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::gate::ProviderKind;
 use crate::instructions::InstructionResolution;
 use crate::planner;
+use crate::project_guidance::ResolvedProjectGuidance;
 use crate::session;
 use crate::store::{
     self, provider_to_string, stable_path_string, ConfigFingerprintV1, RunCliConfig,
@@ -14,9 +15,13 @@ use crate::RunArgs;
 
 pub(crate) fn merge_injected_messages(
     mut instruction_messages: Vec<Message>,
+    project_guidance: Option<Message>,
     task_memory: Option<Message>,
     planner_handoff: Option<Message>,
 ) -> Vec<Message> {
+    if let Some(m) = project_guidance {
+        instruction_messages.push(m);
+    }
     if let Some(m) = task_memory {
         instruction_messages.push(m);
     }
@@ -48,6 +53,7 @@ pub(crate) struct RunCliConfigInput<'a> {
     pub planner_strict: Option<bool>,
     pub enforce_plan_tools: Option<String>,
     pub instructions: &'a InstructionResolution,
+    pub project_guidance: Option<&'a ResolvedProjectGuidance>,
 }
 
 pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig {
@@ -73,6 +79,7 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         planner_strict,
         enforce_plan_tools,
         instructions,
+        project_guidance,
     } = input;
     RunCliConfig {
         mode: format!("{:?}", mode).to_lowercase(),
@@ -181,6 +188,13 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         instruction_model_profile: instructions.selected_model_profile.clone(),
         instruction_task_profile: instructions.selected_task_profile.clone(),
         instruction_message_count: instructions.messages.len(),
+        project_guidance_hash_hex: project_guidance.map(|g| g.guidance_hash_hex.clone()),
+        project_guidance_sources: project_guidance
+            .map(|g| g.sources.iter().map(|s| s.path.clone()).collect())
+            .unwrap_or_default(),
+        project_guidance_truncated: project_guidance.map(|g| g.truncated).unwrap_or(false),
+        project_guidance_bytes_loaded: project_guidance.map(|g| g.bytes_loaded).unwrap_or(0),
+        project_guidance_bytes_kept: project_guidance.map(|g| g.bytes_kept).unwrap_or(0),
     }
 }
 

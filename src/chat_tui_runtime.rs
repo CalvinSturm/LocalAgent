@@ -20,6 +20,7 @@ use crate::chat_view_utils;
 use crate::events::{Event, EventKind};
 use crate::gate::ProviderKind;
 use crate::mcp::registry::McpRegistry;
+use crate::project_guidance;
 use crate::provider_runtime;
 use crate::providers::mock::MockProvider;
 use crate::providers::ollama::OllamaProvider;
@@ -506,7 +507,7 @@ pub(crate) async fn run_chat_tui(
                                     "/exit" => break,
                                     "/help" => {
                                         logs.push(
-                                            "commands: /help /mode <safe|coding|web|custom> /timeout [seconds|+N|-N|off] /params [key value] /tool docs <name> /dismiss /clear /exit /hide tools|approvals|logs /show tools|approvals|logs|all ; slash dropdown: type / then Up/Down + Enter ; panes: Ctrl+T/Ctrl+Y/Ctrl+G (Ctrl+1/2/3 aliases, terminal-dependent) ; scroll: PgUp/PgDn, Ctrl+U/Ctrl+D, mouse wheel ; approvals: Ctrl+J/K select, Ctrl+A approve, Ctrl+X deny, Ctrl+R refresh ; history: Up/Down ; Esc quits"
+                                            "commands: /help /mode <safe|coding|web|custom> /timeout [seconds|+N|-N|off] /params [key value] /project guidance /tool docs <name> /dismiss /clear /exit /hide tools|approvals|logs /show tools|approvals|logs|all ; slash dropdown: type / then Up/Down + Enter ; panes: Ctrl+T/Ctrl+Y/Ctrl+G (Ctrl+1/2/3 aliases, terminal-dependent) ; scroll: PgUp/PgDn, Ctrl+U/Ctrl+D, mouse wheel ; approvals: Ctrl+J/K select, Ctrl+A approve, Ctrl+X deny, Ctrl+R refresh ; history: Up/Down ; Esc quits"
                                                 .to_string(),
                                         );
                                         show_logs = true;
@@ -555,6 +556,21 @@ pub(crate) async fn run_chat_tui(
                                             "usage: /tool docs <name> (example: /tool docs mcp.stub.echo)"
                                                 .to_string(),
                                         );
+                                        show_logs = true;
+                                    }
+                                    "/project guidance" => {
+                                        match project_guidance::resolve_project_guidance(
+                                            &active_run.workdir,
+                                            project_guidance::ProjectGuidanceLimits::default(),
+                                        ) {
+                                            Ok(g) => logs
+                                                .push(project_guidance::render_project_guidance_text(
+                                                    &g,
+                                                )),
+                                            Err(e) => logs.push(format!(
+                                                "project guidance unavailable: {e}"
+                                            )),
+                                        }
                                         show_logs = true;
                                     }
                                     "/clear" => {

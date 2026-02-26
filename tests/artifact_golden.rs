@@ -111,6 +111,11 @@ fn build_run_cli_config() -> RunCliConfig {
         instruction_model_profile: None,
         instruction_task_profile: None,
         instruction_message_count: 0,
+        project_guidance_hash_hex: None,
+        project_guidance_sources: Vec::new(),
+        project_guidance_truncated: false,
+        project_guidance_bytes_loaded: 0,
+        project_guidance_bytes_kept: 0,
     }
 }
 

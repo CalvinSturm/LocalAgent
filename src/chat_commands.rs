@@ -16,6 +16,10 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("/params max_steps 30", "set max agent loop steps"),
     (
+        "/project guidance",
+        "show resolved AGENTS.md guidance snapshot",
+    ),
+    (
         "/params compaction_mode summary",
         "enable summary compaction mode",
     ),
@@ -124,6 +128,10 @@ pub(crate) fn keybinds_overlay_text() -> Option<String> {
             "adjust request/stream idle timeout (or off)",
         ),
         ("/params <key> <value>", "adjust live agent tuning settings"),
+        (
+            "/project guidance",
+            "show resolved AGENTS.md guidance snapshot",
+        ),
         ("/dismiss", "dismiss timeout notification"),
         (
             "/tool docs <name>",
