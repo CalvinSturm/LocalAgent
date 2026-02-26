@@ -716,7 +716,6 @@ pub(crate) struct EvalArgs {
 #[derive(Debug, Parser)]
 #[command(name = "localagent")]
 #[command(about = "LocalAgent: local-runtime agent loop with tool calling", long_about = None)]
-
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,

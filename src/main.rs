@@ -22,8 +22,6 @@ mod cli_dispatch;
 
 mod compaction;
 
-mod diagnostics;
-
 mod eval;
 
 mod events;
