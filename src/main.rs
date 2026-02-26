@@ -29,6 +29,7 @@ mod checks;
 mod cli_args;
 
 mod cli_dispatch;
+mod cli_dispatch_checks;
 
 mod compaction;
 
