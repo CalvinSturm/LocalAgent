@@ -219,73 +219,13 @@ impl UiState {
                 }
             }
             EventKind::ProviderError => {
-                let msg = ev
-                    .data
-                    .get("message_short")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("provider error");
-                self.push_log(format!("provider_error: {msg}"));
-                self.net_status = "DISC".to_string();
+                self.apply_provider_error_event(ev);
             }
             EventKind::ProviderRetry => {
-                let attempt = ev.data.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0);
-                let max_attempts = ev
-                    .data
-                    .get("max_attempts")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let kind = ev
-                    .data
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("other");
-                let backoff_ms = ev
-                    .data
-                    .get("backoff_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                self.push_log(format!(
-                    "provider_retry: attempt {attempt}/{max_attempts} kind={kind} backoff_ms={backoff_ms}"
-                ));
-                self.net_status = "SLOW".to_string();
+                self.apply_provider_retry_event(ev);
             }
             EventKind::ToolRetry => {
-                let tool = ev
-                    .data
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("tool");
-                let attempt = ev.data.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0);
-                let max_retries = ev
-                    .data
-                    .get("max_retries")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let class = ev
-                    .data
-                    .get("failure_class")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("E_OTHER");
-                let action = ev
-                    .data
-                    .get("action")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("stop");
-                if class == "E_SCHEMA" && action == "repair" {
-                    self.schema_repair_seen = true;
-                }
-                if is_mcp_tool(tool) {
-                    if action == "retry" {
-                        self.mcp_lifecycle = "WAIT:RETRY".to_string();
-                    } else if action == "stop" {
-                        self.mcp_lifecycle = "FAIL".to_string();
-                    }
-                }
-                self.last_failure_class = class.to_string();
-                self.last_tool_retry_count = attempt;
-                self.push_log(format!(
-                    "tool_retry: {tool} class={class} attempt={attempt}/{max_retries} action={action}"
-                ));
+                self.apply_tool_retry_event(ev);
             }
             EventKind::McpDrift => {
                 self.apply_mcp_drift_event(ev);
@@ -312,26 +252,10 @@ impl UiState {
                 self.apply_queue_interrupt_event(ev);
             }
             EventKind::Error => {
-                let msg = ev
-                    .data
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown error");
-                self.push_log(format!("error: {msg}"));
-                if ev
-                    .data
-                    .get("source")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    == "plan_halt_guard"
-                {
-                    self.next_hint = "blocked(plan)".to_string();
-                }
+                self.apply_error_event(ev);
             }
             _ => {
-                if matches!(ev.kind, EventKind::CompactionPerformed) {
-                    self.push_log("compaction performed".to_string());
-                }
+                self.apply_misc_log_event(ev);
             }
         }
     }
@@ -785,6 +709,102 @@ impl UiState {
         ));
         if cancelled_remaining_work {
             self.next_hint = "interrupt_applied".to_string();
+        }
+    }
+
+    fn apply_provider_error_event(&mut self, ev: &Event) {
+        let msg = ev
+            .data
+            .get("message_short")
+            .and_then(|v| v.as_str())
+            .unwrap_or("provider error");
+        self.push_log(format!("provider_error: {msg}"));
+        self.net_status = "DISC".to_string();
+    }
+
+    fn apply_provider_retry_event(&mut self, ev: &Event) {
+        let attempt = ev.data.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0);
+        let max_attempts = ev
+            .data
+            .get("max_attempts")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let kind = ev
+            .data
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("other");
+        let backoff_ms = ev
+            .data
+            .get("backoff_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        self.push_log(format!(
+            "provider_retry: attempt {attempt}/{max_attempts} kind={kind} backoff_ms={backoff_ms}"
+        ));
+        self.net_status = "SLOW".to_string();
+    }
+
+    fn apply_tool_retry_event(&mut self, ev: &Event) {
+        let tool = ev
+            .data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("tool");
+        let attempt = ev.data.get("attempt").and_then(|v| v.as_u64()).unwrap_or(0);
+        let max_retries = ev
+            .data
+            .get("max_retries")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let class = ev
+            .data
+            .get("failure_class")
+            .and_then(|v| v.as_str())
+            .unwrap_or("E_OTHER");
+        let action = ev
+            .data
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("stop");
+        if class == "E_SCHEMA" && action == "repair" {
+            self.schema_repair_seen = true;
+        }
+        if is_mcp_tool(tool) {
+            if action == "retry" {
+                self.mcp_lifecycle = "WAIT:RETRY".to_string();
+            } else if action == "stop" {
+                self.mcp_lifecycle = "FAIL".to_string();
+            }
+        }
+        self.last_failure_class = class.to_string();
+        self.last_tool_retry_count = attempt;
+        self.push_log(format!(
+            "tool_retry: {tool} class={class} attempt={attempt}/{max_retries} action={action}"
+        ));
+    }
+
+    fn apply_error_event(&mut self, ev: &Event) {
+        let msg = ev
+            .data
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        self.push_log(format!("error: {msg}"));
+        if ev
+            .data
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            == "plan_halt_guard"
+        {
+            self.next_hint = "blocked(plan)".to_string();
+        }
+    }
+
+    fn apply_misc_log_event(&mut self, ev: &Event) {
+        if matches!(ev.kind, EventKind::CompactionPerformed) {
+            self.push_log("compaction performed".to_string());
         }
     }
 
