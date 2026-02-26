@@ -57,6 +57,14 @@ enum TuiOuterKeyDispatchOutcome {
     EnterInline,
 }
 
+enum TuiOuterEventDispatchOutcome {
+    BreakLoop,
+    ContinueLoop,
+    EnterInline,
+    HandledKey,
+    Noop,
+}
+
 type TuiRunFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<RunExecutionResult>> + Send>>;
 
@@ -787,6 +795,116 @@ fn handle_tui_outer_paste_event(input: TuiOuterPasteInput<'_>) {
         .push_str(&chat_runtime::normalize_pasted_text(input.pasted));
     *input.history_idx = None;
     *input.slash_menu_index = 0;
+}
+
+struct TuiOuterEventDispatchInput<'a> {
+    event: CEvent,
+    prompt_history: &'a mut Vec<String>,
+    transcript: &'a mut Vec<(String, String)>,
+    streaming_assistant: &'a mut String,
+    transcript_scroll: &'a mut usize,
+    follow_output: &'a mut bool,
+    input: &'a mut String,
+    history_idx: &'a mut Option<usize>,
+    slash_menu_index: &'a mut usize,
+    palette_open: &'a mut bool,
+    palette_items: &'a [&'a str],
+    palette_selected: &'a mut usize,
+    search_mode: &'a mut bool,
+    search_query: &'a mut String,
+    search_line_cursor: &'a mut usize,
+    ui_state: &'a mut UiState,
+    visible_tool_count: usize,
+    show_tools: &'a mut bool,
+    show_approvals: &'a mut bool,
+    show_logs: &'a mut bool,
+    compact_tools: &'a mut bool,
+    tools_selected: &'a mut usize,
+    tools_focus: &'a mut bool,
+    approvals_selected: &'a mut usize,
+    paths: &'a store::StatePaths,
+    logs: &'a mut Vec<String>,
+}
+
+fn handle_tui_outer_event_dispatch(
+    input: TuiOuterEventDispatchInput<'_>,
+) -> TuiOuterEventDispatchOutcome {
+    match input.event {
+        CEvent::Mouse(me) => {
+            handle_tui_outer_mouse_event(TuiOuterMouseInput {
+                me: &me,
+                transcript: input.transcript,
+                streaming_assistant: input.streaming_assistant,
+                transcript_scroll: input.transcript_scroll,
+                follow_output: input.follow_output,
+            });
+            TuiOuterEventDispatchOutcome::Noop
+        }
+        CEvent::Paste(pasted) => {
+            handle_tui_outer_paste_event(TuiOuterPasteInput {
+                pasted: &pasted,
+                input: input.input,
+                history_idx: input.history_idx,
+                slash_menu_index: input.slash_menu_index,
+            });
+            TuiOuterEventDispatchOutcome::Noop
+        }
+        CEvent::Key(key) => {
+            match handle_tui_outer_key_prelude(TuiOuterKeyPreludeInput {
+                key,
+                palette_open: input.palette_open,
+                search_mode: input.search_mode,
+                follow_output: input.follow_output,
+                transcript_scroll: input.transcript_scroll,
+            }) {
+                TuiOuterKeyPreludeOutcome::BreakLoop => {
+                    return TuiOuterEventDispatchOutcome::BreakLoop
+                }
+                TuiOuterKeyPreludeOutcome::ContinueLoop => {
+                    return TuiOuterEventDispatchOutcome::ContinueLoop
+                }
+                TuiOuterKeyPreludeOutcome::Proceed => {}
+            }
+            match handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
+                key,
+                input: input.input,
+                prompt_history: input.prompt_history,
+                history_idx: input.history_idx,
+                slash_menu_index: input.slash_menu_index,
+                palette_open: input.palette_open,
+                palette_items: input.palette_items,
+                palette_selected: input.palette_selected,
+                search_mode: input.search_mode,
+                search_query: input.search_query,
+                search_line_cursor: input.search_line_cursor,
+                transcript: input.transcript,
+                streaming_assistant: input.streaming_assistant,
+                transcript_scroll: input.transcript_scroll,
+                follow_output: input.follow_output,
+                ui_state: input.ui_state,
+                visible_tool_count: input.visible_tool_count,
+                show_tools: input.show_tools,
+                show_approvals: input.show_approvals,
+                show_logs: input.show_logs,
+                compact_tools: input.compact_tools,
+                tools_selected: input.tools_selected,
+                tools_focus: input.tools_focus,
+                approvals_selected: input.approvals_selected,
+                paths: input.paths,
+                logs: input.logs,
+            }) {
+                TuiOuterKeyDispatchOutcome::BreakLoop => TuiOuterEventDispatchOutcome::BreakLoop,
+                TuiOuterKeyDispatchOutcome::ContinueLoop => {
+                    TuiOuterEventDispatchOutcome::ContinueLoop
+                }
+                TuiOuterKeyDispatchOutcome::Handled => TuiOuterEventDispatchOutcome::HandledKey,
+                TuiOuterKeyDispatchOutcome::EnterInline => {
+                    TuiOuterEventDispatchOutcome::EnterInline
+                }
+            }
+        }
+        _ => TuiOuterEventDispatchOutcome::Noop,
+    }
 }
 
 struct TuiRenderFrameInput<'a> {
@@ -1737,298 +1855,257 @@ pub(crate) async fn run_chat_tui(
             })?;
 
             if event::poll(Duration::from_millis(base_run.tui_refresh_ms))? {
-                match event::read()? {
-                    CEvent::Mouse(me) => {
-                        handle_tui_outer_mouse_event(TuiOuterMouseInput {
-                            me: &me,
-                            transcript: &transcript,
-                            streaming_assistant: &streaming_assistant,
-                            transcript_scroll: &mut transcript_scroll,
-                            follow_output: &mut follow_output,
-                        });
-                    }
-                    CEvent::Paste(pasted) => {
-                        handle_tui_outer_paste_event(TuiOuterPasteInput {
-                            pasted: &pasted,
-                            input: &mut input,
-                            history_idx: &mut history_idx,
-                            slash_menu_index: &mut slash_menu_index,
-                        });
-                    }
-                    CEvent::Key(key) => {
-                        match handle_tui_outer_key_prelude(TuiOuterKeyPreludeInput {
-                            key,
-                            palette_open: &mut palette_open,
-                            search_mode: &mut search_mode,
-                            follow_output: &mut follow_output,
-                            transcript_scroll: &mut transcript_scroll,
-                        }) {
-                            TuiOuterKeyPreludeOutcome::BreakLoop => break,
-                            TuiOuterKeyPreludeOutcome::ContinueLoop => continue,
-                            TuiOuterKeyPreludeOutcome::Proceed => {}
-                        }
-                        match handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
-                            key,
-                            input: &mut input,
-                            prompt_history: &mut prompt_history,
-                            history_idx: &mut history_idx,
-                            slash_menu_index: &mut slash_menu_index,
-                            palette_open: &mut palette_open,
-                            palette_items: &palette_items,
-                            palette_selected: &mut palette_selected,
-                            search_mode: &mut search_mode,
-                            search_query: &mut search_query,
-                            search_line_cursor: &mut search_line_cursor,
-                            transcript: &mut transcript,
-                            streaming_assistant: &mut streaming_assistant,
-                            transcript_scroll: &mut transcript_scroll,
-                            follow_output: &mut follow_output,
-                            ui_state: &mut ui_state,
-                            visible_tool_count,
-                            show_tools: &mut show_tools,
-                            show_approvals: &mut show_approvals,
-                            show_logs: &mut show_logs,
-                            compact_tools: &mut compact_tools,
-                            tools_selected: &mut tools_selected,
-                            tools_focus: &mut tools_focus,
-                            approvals_selected: &mut approvals_selected,
-                            paths,
-                            logs: &mut logs,
-                        }) {
-                            TuiOuterKeyDispatchOutcome::BreakLoop => break,
-                            TuiOuterKeyDispatchOutcome::ContinueLoop => continue,
-                            TuiOuterKeyDispatchOutcome::Handled => {}
-                            TuiOuterKeyDispatchOutcome::EnterInline => {
-                                let line = input.trim().to_string();
-                                input.clear();
-                                history_idx = None;
-                                slash_menu_index = 0;
-                                if line.is_empty() {
-                                    continue;
-                                }
-                                if pending_params_input && !line.starts_with('/') {
-                                    if line.eq_ignore_ascii_case("cancel") {
-                                        pending_params_input = false;
-                                        logs.push("params update cancelled".to_string());
-                                    } else {
-                                        match runtime_config::apply_params_input(
-                                            &mut active_run,
-                                            &line,
-                                        ) {
-                                            Ok(msg) => {
-                                                pending_params_input = false;
-                                                logs.push(msg);
-                                            }
-                                            Err(msg) => logs.push(msg),
-                                        }
-                                    }
-                                    show_logs = true;
-                                    continue;
-                                }
-                                if pending_timeout_input && !line.starts_with('/') {
-                                    if line.eq_ignore_ascii_case("cancel") {
-                                        pending_timeout_input = false;
-                                        logs.push("timeout update cancelled".to_string());
-                                        show_logs = false;
-                                    } else {
-                                        match runtime_config::apply_timeout_input(
-                                            &mut active_run,
-                                            &line,
-                                        ) {
-                                            Ok(msg) => {
-                                                pending_timeout_input = false;
-                                                logs.push(msg);
-                                                show_logs = false;
-                                            }
-                                            Err(msg) => {
-                                                logs.push(msg);
-                                                show_logs = true;
-                                            }
-                                        }
-                                    }
-                                    continue;
-                                }
-                                if line.starts_with('/') {
-                                    match handle_tui_slash_command(TuiSlashCommandDispatchInput {
-                                        line: &line,
-                                        slash_menu_index,
-                                        active_run: &mut active_run,
-                                        paths,
-                                        logs: &mut logs,
-                                        show_logs: &mut show_logs,
-                                        show_tools: &mut show_tools,
-                                        show_approvals: &mut show_approvals,
-                                        timeout_notice_active: &mut timeout_notice_active,
-                                        pending_timeout_input: &mut pending_timeout_input,
-                                        pending_params_input: &mut pending_params_input,
-                                        transcript: &mut transcript,
-                                        ui_state: &mut ui_state,
-                                        streaming_assistant: &mut streaming_assistant,
-                                        transcript_scroll: &mut transcript_scroll,
-                                        follow_output: &mut follow_output,
-                                        shared_chat_mcp_registry: &mut shared_chat_mcp_registry,
-                                    })
-                                    .await?
-                                    {
-                                        SlashCommandDispatchOutcome::ExitRequested => break,
-                                        SlashCommandDispatchOutcome::Handled => {}
-                                    }
-                                    continue;
-                                }
-
-                                if line.is_empty() && show_tools && (!show_approvals || tools_focus)
-                                {
-                                    if visible_tool_count > 0 {
-                                        show_tool_details = !show_tool_details;
-                                        if show_tool_details {
-                                            show_logs = false;
-                                        }
-                                    }
-                                    continue;
-                                }
-
-                                match prepare_tui_normal_submit_state(TuiNormalSubmitPrepInput {
-                                    line: &line,
-                                    prompt_history: &mut prompt_history,
-                                    transcript: &mut transcript,
-                                    show_logs: &mut show_logs,
-                                    follow_output: &mut follow_output,
-                                    transcript_scroll: &mut transcript_scroll,
-                                    status: &mut status,
-                                    status_detail: &mut status_detail,
-                                    streaming_assistant: &mut streaming_assistant,
-                                    think_tick: &mut think_tick,
-                                }) {
-                                    TuiNormalSubmitPrepOutcome::HandledNoRun => continue,
-                                    TuiNormalSubmitPrepOutcome::ContinueToRun => {}
-                                }
-                                terminal.draw(|f| {
-                                    chat_ui::draw_chat_frame(
-                                        f,
-                                        chat_runtime::chat_mode_label(&active_run),
-                                        provider_runtime::provider_cli_name(provider_kind),
-                                        provider_connected,
-                                        &model,
-                                        &status,
-                                        &status_detail,
-                                        &transcript,
-                                        &streaming_assistant,
-                                        &ui_state,
-                                        tools_selected,
-                                        tools_focus,
-                                        show_tool_details,
-                                        approvals_selected,
-                                        &cwd_label,
-                                        &input,
-                                        &logs,
-                                        think_tick,
-                                        base_run.tui_refresh_ms,
-                                        show_tools,
-                                        show_approvals,
-                                        show_logs,
-                                        transcript_scroll,
-                                        compact_tools,
-                                        show_banner,
-                                        ui_tick,
-                                        if palette_open {
-                                            Some(format!(
-                                                "⌘ {}  (Up/Down, Enter, Esc)",
-                                                palette_items[palette_selected]
-                                            ))
-                                        } else if search_mode {
-                                            Some(format!(
-                                                "🔎 {}  (Enter next, Esc close)",
-                                                search_query
-                                            ))
-                                        } else if input.starts_with('/') {
-                                            chat_commands::slash_overlay_text(
-                                                &input,
-                                                slash_menu_index,
-                                            )
-                                        } else if input.starts_with('?') {
-                                            chat_commands::keybinds_overlay_text()
-                                        } else {
-                                            None
-                                        },
-                                    );
-                                })?;
-                                ui_tick = ui_tick.saturating_add(1);
-
-                                let TuiSubmitLaunch { rx, queue_tx, fut } =
-                                    match build_tui_normal_submit_launch(
-                                        TuiNormalSubmitLaunchInput {
-                                            provider_kind,
-                                            base_url: &base_url,
-                                            model: &model,
-                                            line: &line,
-                                            active_run: &active_run,
-                                            paths,
-                                            logs: &mut logs,
-                                            show_logs: &mut show_logs,
-                                            transcript: &mut transcript,
-                                            status: &mut status,
-                                            status_detail: &mut status_detail,
-                                            follow_output: &follow_output,
-                                            transcript_scroll: &mut transcript_scroll,
-                                            shared_chat_mcp_registry: &mut shared_chat_mcp_registry,
-                                        },
-                                    )
-                                    .await?
-                                    {
-                                        Some(launch) => launch,
-                                        None => continue,
-                                    };
-
-                                drive_tui_active_turn_loop(TuiActiveTurnLoopInput {
-                                    terminal: &mut terminal,
-                                    fut,
-                                    rx,
-                                    queue_tx,
-                                    ui_state: &mut ui_state,
-                                    paths,
-                                    active_run: &active_run,
-                                    base_run,
-                                    provider_kind,
-                                    provider_connected: &mut provider_connected,
-                                    model: &model,
-                                    cwd_label: &cwd_label,
-                                    input: &mut input,
-                                    logs: &mut logs,
-                                    transcript: &mut transcript,
-                                    streaming_assistant: &mut streaming_assistant,
-                                    status: &mut status,
-                                    status_detail: &mut status_detail,
-                                    think_tick: &mut think_tick,
-                                    ui_tick: &mut ui_tick,
-                                    approvals_selected: &mut approvals_selected,
-                                    show_tools: &mut show_tools,
-                                    show_approvals: &mut show_approvals,
-                                    show_logs: &mut show_logs,
-                                    timeout_notice_active: &mut timeout_notice_active,
-                                    transcript_scroll: &mut transcript_scroll,
-                                    follow_output: &mut follow_output,
-                                    compact_tools,
-                                    tools_selected: &mut tools_selected,
-                                    tools_focus: &mut tools_focus,
-                                    show_tool_details: &mut show_tool_details,
-                                    show_banner,
-                                    palette_open,
-                                    palette_items: &palette_items,
-                                    palette_selected,
-                                    search_mode,
-                                    search_query: &search_query,
-                                    slash_menu_index: &mut slash_menu_index,
-                                })
-                                .await?;
-                            }
-                        }
+                match handle_tui_outer_event_dispatch(TuiOuterEventDispatchInput {
+                    event: event::read()?,
+                    prompt_history: &mut prompt_history,
+                    transcript: &mut transcript,
+                    streaming_assistant: &mut streaming_assistant,
+                    transcript_scroll: &mut transcript_scroll,
+                    follow_output: &mut follow_output,
+                    input: &mut input,
+                    history_idx: &mut history_idx,
+                    slash_menu_index: &mut slash_menu_index,
+                    palette_open: &mut palette_open,
+                    palette_items: &palette_items,
+                    palette_selected: &mut palette_selected,
+                    search_mode: &mut search_mode,
+                    search_query: &mut search_query,
+                    search_line_cursor: &mut search_line_cursor,
+                    ui_state: &mut ui_state,
+                    visible_tool_count,
+                    show_tools: &mut show_tools,
+                    show_approvals: &mut show_approvals,
+                    show_logs: &mut show_logs,
+                    compact_tools: &mut compact_tools,
+                    tools_selected: &mut tools_selected,
+                    tools_focus: &mut tools_focus,
+                    approvals_selected: &mut approvals_selected,
+                    paths,
+                    logs: &mut logs,
+                }) {
+                    TuiOuterEventDispatchOutcome::BreakLoop => break,
+                    TuiOuterEventDispatchOutcome::ContinueLoop => continue,
+                    TuiOuterEventDispatchOutcome::HandledKey => {
                         if logs.len() > max_logs {
                             let drop_n = logs.len() - max_logs;
                             logs.drain(0..drop_n);
                         }
                         ui_tick = ui_tick.saturating_add(1);
                     }
-                    _ => {}
+                    TuiOuterEventDispatchOutcome::Noop => {}
+                    TuiOuterEventDispatchOutcome::EnterInline => {
+                        let line = input.trim().to_string();
+                        input.clear();
+                        history_idx = None;
+                        slash_menu_index = 0;
+                        if line.is_empty() {
+                            continue;
+                        }
+                        if pending_params_input && !line.starts_with('/') {
+                            if line.eq_ignore_ascii_case("cancel") {
+                                pending_params_input = false;
+                                logs.push("params update cancelled".to_string());
+                            } else {
+                                match runtime_config::apply_params_input(&mut active_run, &line) {
+                                    Ok(msg) => {
+                                        pending_params_input = false;
+                                        logs.push(msg);
+                                    }
+                                    Err(msg) => logs.push(msg),
+                                }
+                            }
+                            show_logs = true;
+                            continue;
+                        }
+                        if pending_timeout_input && !line.starts_with('/') {
+                            if line.eq_ignore_ascii_case("cancel") {
+                                pending_timeout_input = false;
+                                logs.push("timeout update cancelled".to_string());
+                                show_logs = false;
+                            } else {
+                                match runtime_config::apply_timeout_input(&mut active_run, &line) {
+                                    Ok(msg) => {
+                                        pending_timeout_input = false;
+                                        logs.push(msg);
+                                        show_logs = false;
+                                    }
+                                    Err(msg) => {
+                                        logs.push(msg);
+                                        show_logs = true;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        if line.starts_with('/') {
+                            match handle_tui_slash_command(TuiSlashCommandDispatchInput {
+                                line: &line,
+                                slash_menu_index,
+                                active_run: &mut active_run,
+                                paths,
+                                logs: &mut logs,
+                                show_logs: &mut show_logs,
+                                show_tools: &mut show_tools,
+                                show_approvals: &mut show_approvals,
+                                timeout_notice_active: &mut timeout_notice_active,
+                                pending_timeout_input: &mut pending_timeout_input,
+                                pending_params_input: &mut pending_params_input,
+                                transcript: &mut transcript,
+                                ui_state: &mut ui_state,
+                                streaming_assistant: &mut streaming_assistant,
+                                transcript_scroll: &mut transcript_scroll,
+                                follow_output: &mut follow_output,
+                                shared_chat_mcp_registry: &mut shared_chat_mcp_registry,
+                            })
+                            .await?
+                            {
+                                SlashCommandDispatchOutcome::ExitRequested => break,
+                                SlashCommandDispatchOutcome::Handled => {}
+                            }
+                            continue;
+                        }
+
+                        if line.is_empty() && show_tools && (!show_approvals || tools_focus) {
+                            if visible_tool_count > 0 {
+                                show_tool_details = !show_tool_details;
+                                if show_tool_details {
+                                    show_logs = false;
+                                }
+                            }
+                            continue;
+                        }
+
+                        match prepare_tui_normal_submit_state(TuiNormalSubmitPrepInput {
+                            line: &line,
+                            prompt_history: &mut prompt_history,
+                            transcript: &mut transcript,
+                            show_logs: &mut show_logs,
+                            follow_output: &mut follow_output,
+                            transcript_scroll: &mut transcript_scroll,
+                            status: &mut status,
+                            status_detail: &mut status_detail,
+                            streaming_assistant: &mut streaming_assistant,
+                            think_tick: &mut think_tick,
+                        }) {
+                            TuiNormalSubmitPrepOutcome::HandledNoRun => continue,
+                            TuiNormalSubmitPrepOutcome::ContinueToRun => {}
+                        }
+                        terminal.draw(|f| {
+                            chat_ui::draw_chat_frame(
+                                f,
+                                chat_runtime::chat_mode_label(&active_run),
+                                provider_runtime::provider_cli_name(provider_kind),
+                                provider_connected,
+                                &model,
+                                &status,
+                                &status_detail,
+                                &transcript,
+                                &streaming_assistant,
+                                &ui_state,
+                                tools_selected,
+                                tools_focus,
+                                show_tool_details,
+                                approvals_selected,
+                                &cwd_label,
+                                &input,
+                                &logs,
+                                think_tick,
+                                base_run.tui_refresh_ms,
+                                show_tools,
+                                show_approvals,
+                                show_logs,
+                                transcript_scroll,
+                                compact_tools,
+                                show_banner,
+                                ui_tick,
+                                if palette_open {
+                                    Some(format!(
+                                        "⌘ {}  (Up/Down, Enter, Esc)",
+                                        palette_items[palette_selected]
+                                    ))
+                                } else if search_mode {
+                                    Some(format!("🔎 {}  (Enter next, Esc close)", search_query))
+                                } else if input.starts_with('/') {
+                                    chat_commands::slash_overlay_text(&input, slash_menu_index)
+                                } else if input.starts_with('?') {
+                                    chat_commands::keybinds_overlay_text()
+                                } else {
+                                    None
+                                },
+                            );
+                        })?;
+                        ui_tick = ui_tick.saturating_add(1);
+
+                        let TuiSubmitLaunch { rx, queue_tx, fut } =
+                            match build_tui_normal_submit_launch(TuiNormalSubmitLaunchInput {
+                                provider_kind,
+                                base_url: &base_url,
+                                model: &model,
+                                line: &line,
+                                active_run: &active_run,
+                                paths,
+                                logs: &mut logs,
+                                show_logs: &mut show_logs,
+                                transcript: &mut transcript,
+                                status: &mut status,
+                                status_detail: &mut status_detail,
+                                follow_output: &follow_output,
+                                transcript_scroll: &mut transcript_scroll,
+                                shared_chat_mcp_registry: &mut shared_chat_mcp_registry,
+                            })
+                            .await?
+                            {
+                                Some(launch) => launch,
+                                None => continue,
+                            };
+
+                        drive_tui_active_turn_loop(TuiActiveTurnLoopInput {
+                            terminal: &mut terminal,
+                            fut,
+                            rx,
+                            queue_tx,
+                            ui_state: &mut ui_state,
+                            paths,
+                            active_run: &active_run,
+                            base_run,
+                            provider_kind,
+                            provider_connected: &mut provider_connected,
+                            model: &model,
+                            cwd_label: &cwd_label,
+                            input: &mut input,
+                            logs: &mut logs,
+                            transcript: &mut transcript,
+                            streaming_assistant: &mut streaming_assistant,
+                            status: &mut status,
+                            status_detail: &mut status_detail,
+                            think_tick: &mut think_tick,
+                            ui_tick: &mut ui_tick,
+                            approvals_selected: &mut approvals_selected,
+                            show_tools: &mut show_tools,
+                            show_approvals: &mut show_approvals,
+                            show_logs: &mut show_logs,
+                            timeout_notice_active: &mut timeout_notice_active,
+                            transcript_scroll: &mut transcript_scroll,
+                            follow_output: &mut follow_output,
+                            compact_tools,
+                            tools_selected: &mut tools_selected,
+                            tools_focus: &mut tools_focus,
+                            show_tool_details: &mut show_tool_details,
+                            show_banner,
+                            palette_open,
+                            palette_items: &palette_items,
+                            palette_selected,
+                            search_mode,
+                            search_query: &search_query,
+                            slash_menu_index: &mut slash_menu_index,
+                        })
+                        .await?;
+                        if logs.len() > max_logs {
+                            let drop_n = logs.len() - max_logs;
+                            logs.drain(0..drop_n);
+                        }
+                        ui_tick = ui_tick.saturating_add(1);
+                    }
                 }
             }
         }
