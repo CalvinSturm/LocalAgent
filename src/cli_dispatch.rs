@@ -130,38 +130,8 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
         }
 
         Some(Commands::Doctor(args)) => {
-            if args.docker {
-                match crate::target::DockerTarget::validate_available().and_then(|_| {
-                    crate::target::DockerTarget::validate_image_present_local(&cli.run.docker_image)
-                }) {
-                    Ok(()) => {
-                        println!(
-                            "OK: docker daemon reachable; image={} present locally; network={} ; workdir_mount={}",
-                            cli.run.docker_image,
-                            format!("{:?}", cli.run.docker_network).to_lowercase(),
-                            workdir.display()
-                        );
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        println!("FAIL: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            match provider_runtime::doctor_check(args).await {
-                Ok(ok_msg) => {
-                    println!("{ok_msg}");
-
-                    return Ok(());
-                }
-
-                Err(fail_reason) => {
-                    println!("FAIL: {fail_reason}");
-
-                    std::process::exit(1);
-                }
-            }
+            crate::cli_dispatch_misc_ops::handle_doctor_command(args, &cli.run, &workdir).await?;
+            return Ok(());
         }
 
         Some(Commands::Mcp(args)) => {
@@ -203,41 +173,10 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
             return Ok(());
         }
 
-        Some(Commands::Repo(args)) => match &args.command {
-            RepoSubcommand::Map {
-                print_content,
-                no_write,
-                max_files,
-                max_scan_bytes,
-                max_out_bytes,
-            } => {
-                let map = repo_map::resolve_repo_map(
-                    &workdir,
-                    repo_map::RepoMapLimits {
-                        max_files: *max_files,
-                        max_scan_bytes: *max_scan_bytes,
-                        max_out_bytes: *max_out_bytes,
-                        ..repo_map::RepoMapLimits::default()
-                    },
-                )?;
-
-                let cache_path = if *no_write {
-                    None
-                } else {
-                    Some(repo_map::write_repo_map_cache(&paths.state_dir, &map)?)
-                };
-
-                print!(
-                    "{}",
-                    repo_map::render_repo_map_summary_text(&map, cache_path.as_deref())
-                );
-                if *print_content {
-                    println!("repo_map:");
-                    print!("{}", map.content);
-                }
-                return Ok(());
-            }
-        },
+        Some(Commands::Repo(args)) => {
+            crate::cli_dispatch_misc_ops::handle_repo_command(args, &workdir, &paths)?;
+            return Ok(());
+        }
 
         Some(Commands::Hooks(args)) => {
             let hooks_path = runtime_paths::resolved_hooks_config_path(&cli.run, &paths.state_dir);
@@ -384,39 +323,12 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
         }
 
         Some(Commands::Profile(args)) => {
-            match &args.command {
-                ProfileSubcommand::List => {
-                    for p in crate::reliability_profile::list_builtin_profiles_sorted() {
-                        println!("{}\t{}", p.name, p.description);
-                    }
-                }
-                ProfileSubcommand::Show { name } => {
-                    println!("{}", crate::reliability_profile::render_profile_show(name)?);
-                }
-            }
+            crate::cli_dispatch_misc_ops::handle_profile_command(args)?;
             return Ok(());
         }
 
         Some(Commands::Pack(args)) => {
-            match &args.command {
-                PackSubcommand::List => {
-                    let packs = crate::packs::discover_packs(
-                        &workdir,
-                        crate::packs::PackLimits::default(),
-                    )?;
-                    println!("{}", crate::packs::render_pack_list_text(&packs));
-                }
-                PackSubcommand::Show { pack_id } => {
-                    println!(
-                        "{}",
-                        crate::packs::render_pack_show_text(
-                            &workdir,
-                            pack_id,
-                            crate::packs::PackLimits::default()
-                        )?
-                    );
-                }
-            }
+            crate::cli_dispatch_misc_ops::handle_pack_command(args, &workdir)?;
             return Ok(());
         }
 
