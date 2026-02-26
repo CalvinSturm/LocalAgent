@@ -274,6 +274,30 @@ impl<P: ModelProvider> Agent<P> {
         messages
     }
 
+    fn compute_run_preflight_caches(
+        &self,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        std::collections::BTreeSet<String>,
+    ) {
+        let expected_mcp_catalog_hash_hex = self
+            .mcp_registry
+            .as_ref()
+            .and_then(|m| m.configured_tool_catalog_hash_hex().ok());
+        let expected_mcp_docs_hash_hex = self
+            .mcp_registry
+            .as_ref()
+            .and_then(|m| m.configured_tool_docs_hash_hex().ok());
+        let allowed_tool_names: std::collections::BTreeSet<String> =
+            self.tools.iter().map(|t| t.name.clone()).collect();
+        (
+            expected_mcp_catalog_hash_hex,
+            expected_mcp_docs_hash_hex,
+            allowed_tool_names,
+        )
+    }
+
     #[allow(dead_code)]
     pub fn queue_operator_message(
         &mut self,
@@ -356,16 +380,8 @@ impl<P: ModelProvider> Agent<P> {
         let mut tool_budget_usage = ToolCallBudgetUsage::default();
         let run_started = std::time::Instant::now();
         let mut announced_plan_step_id: Option<String> = None;
-        let expected_mcp_catalog_hash_hex = self
-            .mcp_registry
-            .as_ref()
-            .and_then(|m| m.configured_tool_catalog_hash_hex().ok());
-        let expected_mcp_docs_hash_hex = self
-            .mcp_registry
-            .as_ref()
-            .and_then(|m| m.configured_tool_docs_hash_hex().ok());
-        let allowed_tool_names: std::collections::BTreeSet<String> =
-            self.tools.iter().map(|t| t.name.clone()).collect();
+        let (expected_mcp_catalog_hash_hex, expected_mcp_docs_hash_hex, allowed_tool_names) =
+            self.compute_run_preflight_caches();
         'agent_steps: for step in 0..self.max_steps {
             self.drain_external_operator_queue(&run_id, step as u32);
             if self.tool_call_budget.max_wall_time_ms > 0 {
