@@ -9,7 +9,7 @@ use crate::providers::http::{
     classify_reqwest_error, classify_status, deterministic_backoff_ms, HttpConfig, ProviderError,
     ProviderErrorKind, RetryRecord,
 };
-use crate::providers::{ModelProvider, StreamDelta, ToolCallFragment};
+use crate::providers::{to_u32_opt, ModelProvider, StreamDelta, ToolCallFragment};
 use crate::types::{GenerateRequest, GenerateResponse, Message, Role, TokenUsage, ToolCall};
 
 #[derive(Debug, Clone)]
@@ -540,10 +540,6 @@ fn handle_ollama_stream_json(
         }
     }
     Ok(())
-}
-
-fn to_u32_opt(v: Option<u64>) -> Option<u32> {
-    v.and_then(|x| u32::try_from(x).ok())
 }
 
 fn truncate_for_error(s: &str, max: usize) -> String {

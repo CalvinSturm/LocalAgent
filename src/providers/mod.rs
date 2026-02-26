@@ -38,3 +38,7 @@ pub trait ModelProvider: Send + Sync {
         self.generate(req).await
     }
 }
+
+pub(crate) fn to_u32_opt(v: Option<u64>) -> Option<u32> {
+    v.and_then(|x| u32::try_from(x).ok())
+}
