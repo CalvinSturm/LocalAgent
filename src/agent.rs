@@ -1,6 +1,9 @@
 use uuid::Uuid;
 
-use crate::agent_tool_exec::run_tool_once;
+use crate::agent_tool_exec::{
+    classify_tool_failure, infer_truncated_flag, is_apply_patch_invalid_format_error,
+    run_tool_once, tool_result_has_error,
+};
 use crate::compaction::{context_size_chars, maybe_compact, CompactionReport, CompactionSettings};
 use crate::events::{EventKind, EventSink};
 use crate::gate::{ApprovalMode, AutoApproveScope, GateContext, GateDecision, GateEvent, ToolGate};
@@ -210,7 +213,7 @@ struct WorkerStepStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ToolFailureClass {
+pub(crate) enum ToolFailureClass {
     Schema,
     Policy,
     TimeoutTransient,
@@ -4134,65 +4137,6 @@ fn find_json_bounds(s: &str) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-fn classify_tool_failure(
-    tc: &ToolCall,
-    raw_content: &str,
-    invalid_args_error: bool,
-) -> ToolFailureClass {
-    let text = tool_result_text(raw_content).to_ascii_lowercase();
-    if invalid_args_error
-        || text.contains("invalid tool arguments")
-        || text.contains("missing required field")
-        || text.contains("unknown field not allowed")
-        || text.contains("must be a ")
-        || text.contains("has invalid type")
-    {
-        return ToolFailureClass::Schema;
-    }
-    if text.contains("denied") || text.contains("not allowed") || text.contains("approval required")
-    {
-        return ToolFailureClass::Policy;
-    }
-    if text.contains("strict mode violation")
-        || (text.contains("locator") && text.contains("multiple"))
-        || (text.contains("selector") && text.contains("ambiguous"))
-    {
-        return ToolFailureClass::SelectorAmbiguous;
-    }
-    if text.contains("timed out") || text.contains("timeout") || text.contains("stream idle") {
-        return ToolFailureClass::TimeoutTransient;
-    }
-    if text.contains("mcp call failed")
-        || text.contains("connection refused")
-        || text.contains("response channel closed")
-        || text.contains("failed to spawn mcp")
-        || text.contains("temporarily unavailable")
-    {
-        return ToolFailureClass::NetworkTransient;
-    }
-    let side_effects = tool_side_effects(&tc.name);
-    if matches!(
-        side_effects,
-        crate::types::SideEffects::FilesystemWrite
-            | crate::types::SideEffects::ShellExec
-            | crate::types::SideEffects::Browser
-            | crate::types::SideEffects::Network
-    ) {
-        return ToolFailureClass::NonIdempotent;
-    }
-    ToolFailureClass::Other
-}
-
-fn is_apply_patch_invalid_format_error(tc: &ToolCall, raw_content: &str) -> bool {
-    if tc.name != "apply_patch" {
-        return false;
-    }
-    let text = tool_result_text(raw_content).to_ascii_lowercase();
-    text.contains("invalid patch format")
-        || text.contains("invalid patch:")
-        || text.contains("failed to apply patch:")
-}
-
 fn implementation_integrity_violation(
     user_prompt: &str,
     final_output: &str,
@@ -4341,39 +4285,6 @@ fn prompt_requires_tool_only(prompt: &str) -> bool {
         && (p.contains("no prose")
             || p.contains("do not output code")
             || p.contains("do not explain"))
-}
-
-fn tool_result_text(raw: &str) -> String {
-    match serde_json::from_str::<serde_json::Value>(raw) {
-        Ok(v) => v
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or(raw)
-            .to_string(),
-        Err(_) => raw.to_string(),
-    }
-}
-fn tool_result_has_error(content: &str) -> bool {
-    match serde_json::from_str::<serde_json::Value>(content) {
-        Ok(v) => {
-            if let Some(ok) = v.get("ok").and_then(|x| x.as_bool()) {
-                !ok
-            } else {
-                v.get("error").is_some()
-            }
-        }
-        Err(_) => false,
-    }
-}
-
-fn infer_truncated_flag(content: &str) -> bool {
-    match serde_json::from_str::<serde_json::Value>(content) {
-        Ok(v) => v
-            .get("truncated")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false),
-        Err(_) => false,
-    }
 }
 
 fn make_invalid_args_tool_message(
