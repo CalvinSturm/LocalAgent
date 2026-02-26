@@ -5,6 +5,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::providers::common::{
+    build_http_client, build_tool_envelopes, truncate_for_error, ToolEnvelope as SharedToolEnvelope,
+};
 use crate::providers::http::{
     classify_reqwest_error, classify_status, deterministic_backoff_ms, HttpConfig, ProviderError,
     ProviderErrorKind, RetryRecord,
@@ -26,13 +29,7 @@ impl OpenAiCompatProvider {
         api_key: Option<String>,
         http: HttpConfig,
     ) -> anyhow::Result<Self> {
-        let mut builder = Client::builder().connect_timeout(http.connect_timeout());
-        if let Some(timeout) = http.request_timeout_opt() {
-            builder = builder.timeout(timeout);
-        }
-        let client = builder
-            .build()
-            .context("failed to build OpenAI-compatible HTTP client")?;
+        let client = build_http_client(http, "failed to build OpenAI-compatible HTTP client")?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -42,19 +39,7 @@ impl OpenAiCompatProvider {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct OpenAiToolEnvelope {
-    #[serde(rename = "type")]
-    tool_type: String,
-    function: OpenAiToolFunction,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiToolFunction {
-    name: String,
-    description: String,
-    parameters: Value,
-}
+type OpenAiToolEnvelope = SharedToolEnvelope;
 
 #[derive(Debug, Serialize)]
 struct OpenAiRequest {
@@ -520,18 +505,7 @@ fn drain_sse_events(buf: &mut String) -> Vec<String> {
 }
 
 fn to_request(req: GenerateRequest, stream: bool) -> OpenAiRequest {
-    let tools = req.tools.map(|list| {
-        list.into_iter()
-            .map(|t| OpenAiToolEnvelope {
-                tool_type: "function".to_string(),
-                function: OpenAiToolFunction {
-                    name: t.name,
-                    description: t.description,
-                    parameters: t.parameters,
-                },
-            })
-            .collect::<Vec<_>>()
-    });
+    let tools = build_tool_envelopes(req.tools);
     OpenAiRequest {
         model: req.model,
         messages: req.messages,
@@ -689,13 +663,6 @@ fn finalize_tool_calls(partials: Vec<PartialToolCall>) -> Vec<ToolCall> {
             },
         })
         .collect()
-}
-
-fn truncate_for_error(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    s.chars().take(max).collect()
 }
 
 #[cfg(test)]

@@ -5,6 +5,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::providers::common::{
+    build_http_client, build_tool_envelopes, truncate_for_error, ToolEnvelope as SharedToolEnvelope,
+};
 use crate::providers::http::{
     classify_reqwest_error, classify_status, deterministic_backoff_ms, HttpConfig, ProviderError,
     ProviderErrorKind, RetryRecord,
@@ -21,13 +24,7 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(base_url: String, http: HttpConfig) -> anyhow::Result<Self> {
-        let mut builder = Client::builder().connect_timeout(http.connect_timeout());
-        if let Some(timeout) = http.request_timeout_opt() {
-            builder = builder.timeout(timeout);
-        }
-        let client = builder
-            .build()
-            .context("failed to build Ollama HTTP client")?;
+        let client = build_http_client(http, "failed to build Ollama HTTP client")?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -36,19 +33,7 @@ impl OllamaProvider {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct OllamaToolEnvelope {
-    #[serde(rename = "type")]
-    tool_type: String,
-    function: OllamaToolFunction,
-}
-
-#[derive(Debug, Serialize)]
-struct OllamaToolFunction {
-    name: String,
-    description: String,
-    parameters: Value,
-}
+type OllamaToolEnvelope = SharedToolEnvelope;
 
 #[derive(Debug, Serialize)]
 struct OllamaMessageOut {
@@ -435,18 +420,7 @@ fn drain_json_lines(buf: &mut String) -> Vec<String> {
 }
 
 fn to_request(req: GenerateRequest, stream: bool) -> OllamaRequest {
-    let tools = req.tools.map(|list| {
-        list.into_iter()
-            .map(|t| OllamaToolEnvelope {
-                tool_type: "function".to_string(),
-                function: OllamaToolFunction {
-                    name: t.name,
-                    description: t.description,
-                    parameters: t.parameters,
-                },
-            })
-            .collect::<Vec<_>>()
-    });
+    let tools = build_tool_envelopes(req.tools);
     let messages = req
         .messages
         .into_iter()
@@ -540,13 +514,6 @@ fn handle_ollama_stream_json(
         }
     }
     Ok(())
-}
-
-fn truncate_for_error(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    s.chars().take(max).collect()
 }
 
 #[cfg(test)]

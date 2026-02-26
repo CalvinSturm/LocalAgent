@@ -1,3 +1,4 @@
+pub mod common;
 pub mod http;
 pub mod mock;
 pub mod ollama;
