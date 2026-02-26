@@ -329,6 +329,43 @@ impl<P: ModelProvider> Agent<P> {
         *announced_plan_step_id = Some(step_constraint.step_id.clone());
     }
 
+    fn check_wall_time_budget_exceeded(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        run_started: &std::time::Instant,
+    ) -> Option<String> {
+        if self.tool_call_budget.max_wall_time_ms == 0 {
+            return None;
+        }
+        let elapsed_ms = run_started.elapsed().as_millis() as u64;
+        if elapsed_ms <= self.tool_call_budget.max_wall_time_ms {
+            return None;
+        }
+        let reason = format!(
+            "runtime budget exceeded: wall time {}ms > limit {}ms",
+            elapsed_ms, self.tool_call_budget.max_wall_time_ms
+        );
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::Error,
+            serde_json::json!({
+                "error": reason,
+                "source": "runtime_budget",
+                "elapsed_ms": elapsed_ms,
+                "max_wall_time_ms": self.tool_call_budget.max_wall_time_ms
+            }),
+        );
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::RunEnd,
+            serde_json::json!({"exit_reason":"budget_exceeded"}),
+        );
+        Some(reason)
+    }
+
     #[allow(dead_code)]
     pub fn queue_operator_message(
         &mut self,
@@ -415,60 +452,38 @@ impl<P: ModelProvider> Agent<P> {
             self.compute_run_preflight_caches();
         'agent_steps: for step in 0..self.max_steps {
             self.drain_external_operator_queue(&run_id, step as u32);
-            if self.tool_call_budget.max_wall_time_ms > 0 {
-                let elapsed_ms = run_started.elapsed().as_millis() as u64;
-                if elapsed_ms > self.tool_call_budget.max_wall_time_ms {
-                    let reason = format!(
-                        "runtime budget exceeded: wall time {}ms > limit {}ms",
-                        elapsed_ms, self.tool_call_budget.max_wall_time_ms
-                    );
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::Error,
-                        serde_json::json!({
-                            "error": reason,
-                            "source": "runtime_budget",
-                            "elapsed_ms": elapsed_ms,
-                            "max_wall_time_ms": self.tool_call_budget.max_wall_time_ms
-                        }),
-                    );
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"budget_exceeded"}),
-                    );
-                    let final_prompt_size_chars = context_size_chars(&messages);
-                    return AgentOutcome {
-                        run_id,
-                        started_at,
-                        finished_at: crate::trust::now_rfc3339(),
-                        exit_reason: AgentExitReason::BudgetExceeded,
-                        final_output: reason.clone(),
-                        error: Some(reason),
-                        messages,
-                        tool_calls: observed_tool_calls,
-                        tool_decisions: observed_tool_decisions,
-                        compaction_settings: self.compaction_settings.clone(),
-                        final_prompt_size_chars,
-                        compaction_report: last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        token_usage: if saw_token_usage {
-                            Some(total_token_usage.clone())
-                        } else {
-                            None
-                        },
-                        taint: taint_record_from_state(
-                            self.taint_toggle,
-                            self.taint_mode,
-                            self.taint_digest_bytes,
-                            &taint_state,
-                        ),
-                    };
-                }
+            if let Some(reason) =
+                self.check_wall_time_budget_exceeded(&run_id, step as u32, &run_started)
+            {
+                let final_prompt_size_chars = context_size_chars(&messages);
+                return AgentOutcome {
+                    run_id,
+                    started_at,
+                    finished_at: crate::trust::now_rfc3339(),
+                    exit_reason: AgentExitReason::BudgetExceeded,
+                    final_output: reason.clone(),
+                    error: Some(reason),
+                    messages,
+                    tool_calls: observed_tool_calls,
+                    tool_decisions: observed_tool_decisions,
+                    compaction_settings: self.compaction_settings.clone(),
+                    final_prompt_size_chars,
+                    compaction_report: last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    token_usage: if saw_token_usage {
+                        Some(total_token_usage.clone())
+                    } else {
+                        None
+                    },
+                    taint: taint_record_from_state(
+                        self.taint_toggle,
+                        self.taint_mode,
+                        self.taint_digest_bytes,
+                        &taint_state,
+                    ),
+                };
             }
             self.emit_plan_step_started_if_needed(
                 &run_id,
