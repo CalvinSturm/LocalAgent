@@ -318,11 +318,20 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
         }
     }
 
-    finalize_summary(&mut results);
-    results.metrics = Some(compute_eval_metrics(&results));
-    write_eval_outputs(&config, &out_path, &results)?;
+    finalize_and_write_eval_results(&config, &out_path, &mut results)?;
     println!("eval results written: {}", out_path.display());
     Ok(out_path)
+}
+
+fn finalize_and_write_eval_results(
+    config: &EvalConfig,
+    out_path: &Path,
+    results: &mut EvalResults,
+) -> anyhow::Result<()> {
+    finalize_summary(results);
+    results.metrics = Some(compute_eval_metrics(results));
+    write_eval_outputs(config, out_path, results)?;
+    Ok(())
 }
 
 fn write_eval_outputs(
