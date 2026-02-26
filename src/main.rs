@@ -30,6 +30,7 @@ mod cli_args;
 
 mod cli_dispatch;
 mod cli_dispatch_checks;
+mod cli_dispatch_eval_replay;
 
 mod compaction;
 
