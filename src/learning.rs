@@ -39,6 +39,11 @@ pub const LEARN_PROMOTE_INVALID_PACK_ID: &str = "LEARN_PROMOTE_INVALID_PACK_ID";
 pub const LEARNING_PROMOTED_SCHEMA_V1: &str = "openagent.learning_promoted.v1";
 #[allow(dead_code)]
 pub const LEARNED_GUIDANCE_MANAGED_SECTION_MARKER: &str = "## LocalAgent Learned Guidance";
+#[allow(dead_code)]
+pub const LEARN_ASSIST_PROMPT_VERSION_V1: &str = "openagent.learn_assist_prompt.v1";
+pub const LEARN_ASSIST_WRITE_REQUIRES_ASSIST: &str = "LEARN_ASSIST_WRITE_REQUIRES_ASSIST";
+pub const LEARN_ASSIST_PROVIDER_REQUIRED: &str = "LEARN_ASSIST_PROVIDER_REQUIRED";
+pub const LEARN_ASSIST_MODEL_REQUIRED: &str = "LEARN_ASSIST_MODEL_REQUIRED";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningEntryV1 {
@@ -50,6 +55,8 @@ pub struct LearningEntryV1 {
     pub summary: String,
     pub evidence: Vec<EvidenceRefV1>,
     pub proposed_memory: ProposedMemoryV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assist: Option<AssistCaptureMetaV1>,
     pub sensitivity_flags: SensitivityFlagsV1,
     pub status: LearningStatusV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -105,6 +112,33 @@ pub struct ProposedMemoryV1 {
     pub check_text: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistCaptureMetaV1 {
+    pub enabled: bool,
+    pub provider: String,
+    pub model: String,
+    pub prompt_version: String,
+    pub input_hash_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    pub generated_at: String,
+    #[serde(default)]
+    pub output_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistCaptureHashInputV1 {
+    pub enabled: bool,
+    pub provider: String,
+    pub model: String,
+    pub prompt_version: String,
+    pub input_hash_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    #[serde(default)]
+    pub output_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -188,6 +222,8 @@ pub struct LearningEntryHashInputV1 {
     pub summary: String,
     pub evidence: Vec<EvidenceRefV1>,
     pub proposed_memory: ProposedMemoryV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assist: Option<AssistCaptureHashInputV1>,
     pub sensitivity_flags: SensitivityFlagsV1,
 }
 
@@ -203,11 +239,57 @@ pub struct CaptureLearningInput {
     pub tags: Vec<String>,
     pub evidence_specs: Vec<String>,
     pub evidence_notes: Vec<String>,
+    pub assist: Option<AssistCaptureMetaV1>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CaptureLearningOutput {
     pub entry: LearningEntryV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistCaptureInputCanonical {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guidance_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_specs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedCaptureDraft {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guidance_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_text: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssistedCapturePreview {
+    pub provider: String,
+    pub model: String,
+    pub prompt_version: String,
+    pub input_hash_hex: String,
+    pub draft: AssistedCaptureDraft,
+    pub raw_model_output: String,
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +372,7 @@ pub fn capture_learning_entry(
         input.tags,
         &mut truncations,
     );
+    let assist = input.assist.clone();
 
     let sensitivity_flags = infer_sensitivity_flags(&summary, &source, &evidence, &proposed_memory);
 
@@ -302,6 +385,7 @@ pub fn capture_learning_entry(
         summary,
         evidence,
         proposed_memory,
+        assist,
         sensitivity_flags,
         status: LearningStatusV1::Captured,
         truncations,
@@ -897,6 +981,15 @@ pub fn learning_entry_hash_input(entry: &LearningEntryV1) -> LearningEntryHashIn
         summary: entry.summary.clone(),
         evidence: entry.evidence.clone(),
         proposed_memory: entry.proposed_memory.clone(),
+        assist: entry.assist.as_ref().map(|a| AssistCaptureHashInputV1 {
+            enabled: a.enabled,
+            provider: a.provider.clone(),
+            model: a.model.clone(),
+            prompt_version: a.prompt_version.clone(),
+            input_hash_hex: a.input_hash_hex.clone(),
+            source_run_id: a.source_run_id.clone(),
+            output_truncated: a.output_truncated,
+        }),
         sensitivity_flags: entry.sensitivity_flags.clone(),
     }
 }
@@ -905,6 +998,140 @@ pub fn compute_entry_hash_hex(entry: &LearningEntryV1) -> anyhow::Result<String>
     let input = learning_entry_hash_input(entry);
     let bytes = serde_json::to_vec(&input)?;
     Ok(store::sha256_hex(&bytes))
+}
+
+pub fn build_assist_capture_input_canonical(
+    input: &CaptureLearningInput,
+) -> AssistCaptureInputCanonical {
+    AssistCaptureInputCanonical {
+        run_id: input.run_id.clone(),
+        category: Some(learning_category_str(&input.category).to_string()),
+        summary: input.summary.clone(),
+        task_summary: input.task_summary.clone(),
+        profile: input.profile.clone(),
+        guidance_text: input.guidance_text.clone(),
+        check_text: input.check_text.clone(),
+        tags: input.tags.clone(),
+        evidence_specs: input.evidence_specs.clone(),
+        evidence_notes: input.evidence_notes.clone(),
+    }
+}
+
+pub fn compute_assist_input_hash_hex(
+    input: &AssistCaptureInputCanonical,
+) -> anyhow::Result<String> {
+    let bytes = serde_json::to_vec(input)?;
+    Ok(store::sha256_hex(&bytes))
+}
+
+pub fn parse_assisted_capture_draft(raw: &str) -> AssistedCaptureDraft {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return AssistedCaptureDraft::default();
+    }
+    if trimmed.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let mut out = AssistedCaptureDraft::default();
+            out.category = v
+                .get("category")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            out.summary = v
+                .get("summary")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            out.guidance_text = v
+                .get("guidance_text")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            out.check_text = v
+                .get("check_text")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            return out;
+        }
+    }
+    AssistedCaptureDraft {
+        summary: Some(trimmed.to_string()),
+        ..AssistedCaptureDraft::default()
+    }
+}
+
+pub fn render_assist_capture_preview(preview: &AssistedCapturePreview) -> String {
+    let mut out = String::new();
+    out.push_str("ASSIST DRAFT PREVIEW (not saved). Use --write to persist.\n");
+    out.push_str(&format!(
+        "provider: {}\nmodel: {}\nprompt_version: {}\nassist_input_hash_hex: {}\n",
+        preview.provider, preview.model, preview.prompt_version, preview.input_hash_hex
+    ));
+    out.push_str("draft:\n");
+    out.push_str(&format!(
+        "  category: {}\n",
+        preview.draft.category.as_deref().unwrap_or("-")
+    ));
+    out.push_str("  summary:\n");
+    out.push_str(preview.draft.summary.as_deref().unwrap_or("-"));
+    out.push('\n');
+    out.push_str("  guidance_text:\n");
+    out.push_str(preview.draft.guidance_text.as_deref().unwrap_or("-"));
+    out.push('\n');
+    out.push_str("  check_text:\n");
+    out.push_str(preview.draft.check_text.as_deref().unwrap_or("-"));
+    out.push('\n');
+    out.push_str("raw_model_output_preview:\n");
+    out.push_str(&preview.raw_model_output);
+    out.push('\n');
+    redact_and_bound_terminal_output(&out, LEARN_SHOW_MAX_BYTES)
+}
+
+pub fn build_assist_capture_meta(
+    provider: &str,
+    model: &str,
+    input_hash_hex: &str,
+    source_run_id: Option<&str>,
+    output_truncated: bool,
+) -> AssistCaptureMetaV1 {
+    AssistCaptureMetaV1 {
+        enabled: true,
+        provider: provider.to_string(),
+        model: model.to_string(),
+        prompt_version: LEARN_ASSIST_PROMPT_VERSION_V1.to_string(),
+        input_hash_hex: input_hash_hex.to_string(),
+        source_run_id: source_run_id.map(|s| s.to_string()),
+        generated_at: crate::trust::now_rfc3339(),
+        output_truncated,
+    }
+}
+
+pub fn apply_assisted_draft_to_capture_input(
+    mut input: CaptureLearningInput,
+    draft: &AssistedCaptureDraft,
+    assist_meta: AssistCaptureMetaV1,
+) -> CaptureLearningInput {
+    if let Some(cat) = &draft.category {
+        if let Some(parsed) = parse_learning_category_str(cat) {
+            input.category = parsed;
+        }
+    }
+    if let Some(summary) = &draft.summary {
+        input.summary = summary.clone();
+    }
+    if let Some(guidance) = &draft.guidance_text {
+        input.guidance_text = Some(guidance.clone());
+    }
+    if let Some(check_text) = &draft.check_text {
+        input.check_text = Some(check_text.clone());
+    }
+    input.assist = Some(assist_meta);
+    input
 }
 
 fn parse_evidence_specs(
@@ -1243,6 +1470,15 @@ fn learning_status_str(status: &LearningStatusV1) -> &'static str {
     }
 }
 
+fn parse_learning_category_str(raw: &str) -> Option<LearningCategoryV1> {
+    match raw.trim() {
+        "workflow_hint" | "workflow-hint" => Some(LearningCategoryV1::WorkflowHint),
+        "prompt_guidance" | "prompt-guidance" => Some(LearningCategoryV1::PromptGuidance),
+        "check_candidate" | "check-candidate" => Some(LearningCategoryV1::CheckCandidate),
+        _ => None,
+    }
+}
+
 fn evidence_kind_str(kind: &EvidenceKindV1) -> &'static str {
     match kind {
         EvidenceKindV1::RunId => "run_id",
@@ -1530,6 +1766,7 @@ pub fn build_capture_input(
         tags,
         evidence_specs: evidence,
         evidence_notes,
+        assist: None,
     }
 }
 
@@ -1562,6 +1799,7 @@ mod tests {
                 note: None,
             }],
             proposed_memory: ProposedMemoryV1::default(),
+            assist: None,
             sensitivity_flags: SensitivityFlagsV1::default(),
             status: LearningStatusV1::Captured,
             truncations: Vec::new(),
@@ -1590,6 +1828,92 @@ mod tests {
         let ha = compute_entry_hash_hex(&a).expect("hash a");
         let hb = compute_entry_hash_hex(&b).expect("hash b");
         assert_eq!(ha, hb);
+    }
+
+    #[test]
+    fn entry_hash_excludes_assist_generated_at_but_includes_input_hash() {
+        let mut a = sample_entry();
+        let mut b = sample_entry();
+        a.assist = Some(AssistCaptureMetaV1 {
+            enabled: true,
+            provider: "ollama".to_string(),
+            model: "mock-model".to_string(),
+            prompt_version: LEARN_ASSIST_PROMPT_VERSION_V1.to_string(),
+            input_hash_hex: "abc".to_string(),
+            source_run_id: Some("run1".to_string()),
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+            output_truncated: false,
+        });
+        b.assist = Some(AssistCaptureMetaV1 {
+            generated_at: "2027-01-01T00:00:00Z".to_string(),
+            ..a.assist.clone().expect("assist")
+        });
+        let ha = compute_entry_hash_hex(&a).expect("hash a");
+        let hb = compute_entry_hash_hex(&b).expect("hash b");
+        assert_eq!(ha, hb, "generated_at should not affect entry hash");
+
+        b.assist.as_mut().expect("assist").input_hash_hex = "def".to_string();
+        let hc = compute_entry_hash_hex(&b).expect("hash c");
+        assert_ne!(ha, hc, "assist.input_hash_hex should affect entry hash");
+    }
+
+    #[test]
+    fn assist_input_hash_is_stable_for_fixed_fixture() {
+        let a = build_assist_capture_input_canonical(&CaptureLearningInput {
+            run_id: Some("run1".to_string()),
+            category: LearningCategoryV1::PromptGuidance,
+            summary: "summary".to_string(),
+            task_summary: Some("task".to_string()),
+            profile: Some("dev".to_string()),
+            guidance_text: Some("do x".to_string()),
+            check_text: Some("assert y".to_string()),
+            tags: vec!["a".to_string(), "b".to_string()],
+            evidence_specs: vec!["run_id:r1".to_string(), "reason_code:OK".to_string()],
+            evidence_notes: vec!["note".to_string()],
+            assist: None,
+        });
+        let b = build_assist_capture_input_canonical(&CaptureLearningInput {
+            run_id: Some("run1".to_string()),
+            category: LearningCategoryV1::PromptGuidance,
+            summary: "summary".to_string(),
+            task_summary: Some("task".to_string()),
+            profile: Some("dev".to_string()),
+            guidance_text: Some("do x".to_string()),
+            check_text: Some("assert y".to_string()),
+            tags: vec!["a".to_string(), "b".to_string()],
+            evidence_specs: vec!["run_id:r1".to_string(), "reason_code:OK".to_string()],
+            evidence_notes: vec!["note".to_string()],
+            assist: None,
+        });
+        let ha = compute_assist_input_hash_hex(&a).expect("hash a");
+        let hb = compute_assist_input_hash_hex(&b).expect("hash b");
+        assert_eq!(ha, hb);
+    }
+
+    #[test]
+    fn assist_preview_is_bounded_redacted_and_labeled() {
+        let preview = AssistedCapturePreview {
+            provider: "mock".to_string(),
+            model: "mock".to_string(),
+            prompt_version: LEARN_ASSIST_PROMPT_VERSION_V1.to_string(),
+            input_hash_hex: "abc".to_string(),
+            draft: AssistedCaptureDraft {
+                summary: Some(format!(
+                    "contains token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 {}",
+                    "x".repeat(20_000)
+                )),
+                ..AssistedCaptureDraft::default()
+            },
+            raw_model_output: format!(
+                "{{\"summary\":\"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 {}\"}}",
+                "x".repeat(20_000)
+            ),
+        };
+        let out = render_assist_capture_preview(&preview);
+        assert!(out.contains("ASSIST DRAFT PREVIEW (not saved). Use --write to persist."));
+        assert!(out.contains(REDACTED_SECRET_TOKEN));
+        assert!(!out.contains("ghp_"));
+        assert!(out.len() <= LEARN_SHOW_MAX_BYTES + "\n...[truncated]".len());
     }
 
     #[test]

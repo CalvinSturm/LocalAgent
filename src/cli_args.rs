@@ -492,6 +492,12 @@ pub(crate) enum LearnSubcommand {
         #[arg(long)]
         run: Option<String>,
 
+        #[arg(long, default_value_t = false)]
+        assist: bool,
+
+        #[arg(long, default_value_t = false)]
+        write: bool,
+
         #[arg(long, value_enum)]
         category: LearnCategoryArg,
 
