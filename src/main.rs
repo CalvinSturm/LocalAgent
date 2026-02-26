@@ -1,4 +1,6 @@
 mod agent;
+mod agent_events;
+mod agent_queue_runtime;
 
 mod agent_runtime;
 

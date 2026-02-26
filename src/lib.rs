@@ -1,6 +1,8 @@
 #![deny(unreachable_pub)]
 
 pub mod agent;
+pub(crate) mod agent_events;
+pub(crate) mod agent_queue_runtime;
 pub mod checks;
 pub mod compaction;
 pub mod diagnostics;
