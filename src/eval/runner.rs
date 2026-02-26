@@ -220,55 +220,17 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
                 let run_dir = create_run_workdir(config.workdir_override.as_deref())?;
                 apply_fixtures(&run_dir, &task.fixtures)?;
 
-                let timeout = Duration::from_secs(config.timeout_seconds);
-                let exec = run_single(
-                    &config,
-                    &state_paths,
-                    &run_dir,
-                    &enabled_mcp,
+                let row = execute_eval_run_once(EvalSingleRunExecInput {
+                    config: &config,
+                    state_paths: &state_paths,
+                    enabled_mcp: &enabled_mcp,
                     model,
                     task,
-                    cost_model.as_ref(),
-                );
-                let row = match tokio::time::timeout(timeout, exec).await {
-                    Ok(Ok(mut row)) => {
-                        row.run_index = run_index;
-                        if config.keep_workdir || config.workdir_override.is_some() {
-                            row.workdir = Some(run_dir.display().to_string());
-                        }
-                        row
-                    }
-                    Ok(Err(e)) => {
-                        let run_id = Uuid::new_v4().to_string();
-                        write_synthetic_error_artifact(
-                            &config,
-                            &state_paths,
-                            model,
-                            &run_id,
-                            format!("run error: {e}"),
-                        );
-                        build_eval_run_error_row(
-                            &config,
-                            model,
-                            task,
-                            run_index,
-                            &run_dir,
-                            run_id,
-                            format!("run error: {e}"),
-                        )
-                    }
-                    Err(_) => {
-                        let run_id = Uuid::new_v4().to_string();
-                        write_synthetic_error_artifact(
-                            &config,
-                            &state_paths,
-                            model,
-                            &run_id,
-                            "timeout".to_string(),
-                        );
-                        build_eval_timeout_row(&config, model, task, run_index, &run_dir, run_id)
-                    }
-                };
+                    cost_model: cost_model.as_ref(),
+                    run_dir: &run_dir,
+                    run_index,
+                })
+                .await;
                 if config.workdir_override.is_none() && !config.keep_workdir {
                     let _ = std::fs::remove_dir_all(&run_dir);
                 }
@@ -281,6 +243,77 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
     finalize_and_write_eval_results(&config, &out_path, &mut results)?;
     println!("eval results written: {}", out_path.display());
     Ok(out_path)
+}
+
+struct EvalSingleRunExecInput<'a> {
+    config: &'a EvalConfig,
+    state_paths: &'a StatePaths,
+    enabled_mcp: &'a [String],
+    model: &'a str,
+    task: &'a EvalTask,
+    cost_model: Option<&'a CostModel>,
+    run_dir: &'a Path,
+    run_index: usize,
+}
+
+async fn execute_eval_run_once(input: EvalSingleRunExecInput<'_>) -> EvalRunRow {
+    let timeout = Duration::from_secs(input.config.timeout_seconds);
+    let exec = run_single(
+        input.config,
+        input.state_paths,
+        input.run_dir,
+        input.enabled_mcp,
+        input.model,
+        input.task,
+        input.cost_model,
+    );
+    match tokio::time::timeout(timeout, exec).await {
+        Ok(Ok(mut row)) => {
+            row.run_index = input.run_index;
+            if input.config.keep_workdir || input.config.workdir_override.is_some() {
+                row.workdir = Some(input.run_dir.display().to_string());
+            }
+            row
+        }
+        Ok(Err(e)) => {
+            let run_id = Uuid::new_v4().to_string();
+            let error = format!("run error: {e}");
+            write_synthetic_error_artifact(
+                input.config,
+                input.state_paths,
+                input.model,
+                &run_id,
+                error.clone(),
+            );
+            build_eval_run_error_row(
+                input.config,
+                input.model,
+                input.task,
+                input.run_index,
+                input.run_dir,
+                run_id,
+                error,
+            )
+        }
+        Err(_) => {
+            let run_id = Uuid::new_v4().to_string();
+            write_synthetic_error_artifact(
+                input.config,
+                input.state_paths,
+                input.model,
+                &run_id,
+                "timeout".to_string(),
+            );
+            build_eval_timeout_row(
+                input.config,
+                input.model,
+                input.task,
+                input.run_index,
+                input.run_dir,
+                run_id,
+            )
+        }
+    }
 }
 
 fn finalize_and_write_eval_results(
