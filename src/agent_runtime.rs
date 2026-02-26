@@ -910,35 +910,12 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         }
     }
     if matches!(args.mode, planner::RunMode::PlannerWorker) {
-        let mut step_result_json = None;
-        let mut step_result_error = None;
-        let mut step_result_valid = None;
-        if let Some(plan) = planner_record.as_ref() {
-            match planner::normalize_worker_step_result(&outcome.final_output, &plan.plan_json) {
-                Ok(v) => {
-                    step_result_json = Some(v);
-                    step_result_valid = Some(true);
-                }
-                Err(e) => {
-                    let err = e.to_string();
-                    if planner_strict_effective
-                        && matches!(outcome.exit_reason, AgentExitReason::Ok)
-                    {
-                        outcome.exit_reason = AgentExitReason::PlannerError;
-                        outcome.error = Some(format!(
-                            "worker step result validation failed in strict planner_worker mode: {err}"
-                        ));
-                    }
-                    step_result_error = Some(err);
-                    step_result_valid = Some(false);
-                }
-            }
-        }
-        if let Some(worker) = worker_record.as_mut() {
-            worker.step_result_valid = step_result_valid;
-            worker.step_result_json = step_result_json;
-            worker.step_result_error = step_result_error;
-        }
+        normalize_and_record_worker_step_result(
+            &mut outcome,
+            planner_record.as_ref(),
+            &mut worker_record,
+            planner_strict_effective,
+        );
     }
     finalize_ui_and_session_state(
         ui_join,
@@ -1395,6 +1372,41 @@ fn finalize_ui_and_session_state(
         if let Err(e) = session_store.save(session_data, args.max_session_messages) {
             eprintln!("WARN: failed to save session: {e}");
         }
+    }
+}
+
+fn normalize_and_record_worker_step_result(
+    outcome: &mut agent::AgentOutcome,
+    planner_record: Option<&PlannerRunRecord>,
+    worker_record: &mut Option<WorkerRunRecord>,
+    planner_strict_effective: bool,
+) {
+    let mut step_result_json = None;
+    let mut step_result_error = None;
+    let mut step_result_valid = None;
+    if let Some(plan) = planner_record {
+        match planner::normalize_worker_step_result(&outcome.final_output, &plan.plan_json) {
+            Ok(v) => {
+                step_result_json = Some(v);
+                step_result_valid = Some(true);
+            }
+            Err(e) => {
+                let err = e.to_string();
+                if planner_strict_effective && matches!(outcome.exit_reason, AgentExitReason::Ok) {
+                    outcome.exit_reason = AgentExitReason::PlannerError;
+                    outcome.error = Some(format!(
+                        "worker step result validation failed in strict planner_worker mode: {err}"
+                    ));
+                }
+                step_result_error = Some(err);
+                step_result_valid = Some(false);
+            }
+        }
+    }
+    if let Some(worker) = worker_record.as_mut() {
+        worker.step_result_valid = step_result_valid;
+        worker.step_result_json = step_result_json;
+        worker.step_result_error = step_result_error;
     }
 }
 
