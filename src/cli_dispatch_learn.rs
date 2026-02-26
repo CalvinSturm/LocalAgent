@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context};
 
-use crate::cli_args::{LearnArgs, LearnCategoryArg, LearnSubcommand};
+use crate::cli_args::{LearnArgs, LearnCategoryArg, LearnStatusArg, LearnSubcommand};
 use crate::learning;
 use crate::store::StatePaths;
 
@@ -45,11 +45,99 @@ pub(crate) async fn handle_learn_command(
             println!("{}", learning::render_capture_confirmation(&out.entry));
             Ok(())
         }
-        LearnSubcommand::List { .. } => Err(anyhow!(
-            "learn list is not implemented yet (PR1 in progress: capture/list/show)"
-        )),
-        LearnSubcommand::Show { .. } => Err(anyhow!(
-            "learn show is not implemented yet (PR1 in progress: capture/list/show)"
-        )),
+        LearnSubcommand::List {
+            statuses,
+            categories,
+            limit,
+            show_archived,
+            format,
+        } => {
+            let mut entries = learning::list_learning_entries(&paths.state_dir)
+                .context("failed to list learning entries")?;
+            if !categories.is_empty() {
+                let wanted = categories
+                    .iter()
+                    .map(|c| match c {
+                        LearnCategoryArg::WorkflowHint => {
+                            learning::LearningCategoryV1::WorkflowHint
+                        }
+                        LearnCategoryArg::PromptGuidance => {
+                            learning::LearningCategoryV1::PromptGuidance
+                        }
+                        LearnCategoryArg::CheckCandidate => {
+                            learning::LearningCategoryV1::CheckCandidate
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                entries.retain(|e| wanted.contains(&e.category));
+            }
+            if !statuses.is_empty() {
+                let wanted = statuses
+                    .iter()
+                    .map(|s| match s {
+                        LearnStatusArg::Captured => learning::LearningStatusV1::Captured,
+                        LearnStatusArg::Promoted => learning::LearningStatusV1::Promoted,
+                        LearnStatusArg::Archived => learning::LearningStatusV1::Archived,
+                    })
+                    .collect::<Vec<_>>();
+                entries.retain(|e| wanted.contains(&e.status));
+            } else if !show_archived {
+                entries.retain(|e| e.status != learning::LearningStatusV1::Archived);
+            }
+            let limit = *limit;
+            if entries.len() > limit {
+                entries.truncate(limit);
+            }
+            match format.as_str() {
+                "table" => {
+                    println!("{}", learning::render_learning_list_table(&entries));
+                    Ok(())
+                }
+                "json" => {
+                    println!(
+                        "{}",
+                        learning::render_learning_list_json_preview(&entries)
+                            .context("failed to render learn list JSON preview")?
+                    );
+                    Ok(())
+                }
+                other => Err(anyhow!(
+                    "unsupported learn list format '{other}' (expected table|json)"
+                )),
+            }
+        }
+        LearnSubcommand::Show {
+            id,
+            format,
+            show_evidence,
+            show_proposed,
+        } => {
+            let entry = learning::load_learning_entry(&paths.state_dir, id)
+                .with_context(|| format!("failed to load learning entry {id}"))?;
+            match format.as_str() {
+                "text" => {
+                    println!(
+                        "{}",
+                        learning::render_learning_show_text(&entry, *show_evidence, *show_proposed)
+                    );
+                    Ok(())
+                }
+                "json" => {
+                    println!(
+                        "{}",
+                        learning::render_learning_show_json_preview(
+                            &entry,
+                            *show_evidence,
+                            *show_proposed
+                        )
+                        .context("failed to render learn show JSON preview")?
+                    );
+                    Ok(())
+                }
+                other => Err(anyhow!(
+                    "unsupported learn show format '{other}' (expected text|json)"
+                )),
+            }
+        }
     }
 }

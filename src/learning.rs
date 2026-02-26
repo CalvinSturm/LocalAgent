@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
@@ -20,6 +21,9 @@ const MAX_EVIDENCE_VALUE_CHARS: usize = 512;
 const MAX_EVIDENCE_NOTE_CHARS: usize = 256;
 const MAX_TAG_COUNT: usize = 16;
 const MAX_TAG_CHARS: usize = 32;
+const LIST_SUMMARY_PREVIEW_CHARS: usize = 96;
+const LEARN_SHOW_MAX_BYTES: usize = 8 * 1024;
+const MAX_REDACTIONS_IN_DISPLAY: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningEntryV1 {
@@ -48,7 +52,7 @@ pub struct LearningSourceV1 {
     pub profile: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LearningCategoryV1 {
     #[default]
@@ -67,7 +71,7 @@ pub struct EvidenceRefV1 {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKindV1 {
     RunId,
@@ -95,7 +99,7 @@ pub struct SensitivityFlagsV1 {
     pub contains_user_data: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LearningStatusV1 {
     Captured,
@@ -245,6 +249,59 @@ pub fn learning_entry_path(state_dir: &Path, id: &str) -> PathBuf {
 
 pub fn learning_events_path(state_dir: &Path) -> PathBuf {
     state_dir.join("learn").join("events.jsonl")
+}
+
+pub fn load_learning_entry(state_dir: &Path, id: &str) -> anyhow::Result<LearningEntryV1> {
+    let path = learning_entry_path(state_dir, id);
+    let bytes = fs::read(&path)
+        .with_context(|| format!("failed to read learning entry {}", path.display()))?;
+    let entry: LearningEntryV1 = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse learning entry {}", path.display()))?;
+    if entry.id != id {
+        return Err(anyhow!(
+            "learning entry id mismatch for {} (file id={}, entry id={})",
+            path.display(),
+            id,
+            entry.id
+        ));
+    }
+    Ok(entry)
+}
+
+pub fn list_learning_entries(state_dir: &Path) -> anyhow::Result<Vec<LearningEntryV1>> {
+    let dir = learning_entries_dir(state_dir);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut paths = Vec::new();
+    for ent in fs::read_dir(&dir)
+        .with_context(|| format!("failed to read learning entries dir {}", dir.display()))?
+    {
+        let ent = ent?;
+        let path = ent.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        paths.push(path);
+    }
+    paths.sort_by(|a, b| {
+        a.file_name()
+            .and_then(|s| s.to_str())
+            .cmp(&b.file_name().and_then(|s| s.to_str()))
+    });
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let bytes = fs::read(&path)
+            .with_context(|| format!("failed to read learning entry {}", path.display()))?;
+        let entry: LearningEntryV1 = serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse learning entry {}", path.display()))?;
+        out.push(entry);
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
 }
 
 pub fn learning_entry_hash_input(entry: &LearningEntryV1) -> LearningEntryHashInputV1 {
@@ -469,6 +526,251 @@ pub fn render_capture_confirmation(entry: &LearningEntryV1) -> String {
     )
 }
 
+pub fn render_learning_list_table(entries: &[LearningEntryV1]) -> String {
+    let mut out = String::new();
+    out.push_str("ID  STATUS  CATEGORY  RUN_ID  S  SUMMARY\n");
+    for e in entries {
+        let run_id = e.source.run_id.as_deref().unwrap_or("-");
+        let sensitive = if has_any_sensitivity(&e.sensitivity_flags) {
+            "!"
+        } else {
+            "-"
+        };
+        let summary = preview_text(&e.summary, LIST_SUMMARY_PREVIEW_CHARS);
+        let summary = redact_and_bound_terminal_output(&summary, 512);
+        out.push_str(&format!(
+            "{}  {}  {}  {}  {}  {}\n",
+            e.id,
+            learning_status_str(&e.status),
+            learning_category_str(&e.category),
+            run_id,
+            sensitive,
+            summary
+        ));
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+pub fn render_learning_list_json_preview(entries: &[LearningEntryV1]) -> anyhow::Result<String> {
+    let bytes = serde_json::to_vec_pretty(entries)?;
+    Ok(redact_and_bound_terminal_output(
+        &String::from_utf8_lossy(&bytes),
+        LEARN_SHOW_MAX_BYTES,
+    ))
+}
+
+pub fn render_learning_show_text(
+    entry: &LearningEntryV1,
+    show_evidence: bool,
+    show_proposed: bool,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("id: {}\n", entry.id));
+    out.push_str(&format!("status: {}\n", learning_status_str(&entry.status)));
+    out.push_str(&format!(
+        "category: {}\n",
+        learning_category_str(&entry.category)
+    ));
+    out.push_str(&format!("hash: {}\n", entry.entry_hash_hex));
+    out.push_str(&format!("created_at: {}\n", entry.created_at));
+    out.push_str("source:\n");
+    out.push_str(&format!(
+        "  run_id: {}\n",
+        entry.source.run_id.as_deref().unwrap_or("-")
+    ));
+    out.push_str(&format!(
+        "  task_summary: {}\n",
+        entry.source.task_summary.as_deref().unwrap_or("-")
+    ));
+    out.push_str(&format!(
+        "  profile: {}\n",
+        entry.source.profile.as_deref().unwrap_or("-")
+    ));
+    out.push_str("summary:\n");
+    out.push_str(&entry.summary);
+    out.push('\n');
+    out.push_str("sensitivity:\n");
+    out.push_str(&format!(
+        "  contains_paths: {}\n  contains_secrets_suspected: {}\n  contains_user_data: {}\n",
+        entry.sensitivity_flags.contains_paths,
+        entry.sensitivity_flags.contains_secrets_suspected,
+        entry.sensitivity_flags.contains_user_data
+    ));
+    if show_evidence {
+        out.push_str("evidence:\n");
+        if entry.evidence.is_empty() {
+            out.push_str("  - none\n");
+        } else {
+            for ev in &entry.evidence {
+                out.push_str(&format!(
+                    "  - {}: {}\n",
+                    evidence_kind_str(&ev.kind),
+                    ev.value
+                ));
+                if let Some(hash) = &ev.hash_hex {
+                    out.push_str(&format!("    hash_hex: {}\n", hash));
+                }
+                if let Some(note) = &ev.note {
+                    out.push_str(&format!("    note: {}\n", note));
+                }
+            }
+        }
+    }
+    if show_proposed {
+        out.push_str("proposed_memory:\n");
+        out.push_str(&format!(
+            "  guidance_text: {}\n",
+            entry
+                .proposed_memory
+                .guidance_text
+                .as_deref()
+                .unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "  check_text: {}\n",
+            entry.proposed_memory.check_text.as_deref().unwrap_or("-")
+        ));
+        out.push_str(&format!(
+            "  tags: {}\n",
+            if entry.proposed_memory.tags.is_empty() {
+                "-".to_string()
+            } else {
+                entry.proposed_memory.tags.join(", ")
+            }
+        ));
+    }
+    if !entry.truncations.is_empty() {
+        out.push_str("truncations:\n");
+        for t in &entry.truncations {
+            out.push_str(&format!(
+                "  - {}: {} -> {}\n",
+                t.field, t.original_len, t.truncated_to
+            ));
+        }
+    }
+    redact_and_bound_terminal_output(&out, LEARN_SHOW_MAX_BYTES)
+}
+
+pub fn render_learning_show_json_preview(
+    entry: &LearningEntryV1,
+    show_evidence: bool,
+    show_proposed: bool,
+) -> anyhow::Result<String> {
+    let mut value = serde_json::to_value(entry)?;
+    if !show_evidence {
+        value["evidence"] = serde_json::json!([]);
+    }
+    if !show_proposed {
+        value["proposed_memory"] = serde_json::json!({});
+    }
+    let bytes = serde_json::to_vec_pretty(&value)?;
+    Ok(redact_and_bound_terminal_output(
+        &String::from_utf8_lossy(&bytes),
+        LEARN_SHOW_MAX_BYTES,
+    ))
+}
+
+fn has_any_sensitivity(flags: &SensitivityFlagsV1) -> bool {
+    flags.contains_paths || flags.contains_secrets_suspected || flags.contains_user_data
+}
+
+fn learning_status_str(status: &LearningStatusV1) -> &'static str {
+    match status {
+        LearningStatusV1::Captured => "captured",
+        LearningStatusV1::Promoted => "promoted",
+        LearningStatusV1::Archived => "archived",
+    }
+}
+
+fn evidence_kind_str(kind: &EvidenceKindV1) -> &'static str {
+    match kind {
+        EvidenceKindV1::RunId => "run_id",
+        EvidenceKindV1::EventId => "event_id",
+        EvidenceKindV1::ArtifactPath => "artifact_path",
+        EvidenceKindV1::ToolCallId => "tool_call_id",
+        EvidenceKindV1::ReasonCode => "reason_code",
+        EvidenceKindV1::ExitReason => "exit_reason",
+    }
+}
+
+fn preview_text(text: &str, max_chars: usize) -> String {
+    let mut s: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        s.push_str("...");
+    }
+    s
+}
+
+fn redact_and_bound_terminal_output(input: &str, max_bytes: usize) -> String {
+    let redacted = redact_secrets_for_display(input);
+    truncate_utf8_bytes(redacted, max_bytes)
+}
+
+fn redact_secrets_for_display(input: &str) -> String {
+    let patterns = ["BEGIN PRIVATE KEY", "github_pat_", "ghp_"];
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    let mut redactions = 0usize;
+    while i < input.len() {
+        if redactions < MAX_REDACTIONS_IN_DISPLAY {
+            let rest = &input[i..];
+            if rest.starts_with("BEGIN PRIVATE KEY") {
+                out.push_str("[REDACTED_SECRET]");
+                i += "BEGIN PRIVATE KEY".len();
+                redactions += 1;
+                continue;
+            }
+            if rest.starts_with("github_pat_") || rest.starts_with("ghp_") {
+                out.push_str("[REDACTED_SECRET]");
+                let mut j = i;
+                for (off, ch) in rest.char_indices() {
+                    if off == 0 {
+                        continue;
+                    }
+                    if ch.is_whitespace() || ['"', '\'', ',', ';', ')', ']', '}'].contains(&ch) {
+                        j = i + off;
+                        break;
+                    }
+                    j = i + off + ch.len_utf8();
+                }
+                if j <= i {
+                    j = i + patterns
+                        .iter()
+                        .find(|p| rest.starts_with(**p))
+                        .map(|p| p.len())
+                        .unwrap_or(0);
+                }
+                i = j;
+                redactions += 1;
+                continue;
+            }
+        }
+        let ch = input[i..].chars().next().expect("char");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn truncate_utf8_bytes(input: String, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input;
+    }
+    let suffix = "\n...[truncated]";
+    let mut end = max_bytes.saturating_sub(suffix.len()).min(input.len());
+    while !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = input[..end].to_string();
+    if out.len() < input.len() {
+        out.push_str(suffix);
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_capture_input(
     run: Option<String>,
@@ -498,6 +800,10 @@ pub fn build_capture_input(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::Path;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -526,6 +832,14 @@ mod tests {
             truncations: Vec::new(),
             entry_hash_hex: String::new(),
         }
+    }
+
+    fn write_entry(state_dir: &Path, mut entry: LearningEntryV1) {
+        if entry.entry_hash_hex.is_empty() {
+            entry.entry_hash_hex = compute_entry_hash_hex(&entry).expect("hash");
+        }
+        let path = learning_entry_path(state_dir, &entry.id);
+        store::write_json_atomic(&path, &entry).expect("write entry");
     }
 
     #[test]
@@ -599,5 +913,67 @@ mod tests {
         assert!(err
             .to_string()
             .contains("--evidence-note requires a prior --evidence"));
+    }
+
+    #[test]
+    fn list_learning_entries_sorts_by_id() {
+        let tmp = tempdir().expect("tempdir");
+        let state_dir = tmp.path().join(".localagent");
+        let mut a = sample_entry();
+        a.id = "01JZZZ".to_string();
+        let mut b = sample_entry();
+        b.id = "01JAAA".to_string();
+        write_entry(&state_dir, a);
+        write_entry(&state_dir, b);
+        let entries = list_learning_entries(&state_dir).expect("list");
+        let ids = entries.into_iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["01JAAA".to_string(), "01JZZZ".to_string()]);
+    }
+
+    #[test]
+    fn load_learning_entry_unknown_id_errors() {
+        let tmp = tempdir().expect("tempdir");
+        let state_dir = tmp.path().join(".localagent");
+        let err = load_learning_entry(&state_dir, "01JNOPE").expect_err("missing");
+        assert!(err.to_string().contains("failed to read learning entry"));
+    }
+
+    #[test]
+    fn learn_show_redacts_and_bounds_output() {
+        let mut e = sample_entry();
+        e.summary = format!("token ghp_ABC123456 and {}", "x".repeat(20_000));
+        let out = render_learning_show_text(&e, true, true);
+        assert!(out.contains("[REDACTED_SECRET]"));
+        assert!(!out.contains("ghp_ABC123456"));
+        assert!(out.len() <= LEARN_SHOW_MAX_BYTES + "\n...[truncated]".len());
+    }
+
+    #[test]
+    fn list_table_preview_is_bounded() {
+        let mut e = sample_entry();
+        e.summary = "x".repeat(300);
+        let out = render_learning_list_table(&[e]);
+        assert!(out.contains("..."));
+    }
+
+    #[test]
+    fn list_show_do_not_modify_files() {
+        let tmp = tempdir().expect("tempdir");
+        let state_dir = tmp.path().join(".localagent");
+        let e = sample_entry();
+        write_entry(&state_dir, e);
+        let before = fs::read_dir(learning_entries_dir(&state_dir))
+            .expect("read_dir")
+            .map(|r| r.expect("dirent").file_name().to_string_lossy().to_string())
+            .collect::<BTreeSet<_>>();
+        let entries = list_learning_entries(&state_dir).expect("list");
+        let _ = render_learning_list_json_preview(&entries).expect("list json");
+        let loaded = load_learning_entry(&state_dir, &entries[0].id).expect("load");
+        let _ = render_learning_show_json_preview(&loaded, true, true).expect("show json");
+        let after = fs::read_dir(learning_entries_dir(&state_dir))
+            .expect("read_dir")
+            .map(|r| r.expect("dirent").file_name().to_string_lossy().to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(before, after);
     }
 }
