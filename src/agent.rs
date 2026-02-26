@@ -8,9 +8,10 @@ use crate::agent_taint_helpers::{compute_taint_spans_for_tool, taint_record_from
 use crate::agent_tool_exec::{
     classify_tool_failure, contains_tool_wrapper_markers, extract_content_tool_calls,
     infer_truncated_flag, is_apply_patch_invalid_format_error, make_invalid_args_tool_message,
-    parse_jsonish, run_tool_once, schema_repair_instruction_message, tool_result_has_error,
+    run_tool_once, schema_repair_instruction_message, tool_result_has_error,
 };
 use crate::agent_utils::{add_opt_u32, provider_name, sha256_hex};
+use crate::agent_worker_protocol::parse_worker_step_status;
 use crate::compaction::{context_size_chars, maybe_compact, CompactionReport, CompactionSettings};
 use crate::events::{EventKind, EventSink};
 use crate::gate::{ApprovalMode, AutoApproveScope, GateContext, GateDecision, GateEvent, ToolGate};
@@ -212,11 +213,11 @@ pub struct PlanStepConstraint {
 }
 
 #[derive(Debug, Clone)]
-struct WorkerStepStatus {
-    step_id: String,
-    status: String,
-    next_step_id: Option<String>,
-    user_output: Option<String>,
+pub(crate) struct WorkerStepStatus {
+    pub(crate) step_id: String,
+    pub(crate) status: String,
+    pub(crate) next_step_id: Option<String>,
+    pub(crate) user_output: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3871,40 +3872,6 @@ impl<P: ModelProvider> Agent<P> {
             ),
         }
     }
-}
-
-fn parse_worker_step_status(
-    raw: &str,
-    constraints: &[PlanStepConstraint],
-) -> Option<WorkerStepStatus> {
-    let value = parse_jsonish(raw)?;
-    let obj = value.as_object()?;
-    let schema = obj.get("schema_version").and_then(|v| v.as_str())?;
-    if schema != crate::planner::STEP_RESULT_SCHEMA_VERSION {
-        return None;
-    }
-    let step_id = obj.get("step_id").and_then(|v| v.as_str())?.to_string();
-    if step_id != "final" && !constraints.iter().any(|s| s.step_id == step_id) {
-        return None;
-    }
-    let status = obj.get("status").and_then(|v| v.as_str())?.to_string();
-    if !matches!(status.as_str(), "done" | "retry" | "replan" | "fail") {
-        return None;
-    }
-    let next_step_id = obj
-        .get("next_step_id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let user_output = obj
-        .get("user_output")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    Some(WorkerStepStatus {
-        step_id,
-        status,
-        next_step_id,
-        user_output,
-    })
 }
 
 #[cfg(test)]

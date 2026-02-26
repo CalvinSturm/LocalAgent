@@ -8,6 +8,7 @@ pub(crate) mod agent_queue_runtime;
 pub(crate) mod agent_taint_helpers;
 pub(crate) mod agent_tool_exec;
 pub(crate) mod agent_utils;
+pub(crate) mod agent_worker_protocol;
 pub mod checks;
 pub mod compaction;
 pub mod diagnostics;

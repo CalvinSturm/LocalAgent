@@ -6,6 +6,7 @@ mod agent_queue_runtime;
 mod agent_taint_helpers;
 mod agent_tool_exec;
 mod agent_utils;
+mod agent_worker_protocol;
 
 mod agent_runtime;
 
