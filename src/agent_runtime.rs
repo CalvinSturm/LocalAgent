@@ -47,6 +47,13 @@ struct SessionBootstrap {
     session_messages: Vec<Message>,
     task_memory: Option<Message>,
 }
+
+struct ContextAugmentations {
+    instruction_resolution: crate::instructions::InstructionResolution,
+    project_guidance_resolution: Option<project_guidance::ResolvedProjectGuidance>,
+    repo_map_resolution: Option<repo_map::ResolvedRepoMap>,
+    activated_packs: Vec<packs::ActivatedPack>,
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent<P: ModelProvider>(
     provider: P,
@@ -148,32 +155,12 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         session_messages,
         task_memory,
     } = build_session_bootstrap(args, paths)?;
-    let instruction_resolution =
-        instruction_runtime::resolve_instruction_messages(args, &paths.state_dir, &worker_model)?;
-    let project_guidance_resolution = project_guidance::resolve_project_guidance(
-        &args.workdir,
-        project_guidance::ProjectGuidanceLimits::default(),
-    )
-    .ok()
-    .filter(|g| !g.merged_text.is_empty());
-    let repo_map_resolution = if args.use_repomap {
-        repo_map::resolve_repo_map(
-            &args.workdir,
-            repo_map::RepoMapLimits {
-                max_out_bytes: args.repomap_max_bytes,
-                ..repo_map::RepoMapLimits::default()
-            },
-        )
-        .ok()
-        .filter(|m| !m.content.is_empty())
-    } else {
-        None
-    };
-    let activated_packs = if args.packs.is_empty() {
-        Vec::new()
-    } else {
-        packs::activate_packs(&args.workdir, &args.packs, packs::PackLimits::default())?
-    };
+    let ContextAugmentations {
+        instruction_resolution,
+        project_guidance_resolution,
+        repo_map_resolution,
+        activated_packs,
+    } = build_context_augmentations(args, paths, &worker_model)?;
 
     let (mcp_config_path, mcp_registry) =
         resolve_mcp_runtime_registry(args, paths, shared_mcp_registry).await?;
@@ -1358,6 +1345,45 @@ fn build_session_bootstrap(
         resolved_settings,
         session_messages,
         task_memory,
+    })
+}
+
+fn build_context_augmentations(
+    args: &RunArgs,
+    paths: &store::StatePaths,
+    worker_model: &str,
+) -> anyhow::Result<ContextAugmentations> {
+    let instruction_resolution =
+        instruction_runtime::resolve_instruction_messages(args, &paths.state_dir, worker_model)?;
+    let project_guidance_resolution = project_guidance::resolve_project_guidance(
+        &args.workdir,
+        project_guidance::ProjectGuidanceLimits::default(),
+    )
+    .ok()
+    .filter(|g| !g.merged_text.is_empty());
+    let repo_map_resolution = if args.use_repomap {
+        repo_map::resolve_repo_map(
+            &args.workdir,
+            repo_map::RepoMapLimits {
+                max_out_bytes: args.repomap_max_bytes,
+                ..repo_map::RepoMapLimits::default()
+            },
+        )
+        .ok()
+        .filter(|m| !m.content.is_empty())
+    } else {
+        None
+    };
+    let activated_packs = if args.packs.is_empty() {
+        Vec::new()
+    } else {
+        packs::activate_packs(&args.workdir, &args.packs, packs::PackLimits::default())?
+    };
+    Ok(ContextAugmentations {
+        instruction_resolution,
+        project_guidance_resolution,
+        repo_map_resolution,
+        activated_packs,
     })
 }
 
