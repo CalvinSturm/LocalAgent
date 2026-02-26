@@ -31,6 +31,23 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
   - refreshed layout with compact `Mode` + `Provider` panes and footer controls
   - centered footer control rows
 
+## v0.2.0 - 2026-02-25
+
+### Added
+
+- Automatic `.localagent/` initialization on first project use when missing
+- Runtime modularization across execution, startup, and runtime helper seams (for maintainability and safer iteration)
+
+### Changed
+
+- `main.rs` responsibilities reduced through runtime module decomposition
+- Docs aligned to shipped behavior (auto-init flow, instruction profile path, timeout command semantics)
+
+### Notes
+
+- Runtime internals were reorganized without intentional breaking CLI flag removals
+- See `docs/release-notes/RELEASE_NOTES_v0.2.0.md` for the full module-level breakdown and verification summary
+
 ## v0.1.0 - 2026-02-21
 
 ### Added
