@@ -449,36 +449,12 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
                         None,
                         None,
                     );
-                    let outcome = agent::AgentOutcome {
-                        run_id: run_id.clone(),
-                        started_at: trust::now_rfc3339(),
-                        finished_at: trust::now_rfc3339(),
-                        exit_reason: AgentExitReason::PlannerError,
-                        final_output: String::new(),
-                        error: out.error.clone(),
-                        messages: vec![Message {
-                            role: Role::Assistant,
-                            content: out.raw_output.clone(),
-                            tool_call_id: None,
-                            tool_name: None,
-                            tool_calls: None,
-                        }],
-                        tool_calls: Vec::new(),
-                        tool_decisions: Vec::new(),
-                        compaction_settings: CompactionSettings {
-                            max_context_chars: resolved_settings.max_context_chars,
-                            mode: resolved_settings.compaction_mode,
-                            keep_last: resolved_settings.compaction_keep_last,
-                            tool_result_persist: resolved_settings.tool_result_persist,
-                        },
-                        final_prompt_size_chars: 0,
-                        compaction_report: None,
-                        hook_invocations: Vec::new(),
-                        provider_retry_count: 0,
-                        provider_error_count: 0,
-                        token_usage: None,
-                        taint: None,
-                    };
+                    let outcome = planner_strict_failure_outcome(
+                        &run_id,
+                        &resolved_settings,
+                        out.error.clone(),
+                        out.raw_output.clone(),
+                    );
                     planner_record = Some(PlannerRunRecord {
                         model: planner_model.clone(),
                         max_steps: args.planner_max_steps,
@@ -628,36 +604,12 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             Err(e) => {
                 let err_short = e.to_string();
                 emit_planner_end_event(&mut event_sink, &run_id, false, "", &err_short, None, None);
-                let outcome = agent::AgentOutcome {
-                    run_id: run_id.clone(),
-                    started_at: trust::now_rfc3339(),
-                    finished_at: trust::now_rfc3339(),
-                    exit_reason: AgentExitReason::PlannerError,
-                    final_output: String::new(),
-                    error: Some(e.to_string()),
-                    messages: vec![Message {
-                        role: Role::User,
-                        content: Some(prompt.to_string()),
-                        tool_call_id: None,
-                        tool_name: None,
-                        tool_calls: None,
-                    }],
-                    tool_calls: Vec::new(),
-                    tool_decisions: Vec::new(),
-                    compaction_settings: CompactionSettings {
-                        max_context_chars: resolved_settings.max_context_chars,
-                        mode: resolved_settings.compaction_mode,
-                        keep_last: resolved_settings.compaction_keep_last,
-                        tool_result_persist: resolved_settings.tool_result_persist,
-                    },
-                    final_prompt_size_chars: 0,
-                    compaction_report: None,
-                    hook_invocations: Vec::new(),
-                    provider_retry_count: 0,
-                    provider_error_count: 0,
-                    token_usage: None,
-                    taint: None,
-                };
+                let outcome = planner_runtime_error_outcome(
+                    &run_id,
+                    &resolved_settings,
+                    e.to_string(),
+                    prompt,
+                );
                 let (cli_config, config_fingerprint, cfg_hash) =
                     build_run_cli_config_fingerprint_bundle(RunCliFingerprintBuildInput {
                         provider_kind,
@@ -1269,6 +1221,82 @@ fn cancelled_outcome(resolved_settings: &session::RunSettingResolution) -> agent
         final_output: String::new(),
         error: Some("cancelled".to_string()),
         messages: Vec::new(),
+        tool_calls: Vec::new(),
+        tool_decisions: Vec::new(),
+        compaction_settings: CompactionSettings {
+            max_context_chars: resolved_settings.max_context_chars,
+            mode: resolved_settings.compaction_mode,
+            keep_last: resolved_settings.compaction_keep_last,
+            tool_result_persist: resolved_settings.tool_result_persist,
+        },
+        final_prompt_size_chars: 0,
+        compaction_report: None,
+        hook_invocations: Vec::new(),
+        provider_retry_count: 0,
+        provider_error_count: 0,
+        token_usage: None,
+        taint: None,
+    }
+}
+
+fn planner_strict_failure_outcome(
+    run_id: &str,
+    resolved_settings: &session::RunSettingResolution,
+    error: Option<String>,
+    raw_output: Option<String>,
+) -> agent::AgentOutcome {
+    agent::AgentOutcome {
+        run_id: run_id.to_string(),
+        started_at: trust::now_rfc3339(),
+        finished_at: trust::now_rfc3339(),
+        exit_reason: AgentExitReason::PlannerError,
+        final_output: String::new(),
+        error,
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: raw_output,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }],
+        tool_calls: Vec::new(),
+        tool_decisions: Vec::new(),
+        compaction_settings: CompactionSettings {
+            max_context_chars: resolved_settings.max_context_chars,
+            mode: resolved_settings.compaction_mode,
+            keep_last: resolved_settings.compaction_keep_last,
+            tool_result_persist: resolved_settings.tool_result_persist,
+        },
+        final_prompt_size_chars: 0,
+        compaction_report: None,
+        hook_invocations: Vec::new(),
+        provider_retry_count: 0,
+        provider_error_count: 0,
+        token_usage: None,
+        taint: None,
+    }
+}
+
+fn planner_runtime_error_outcome(
+    run_id: &str,
+    resolved_settings: &session::RunSettingResolution,
+    error: String,
+    prompt: &str,
+) -> agent::AgentOutcome {
+    agent::AgentOutcome {
+        run_id: run_id.to_string(),
+        started_at: trust::now_rfc3339(),
+        finished_at: trust::now_rfc3339(),
+        exit_reason: AgentExitReason::PlannerError,
+        final_output: String::new(),
+        error: Some(error),
+        messages: vec![Message {
+            role: Role::User,
+            content: Some(prompt.to_string()),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }],
         tool_calls: Vec::new(),
         tool_decisions: Vec::new(),
         compaction_settings: CompactionSettings {
