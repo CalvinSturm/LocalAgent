@@ -54,6 +54,25 @@ struct ContextAugmentations {
     repo_map_resolution: Option<repo_map::ResolvedRepoMap>,
     activated_packs: Vec<packs::ActivatedPack>,
 }
+
+struct UiRuntimeSetup {
+    event_sink: Option<Box<dyn crate::events::EventSink>>,
+    cancel_rx: watch::Receiver<bool>,
+    ui_join: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
+}
+
+struct UiRuntimeSetupInput<'a> {
+    args: &'a RunArgs,
+    paths: &'a store::StatePaths,
+    provider_kind: ProviderKind,
+    worker_model: &'a str,
+    mcp_pin_enforcement: &'a str,
+    resolved_settings: &'a session::RunSettingResolution,
+    policy_hash_hex: &'a Option<String>,
+    mcp_tool_catalog_hash_hex: &'a Option<String>,
+    external_ui_tx: Option<Sender<Event>>,
+    suppress_stdout_stream: bool,
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent<P: ModelProvider>(
     provider: P,
@@ -214,48 +233,22 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         })
         .collect::<Vec<_>>();
 
-    let (ui_tx, ui_rx) = if args.tui {
-        let (tx, rx) = std::sync::mpsc::channel();
-        (Some(tx), Some(rx))
-    } else {
-        (external_ui_tx, None)
-    };
-    let (cancel_tx, mut cancel_rx) = watch::channel(false);
-    let ui_join = if let Some(rx) = ui_rx {
-        let approvals_path = paths.approvals_path.clone();
-        let cfg = tui::TuiConfig {
-            refresh_ms: args.tui_refresh_ms,
-            max_log_lines: args.tui_max_log_lines,
-            provider: provider_to_string(provider_kind),
-            model: worker_model.clone(),
-            mode_label: if !args.allow_shell && !args.allow_write && !args.enable_write_tools {
-                "SAFE".to_string()
-            } else {
-                "CODE".to_string()
-            },
-            authority_label: if args.approval_mode == ApprovalMode::Auto {
-                "EXEC".to_string()
-            } else {
-                "VETO".to_string()
-            },
-            mcp_pin_enforcement: mcp_pin_enforcement.to_ascii_uppercase(),
-            caps_source: format!("{:?}", resolved_settings.caps_mode).to_lowercase(),
-            policy_hash: policy_hash_hex.clone().unwrap_or_default(),
-            mcp_catalog_hash: mcp_tool_catalog_hash_hex.clone().unwrap_or_default(),
-        };
-        Some(std::thread::spawn(move || {
-            tui::run_live(rx, approvals_path, cfg, cancel_tx.clone())
-        }))
-    } else {
-        None
-    };
-    let mut event_sink = runtime_wiring::build_event_sink(
-        args.stream,
-        args.events.as_deref(),
-        args.tui,
-        ui_tx,
+    let UiRuntimeSetup {
+        mut event_sink,
+        mut cancel_rx,
+        ui_join,
+    } = build_ui_runtime_setup(UiRuntimeSetupInput {
+        args,
+        paths,
+        provider_kind,
+        worker_model: &worker_model,
+        mcp_pin_enforcement: &mcp_pin_enforcement,
+        resolved_settings: &resolved_settings,
+        policy_hash_hex: &policy_hash_hex,
+        mcp_tool_catalog_hash_hex: &mcp_tool_catalog_hash_hex,
+        external_ui_tx,
         suppress_stdout_stream,
-    )?;
+    })?;
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut planner_record: Option<PlannerRunRecord> = None;
@@ -1384,6 +1377,59 @@ fn build_context_augmentations(
         project_guidance_resolution,
         repo_map_resolution,
         activated_packs,
+    })
+}
+
+fn build_ui_runtime_setup(input: UiRuntimeSetupInput<'_>) -> anyhow::Result<UiRuntimeSetup> {
+    let (ui_tx, ui_rx) = if input.args.tui {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (input.external_ui_tx, None)
+    };
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let ui_join = if let Some(rx) = ui_rx {
+        let approvals_path = input.paths.approvals_path.clone();
+        let cfg = tui::TuiConfig {
+            refresh_ms: input.args.tui_refresh_ms,
+            max_log_lines: input.args.tui_max_log_lines,
+            provider: provider_to_string(input.provider_kind),
+            model: input.worker_model.to_string(),
+            mode_label: if !input.args.allow_shell
+                && !input.args.allow_write
+                && !input.args.enable_write_tools
+            {
+                "SAFE".to_string()
+            } else {
+                "CODE".to_string()
+            },
+            authority_label: if input.args.approval_mode == ApprovalMode::Auto {
+                "EXEC".to_string()
+            } else {
+                "VETO".to_string()
+            },
+            mcp_pin_enforcement: input.mcp_pin_enforcement.to_ascii_uppercase(),
+            caps_source: format!("{:?}", input.resolved_settings.caps_mode).to_lowercase(),
+            policy_hash: input.policy_hash_hex.clone().unwrap_or_default(),
+            mcp_catalog_hash: input.mcp_tool_catalog_hash_hex.clone().unwrap_or_default(),
+        };
+        Some(std::thread::spawn(move || {
+            tui::run_live(rx, approvals_path, cfg, cancel_tx.clone())
+        }))
+    } else {
+        None
+    };
+    let event_sink = runtime_wiring::build_event_sink(
+        input.args.stream,
+        input.args.events.as_deref(),
+        input.args.tui,
+        ui_tx,
+        input.suppress_stdout_stream,
+    )?;
+    Ok(UiRuntimeSetup {
+        event_sink,
+        cancel_rx,
+        ui_join,
     })
 }
 
