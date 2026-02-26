@@ -268,10 +268,13 @@ pub fn validate_schema_args(
     let schema = match schema {
         Some(v) => v,
         None => {
-            return args
+            let obj = args
                 .as_object()
-                .map(|_| ())
-                .ok_or_else(|| "arguments must be a JSON object".to_string());
+                .ok_or_else(|| "arguments must be a JSON object".to_string())?;
+            if obj.is_empty() {
+                return Ok(());
+            }
+            return Err("arguments not allowed for tool with unknown schema".to_string());
         }
     };
     let obj = args
@@ -673,7 +676,7 @@ mod tests {
 
     use super::{
         builtin_tools_enabled, execute_tool, resolve_path, tool_side_effects,
-        validate_builtin_tool_args, ToolArgsStrict, ToolRuntime,
+        validate_builtin_tool_args, validate_schema_args, ToolArgsStrict, ToolRuntime,
     };
     use crate::target::{ExecTargetKind, HostTarget};
     use crate::types::{SideEffects, ToolCall};
@@ -823,6 +826,21 @@ mod tests {
         )
         .expect_err("expected error");
         assert!(err.contains("array of strings"));
+    }
+
+    #[test]
+    fn unknown_schema_allows_empty_object_only() {
+        assert!(validate_schema_args(&json!({}), None, ToolArgsStrict::On).is_ok());
+        let err = validate_schema_args(&json!({"x":1}), None, ToolArgsStrict::On)
+            .expect_err("expected unknown-schema arg error");
+        assert_eq!(err, "arguments not allowed for tool with unknown schema");
+    }
+
+    #[test]
+    fn unknown_schema_still_requires_object() {
+        let err = validate_schema_args(&json!(["x"]), None, ToolArgsStrict::On)
+            .expect_err("expected object error");
+        assert_eq!(err, "arguments must be a JSON object");
     }
 
     #[tokio::test]
