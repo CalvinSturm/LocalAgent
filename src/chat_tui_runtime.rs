@@ -39,6 +39,20 @@ enum SlashCommandDispatchOutcome {
     ExitRequested,
 }
 
+enum TuiNormalSubmitPrepOutcome {
+    ContinueToRun,
+    HandledNoRun,
+}
+
+type TuiRunFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<RunExecutionResult>> + Send>>;
+
+struct TuiSubmitLaunch {
+    rx: std::sync::mpsc::Receiver<Event>,
+    queue_tx: std::sync::mpsc::Sender<crate::operator_queue::QueueSubmitRequest>,
+    fut: TuiRunFuture,
+}
+
 struct TuiSlashCommandDispatchInput<'a> {
     line: &'a str,
     slash_menu_index: usize,
@@ -57,6 +71,170 @@ struct TuiSlashCommandDispatchInput<'a> {
     transcript_scroll: &'a mut usize,
     follow_output: &'a mut bool,
     shared_chat_mcp_registry: &'a mut Option<std::sync::Arc<McpRegistry>>,
+}
+
+struct TuiNormalSubmitPrepInput<'a> {
+    line: &'a str,
+    prompt_history: &'a mut Vec<String>,
+    transcript: &'a mut Vec<(String, String)>,
+    show_logs: &'a mut bool,
+    follow_output: &'a mut bool,
+    transcript_scroll: &'a mut usize,
+    status: &'a mut String,
+    status_detail: &'a mut String,
+    streaming_assistant: &'a mut String,
+    think_tick: &'a mut u64,
+}
+
+fn prepare_tui_normal_submit_state(
+    input: TuiNormalSubmitPrepInput<'_>,
+) -> TuiNormalSubmitPrepOutcome {
+    input.prompt_history.push(input.line.to_string());
+    *input.follow_output = true;
+    *input.transcript_scroll = usize::MAX;
+    input
+        .transcript
+        .push(("user".to_string(), input.line.to_string()));
+    if input.line.starts_with('?') {
+        *input.show_logs = true;
+        return TuiNormalSubmitPrepOutcome::HandledNoRun;
+    }
+    *input.status = "running".to_string();
+    input.status_detail.clear();
+    input.streaming_assistant.clear();
+    *input.think_tick = 0;
+    TuiNormalSubmitPrepOutcome::ContinueToRun
+}
+
+struct TuiNormalSubmitLaunchInput<'a> {
+    provider_kind: ProviderKind,
+    base_url: &'a str,
+    model: &'a str,
+    line: &'a str,
+    active_run: &'a RunArgs,
+    paths: &'a store::StatePaths,
+    logs: &'a mut Vec<String>,
+    show_logs: &'a mut bool,
+    transcript: &'a mut Vec<(String, String)>,
+    status: &'a mut String,
+    status_detail: &'a mut String,
+    follow_output: &'a bool,
+    transcript_scroll: &'a mut usize,
+    shared_chat_mcp_registry: &'a mut Option<std::sync::Arc<McpRegistry>>,
+}
+
+async fn build_tui_normal_submit_launch(
+    input: TuiNormalSubmitLaunchInput<'_>,
+) -> anyhow::Result<Option<TuiSubmitLaunch>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Event>();
+    let (queue_tx, queue_rx) =
+        std::sync::mpsc::channel::<crate::operator_queue::QueueSubmitRequest>();
+    let mut queue_rx_opt = Some(queue_rx);
+
+    let mut turn_args = input.active_run.clone();
+    turn_args.prompt = Some(input.line.to_string());
+    turn_args.tui = false;
+    turn_args.stream = true;
+
+    if !turn_args.mcp.is_empty() && input.shared_chat_mcp_registry.is_none() {
+        let mcp_config_path =
+            runtime_paths::resolved_mcp_config_path(&turn_args, &input.paths.state_dir);
+        match McpRegistry::from_config_path(
+            &mcp_config_path,
+            &turn_args.mcp,
+            Duration::from_secs(30),
+        )
+        .await
+        {
+            Ok(reg) => {
+                *input.shared_chat_mcp_registry = Some(std::sync::Arc::new(reg));
+            }
+            Err(e) => {
+                let msg = format!("failed to initialize MCP session: {e}");
+                input.logs.push(msg.clone());
+                *input.show_logs = true;
+                input.transcript.push(("system".to_string(), msg));
+                *input.status = "idle".to_string();
+                *input.status_detail = "mcp init failed".to_string();
+                if *input.follow_output {
+                    *input.transcript_scroll = usize::MAX;
+                }
+                return Ok(None);
+            }
+        }
+    }
+
+    let provider_kind = input.provider_kind;
+    let base_url = input.base_url.to_string();
+    let model = input.model.to_string();
+    let line = input.line.to_string();
+    let paths = input.paths.clone();
+    let shared_chat_mcp_registry = input.shared_chat_mcp_registry.clone();
+    let queue_rx = queue_rx_opt.take().expect("queue rx once");
+    let fut: TuiRunFuture = Box::pin(async move {
+        match provider_kind {
+            ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
+                let provider = OpenAiCompatProvider::new(
+                    base_url.clone(),
+                    turn_args.api_key.clone(),
+                    provider_runtime::http_config_from_run_args(&turn_args),
+                )?;
+                run_agent_with_ui(
+                    provider,
+                    provider_kind,
+                    &base_url,
+                    &model,
+                    &line,
+                    &turn_args,
+                    &paths,
+                    Some(tx),
+                    Some(queue_rx),
+                    shared_chat_mcp_registry,
+                    true,
+                )
+                .await
+            }
+            ProviderKind::Ollama => {
+                let provider = OllamaProvider::new(
+                    base_url.clone(),
+                    provider_runtime::http_config_from_run_args(&turn_args),
+                )?;
+                run_agent_with_ui(
+                    provider,
+                    provider_kind,
+                    &base_url,
+                    &model,
+                    &line,
+                    &turn_args,
+                    &paths,
+                    Some(tx),
+                    Some(queue_rx),
+                    shared_chat_mcp_registry,
+                    true,
+                )
+                .await
+            }
+            ProviderKind::Mock => {
+                let provider = MockProvider::new();
+                run_agent_with_ui(
+                    provider,
+                    provider_kind,
+                    &base_url,
+                    &model,
+                    &line,
+                    &turn_args,
+                    &paths,
+                    Some(tx),
+                    Some(queue_rx),
+                    shared_chat_mcp_registry,
+                    true,
+                )
+                .await
+            }
+        }
+    });
+
+    Ok(Some(TuiSubmitLaunch { rx, queue_tx, fut }))
 }
 
 async fn handle_tui_slash_command(
@@ -772,19 +950,21 @@ pub(crate) async fn run_chat_tui(
                                 continue;
                             }
 
-                            prompt_history.push(line.clone());
-                            // Sending a new prompt should always re-anchor the transcript to latest.
-                            follow_output = true;
-                            transcript_scroll = usize::MAX;
-                            transcript.push(("user".to_string(), line.clone()));
-                            if line.starts_with('?') {
-                                show_logs = true;
-                                continue;
+                            match prepare_tui_normal_submit_state(TuiNormalSubmitPrepInput {
+                                line: &line,
+                                prompt_history: &mut prompt_history,
+                                transcript: &mut transcript,
+                                show_logs: &mut show_logs,
+                                follow_output: &mut follow_output,
+                                transcript_scroll: &mut transcript_scroll,
+                                status: &mut status,
+                                status_detail: &mut status_detail,
+                                streaming_assistant: &mut streaming_assistant,
+                                think_tick: &mut think_tick,
+                            }) {
+                                TuiNormalSubmitPrepOutcome::HandledNoRun => continue,
+                                TuiNormalSubmitPrepOutcome::ContinueToRun => {}
                             }
-                            status = "running".to_string();
-                            status_detail.clear();
-                            streaming_assistant.clear();
-                            think_tick = 0;
                             terminal.draw(|f| {
                                 chat_ui::draw_chat_frame(
                                     f,
@@ -834,105 +1014,30 @@ pub(crate) async fn run_chat_tui(
                             })?;
                             ui_tick = ui_tick.saturating_add(1);
 
-                            let (tx, rx) = std::sync::mpsc::channel::<Event>();
-                            let (queue_tx, queue_rx) =
-                                std::sync::mpsc::channel::<crate::operator_queue::QueueSubmitRequest>();
-                            let mut queue_rx_opt = Some(queue_rx);
-                            let mut turn_args = active_run.clone();
-                            turn_args.prompt = Some(line.clone());
-                            turn_args.tui = false;
-                            turn_args.stream = true;
-
-                            if !turn_args.mcp.is_empty() && shared_chat_mcp_registry.is_none() {
-                                let mcp_config_path =
-                                    runtime_paths::resolved_mcp_config_path(&turn_args, &paths.state_dir);
-                                match McpRegistry::from_config_path(
-                                    &mcp_config_path,
-                                    &turn_args.mcp,
-                                    Duration::from_secs(30),
-                                )
-                                .await
-                                {
-                                    Ok(reg) => {
-                                        shared_chat_mcp_registry = Some(std::sync::Arc::new(reg));
-                                    }
-                                    Err(e) => {
-                                        let msg = format!("failed to initialize MCP session: {e}");
-                                        logs.push(msg.clone());
-                                        show_logs = true;
-                                        transcript.push(("system".to_string(), msg));
-                                        status = "idle".to_string();
-                                        status_detail = "mcp init failed".to_string();
-                                        if follow_output {
-                                            transcript_scroll = usize::MAX;
-                                        }
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            let mut fut: std::pin::Pin<
-                                Box<
-                                    dyn std::future::Future<
-                                            Output = anyhow::Result<RunExecutionResult>,
-                                        > + Send,
-                                >,
-                            > = match provider_kind {
-                                ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
-                                    let provider = OpenAiCompatProvider::new(
-                                        base_url.clone(),
-                                        turn_args.api_key.clone(),
-                                        provider_runtime::http_config_from_run_args(&turn_args),
-                                    )?;
-                                    Box::pin(run_agent_with_ui(
-                                        provider,
-                                        provider_kind,
-                                        &base_url,
-                                        &model,
-                                        &line,
-                                        &turn_args,
-                                        paths,
-                                        Some(tx),
-                                        Some(queue_rx_opt.take().expect("queue rx once")),
-                                        shared_chat_mcp_registry.clone(),
-                                        true,
-                                    ))
-                                }
-                                ProviderKind::Ollama => {
-                                    let provider = OllamaProvider::new(
-                                        base_url.clone(),
-                                        provider_runtime::http_config_from_run_args(&turn_args),
-                                    )?;
-                                    Box::pin(run_agent_with_ui(
-                                        provider,
-                                        provider_kind,
-                                        &base_url,
-                                        &model,
-                                        &line,
-                                        &turn_args,
-                                        paths,
-                                        Some(tx),
-                                        Some(queue_rx_opt.take().expect("queue rx once")),
-                                        shared_chat_mcp_registry.clone(),
-                                        true,
-                                    ))
-                                }
-                                ProviderKind::Mock => {
-                                    let provider = MockProvider::new();
-                                    Box::pin(run_agent_with_ui(
-                                        provider,
-                                        provider_kind,
-                                        &base_url,
-                                        &model,
-                                        &line,
-                                        &turn_args,
-                                        paths,
-                                        Some(tx),
-                                        Some(queue_rx_opt.take().expect("queue rx once")),
-                                        shared_chat_mcp_registry.clone(),
-                                        true,
-                                    ))
-                                }
+                            let TuiSubmitLaunch {
+                                rx,
+                                queue_tx,
+                                mut fut,
+                            } = match build_tui_normal_submit_launch(TuiNormalSubmitLaunchInput {
+                                provider_kind,
+                                base_url: &base_url,
+                                model: &model,
+                                line: &line,
+                                active_run: &active_run,
+                                paths,
+                                logs: &mut logs,
+                                show_logs: &mut show_logs,
+                                transcript: &mut transcript,
+                                status: &mut status,
+                                status_detail: &mut status_detail,
+                                follow_output: &follow_output,
+                                transcript_scroll: &mut transcript_scroll,
+                                shared_chat_mcp_registry: &mut shared_chat_mcp_registry,
+                            })
+                            .await?
+                            {
+                                Some(launch) => launch,
+                                None => continue,
                             };
 
                             #[derive(Clone)]
