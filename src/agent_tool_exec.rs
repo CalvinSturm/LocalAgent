@@ -214,3 +214,130 @@ pub(crate) fn schema_repair_instruction_message(tc: &ToolCall, err: &str) -> Mes
         tool_calls: None,
     }
 }
+
+pub(crate) fn parse_jsonish(raw: &str) -> Option<serde_json::Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return Some(v);
+    }
+    if let Some(candidate) = fenced_json_candidate(trimmed) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
+            return Some(v);
+        }
+    }
+    if let Some((start, end)) = find_json_bounds(trimmed) {
+        let candidate = &trimmed[start..=end];
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(candidate) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+pub(crate) fn contains_tool_wrapper_markers(s: &str) -> bool {
+    let u = s.to_ascii_uppercase();
+    u.contains("[TOOL_CALL]") || u.contains("[END_TOOL_CALL]")
+}
+
+pub(crate) fn extract_content_tool_calls(
+    raw: &str,
+    step: u32,
+    allowed_tool_names: &std::collections::BTreeSet<String>,
+) -> Vec<ToolCall> {
+    let wrapped = extract_wrapped_tool_calls(raw, step, allowed_tool_names);
+    if !wrapped.is_empty() {
+        return wrapped;
+    }
+    if let Some(tc) = extract_inline_tool_call(raw, step, allowed_tool_names) {
+        return vec![tc];
+    }
+    Vec::new()
+}
+
+pub(crate) fn extract_inline_tool_call(
+    raw: &str,
+    step: u32,
+    allowed_tool_names: &std::collections::BTreeSet<String>,
+) -> Option<ToolCall> {
+    let v = parse_jsonish(raw)?;
+    let name = v.get("name").and_then(|x| x.as_str())?;
+    if !allowed_tool_names.contains(name) {
+        return None;
+    }
+    let arguments = v
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Some(ToolCall {
+        id: format!("inline_tc_{step}_0"),
+        name: name.to_string(),
+        arguments,
+    })
+}
+
+pub(crate) fn extract_wrapped_tool_calls(
+    raw: &str,
+    step: u32,
+    allowed_tool_names: &std::collections::BTreeSet<String>,
+) -> Vec<ToolCall> {
+    let upper = raw.to_ascii_uppercase();
+    let start_tag = "[TOOL_CALL]";
+    let end_tag = "[END_TOOL_CALL]";
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    while let Some(rel_start) = upper[offset..].find(start_tag) {
+        let start = offset + rel_start + start_tag.len();
+        let Some(rel_end) = upper[start..].find(end_tag) else {
+            break;
+        };
+        let end = start + rel_end;
+        let body = raw[start..end].trim();
+        if !body.is_empty() {
+            if let Some(v) = parse_jsonish(body) {
+                if let Some(name) = v.get("name").and_then(|x| x.as_str()) {
+                    if !allowed_tool_names.contains(name) {
+                        offset = end + end_tag.len();
+                        continue;
+                    }
+                    let arguments = v
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    out.push(ToolCall {
+                        id: format!("wrapped_tc_{step}_{}", out.len()),
+                        name: name.to_string(),
+                        arguments,
+                    });
+                }
+            }
+        }
+        offset = end + end_tag.len();
+    }
+    out
+}
+
+pub(crate) fn fenced_json_candidate(s: &str) -> Option<String> {
+    if !s.starts_with("```") {
+        return None;
+    }
+    let lines = s.lines().collect::<Vec<_>>();
+    if lines.len() < 3 {
+        return None;
+    }
+    if !lines.first()?.starts_with("```") || !lines.last()?.starts_with("```") {
+        return None;
+    }
+    Some(lines[1..lines.len() - 1].join("\n"))
+}
+
+pub(crate) fn find_json_bounds(s: &str) -> Option<(usize, usize)> {
+    let start = s.find('{')?;
+    let end = s.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some((start, end))
+}
