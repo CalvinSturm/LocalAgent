@@ -7,11 +7,12 @@ use serde_json::Value;
 
 use crate::providers::common::{
     build_http_client, build_tool_envelopes, format_http_error_body, map_token_usage_triplet,
-    truncate_error_display, ToolEnvelope as SharedToolEnvelope,
+    record_retry_and_sleep, truncate_error_display, ProviderRetryStepInput,
+    ToolEnvelope as SharedToolEnvelope,
 };
 use crate::providers::http::{
-    classify_reqwest_error, classify_status, deterministic_backoff_ms, HttpConfig, ProviderError,
-    ProviderErrorKind, RetryRecord,
+    classify_reqwest_error, classify_status, HttpConfig, ProviderError, ProviderErrorKind,
+    RetryRecord,
 };
 use crate::providers::{ModelProvider, StreamDelta, ToolCallFragment};
 use crate::types::{GenerateRequest, GenerateResponse, Message, Role, ToolCall};
@@ -125,15 +126,16 @@ impl ModelProvider for OpenAiCompatProvider {
                 Err(e) => {
                     let cls = classify_reqwest_error(&e);
                     if cls.retryable && attempt < max_attempts {
-                        let backoff = deterministic_backoff_ms(self.http, attempt - 1);
-                        retries.push(RetryRecord {
+                        record_retry_and_sleep(ProviderRetryStepInput {
+                            http: self.http,
+                            retry_index: attempt - 1,
                             attempt,
                             max_attempts,
                             kind: cls.kind,
                             status: cls.status,
-                            backoff_ms: backoff,
-                        });
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                            retries: &mut retries,
+                        })
+                        .await;
                         continue;
                     }
                     return Err(anyhow!(ProviderError {
@@ -155,15 +157,16 @@ impl ModelProvider for OpenAiCompatProvider {
                     .await
                     .unwrap_or_else(|_| "<body unavailable>".to_string());
                 if cls.retryable && attempt < max_attempts {
-                    let backoff = deterministic_backoff_ms(self.http, attempt - 1);
-                    retries.push(RetryRecord {
+                    record_retry_and_sleep(ProviderRetryStepInput {
+                        http: self.http,
+                        retry_index: attempt - 1,
                         attempt,
                         max_attempts,
                         kind: cls.kind,
                         status: Some(status.as_u16()),
-                        backoff_ms: backoff,
-                    });
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                        retries: &mut retries,
+                    })
+                    .await;
                     continue;
                 }
                 return Err(anyhow!(ProviderError {
@@ -241,15 +244,16 @@ impl ModelProvider for OpenAiCompatProvider {
                 Err(e) => {
                     let cls = classify_reqwest_error(&e);
                     if cls.retryable && attempt < max_attempts {
-                        let backoff = deterministic_backoff_ms(self.http, attempt - 1);
-                        retries.push(RetryRecord {
+                        record_retry_and_sleep(ProviderRetryStepInput {
+                            http: self.http,
+                            retry_index: attempt - 1,
                             attempt,
                             max_attempts,
                             kind: cls.kind,
                             status: cls.status,
-                            backoff_ms: backoff,
-                        });
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                            retries: &mut retries,
+                        })
+                        .await;
                         continue;
                     }
                     return Err(anyhow!(ProviderError {
@@ -272,15 +276,16 @@ impl ModelProvider for OpenAiCompatProvider {
                     .await
                     .unwrap_or_else(|_| "<body unavailable>".to_string());
                 if cls.retryable && attempt < max_attempts {
-                    let backoff = deterministic_backoff_ms(self.http, attempt - 1);
-                    retries.push(RetryRecord {
+                    record_retry_and_sleep(ProviderRetryStepInput {
+                        http: self.http,
+                        retry_index: attempt - 1,
                         attempt,
                         max_attempts,
                         kind: cls.kind,
                         status: Some(status.as_u16()),
-                        backoff_ms: backoff,
-                    });
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                        retries: &mut retries,
+                    })
+                    .await;
                     continue;
                 }
                 return Err(anyhow!(ProviderError {
@@ -313,15 +318,16 @@ impl ModelProvider for OpenAiCompatProvider {
                         Ok(v) => v,
                         Err(_) => {
                             if !emitted_any && attempt < max_attempts {
-                                let backoff = deterministic_backoff_ms(self.http, attempt - 1);
-                                retries.push(RetryRecord {
+                                record_retry_and_sleep(ProviderRetryStepInput {
+                                    http: self.http,
+                                    retry_index: attempt - 1,
                                     attempt,
                                     max_attempts,
                                     kind: ProviderErrorKind::Timeout,
                                     status: Some(status.as_u16()),
-                                    backoff_ms: backoff,
-                                });
-                                tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                                    retries: &mut retries,
+                                })
+                                .await;
                                 break;
                             }
                             return Err(anyhow!(ProviderError {
@@ -348,15 +354,16 @@ impl ModelProvider for OpenAiCompatProvider {
                     Err(e) => {
                         let cls = classify_reqwest_error(&e);
                         if cls.retryable && !emitted_any && attempt < max_attempts {
-                            let backoff = deterministic_backoff_ms(self.http, attempt - 1);
-                            retries.push(RetryRecord {
+                            record_retry_and_sleep(ProviderRetryStepInput {
+                                http: self.http,
+                                retry_index: attempt - 1,
                                 attempt,
                                 max_attempts,
                                 kind: cls.kind,
                                 status: cls.status.or(Some(status.as_u16())),
-                                backoff_ms: backoff,
-                            });
-                            tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                                retries: &mut retries,
+                            })
+                            .await;
                             break;
                         }
                         return Err(anyhow!(ProviderError {

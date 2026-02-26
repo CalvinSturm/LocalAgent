@@ -2,8 +2,11 @@ use anyhow::Context;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value;
+use std::time::Duration;
 
-use crate::providers::http::HttpConfig;
+use crate::providers::http::{
+    deterministic_backoff_ms, HttpConfig, ProviderErrorKind, RetryRecord,
+};
 use crate::providers::to_u32_opt;
 use crate::types::TokenUsage;
 use crate::types::ToolDef;
@@ -73,4 +76,26 @@ pub(crate) fn map_token_usage_triplet(
         completion_tokens: to_u32_opt(completion),
         total_tokens: to_u32_opt(total),
     }
+}
+
+pub(crate) struct ProviderRetryStepInput<'a> {
+    pub(crate) http: HttpConfig,
+    pub(crate) retry_index: u32,
+    pub(crate) attempt: u32,
+    pub(crate) max_attempts: u32,
+    pub(crate) kind: ProviderErrorKind,
+    pub(crate) status: Option<u16>,
+    pub(crate) retries: &'a mut Vec<RetryRecord>,
+}
+
+pub(crate) async fn record_retry_and_sleep(input: ProviderRetryStepInput<'_>) {
+    let backoff = deterministic_backoff_ms(input.http, input.retry_index);
+    input.retries.push(RetryRecord {
+        attempt: input.attempt,
+        max_attempts: input.max_attempts,
+        kind: input.kind,
+        status: input.status,
+        backoff_ms: backoff,
+    });
+    tokio::time::sleep(Duration::from_millis(backoff)).await;
 }
