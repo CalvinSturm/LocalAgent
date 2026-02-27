@@ -23,6 +23,16 @@ pub(crate) struct LearnOverlayRenderModel {
     pub(crate) tab: LearnOverlayTab,
     pub(crate) selected_category_idx: usize,
     pub(crate) summary: String,
+    pub(crate) review_id: String,
+    pub(crate) promote_id: String,
+    pub(crate) promote_target_idx: usize,
+    pub(crate) promote_slug: String,
+    pub(crate) promote_pack_id: String,
+    pub(crate) promote_force: bool,
+    pub(crate) promote_check_run: bool,
+    pub(crate) promote_replay_verify: bool,
+    pub(crate) promote_replay_verify_strict: bool,
+    pub(crate) promote_replay_verify_run_id: String,
     pub(crate) assist_on: bool,
     pub(crate) write_state: LearnOverlayWriteState,
     pub(crate) equivalent_cli: String,
@@ -465,8 +475,20 @@ fn draw_learn_overlay(f: &mut ratatui::Frame<'_>, overlay: &LearnOverlayRenderMo
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
         .split(outer[2]);
 
-    draw_learn_capture_form(f, body[0], overlay);
-    draw_learn_cli_review(f, body[1], overlay);
+    match overlay.tab {
+        LearnOverlayTab::Capture => {
+            draw_learn_capture_form(f, body[0], overlay);
+            draw_learn_cli_review(f, body[1], overlay);
+        }
+        LearnOverlayTab::Review => {
+            draw_learn_review_form(f, body[0], overlay);
+            draw_learn_cli_review(f, body[1], overlay);
+        }
+        LearnOverlayTab::Promote => {
+            draw_learn_promote_form(f, body[0], overlay);
+            draw_learn_cli_review(f, body[1], overlay);
+        }
+    }
 
     let hints = format!(
         "Assist: {} (a) | Enter: Preview | w: Arm Write | Esc: Close | 1/2/3: Tabs",
@@ -571,8 +593,13 @@ fn draw_learn_cli_review(
     area: ratatui::layout::Rect,
     overlay: &LearnOverlayRenderModel,
 ) {
+    let tab_name = match overlay.tab {
+        LearnOverlayTab::Capture => "capture",
+        LearnOverlayTab::Review => "review",
+        LearnOverlayTab::Promote => "promote",
+    };
     let block = Block::default()
-        .title(" - CLI REVIEW (capture) ")
+        .title(format!(" - CLI REVIEW ({tab_name}) "))
         .borders(Borders::ALL)
         .style(Style::default().fg(Color::DarkGray));
     let inner = block.inner(area);
@@ -600,6 +627,71 @@ fn draw_learn_cli_review(
         yes_no(overlay.sensitivity_paths),
         yes_no(overlay.sensitivity_secrets),
         yes_no(overlay.sensitivity_userdata)
+    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+}
+
+fn draw_learn_review_form(
+    f: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    overlay: &LearnOverlayRenderModel,
+) {
+    let block = Block::default()
+        .title(" - REVIEW FORM ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let text = format!(
+        "Mode: list/show\n\nSelected ID (optional for list):\n{}\n\nEnter in PREVIEW runs read-only list/show.\nARMED behaves the same for Review.",
+        if overlay.review_id.trim().is_empty() {
+            "<empty>"
+        } else {
+            overlay.review_id.as_str()
+        }
+    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+}
+
+fn draw_learn_promote_form(
+    f: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    overlay: &LearnOverlayRenderModel,
+) {
+    let block = Block::default()
+        .title(" - PROMOTE FORM ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let targets = ["check", "pack", "agents"];
+    let target = targets[overlay.promote_target_idx.min(2)];
+    let text = format!(
+        "ID (required): {}\nTarget: {target}\nslug: {}\npack_id: {}\n\nforce:{}  check_run:{}  replay_verify:{}  replay_verify_strict:{}\nreplay_verify_run_id: {}",
+        if overlay.promote_id.trim().is_empty() {
+            "<required>"
+        } else {
+            overlay.promote_id.as_str()
+        },
+        if overlay.promote_slug.trim().is_empty() {
+            "<empty>"
+        } else {
+            overlay.promote_slug.as_str()
+        },
+        if overlay.promote_pack_id.trim().is_empty() {
+            "<empty>"
+        } else {
+            overlay.promote_pack_id.as_str()
+        },
+        if overlay.promote_force { "ON" } else { "off" },
+        if overlay.promote_check_run { "ON" } else { "off" },
+        if overlay.promote_replay_verify { "ON" } else { "off" },
+        if overlay.promote_replay_verify_strict { "ON" } else { "off" },
+        if overlay.promote_replay_verify_run_id.trim().is_empty() {
+            "<empty>"
+        } else {
+            overlay.promote_replay_verify_run_id.as_str()
+        }
     );
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
 }

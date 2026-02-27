@@ -30,6 +30,7 @@ This directory contains deeper setup guides, reference docs, tuning guides, and 
 - [PR5 Scope](PR5_SCOPE_ASSISTED_LEARN_CAPTURE.md)
 - [PR6 Scope](PR6_SCOPE_TUI_LEARN_COMMANDS.md)
 - [PR7 Scope](PR7_SCOPE_TUI_LEARN_OVERLAY_UX.md)
+- [PR7B Scope](PR7B_SCOPE_TUI_LEARN_OVERLAY_REVIEW_PROMOTE.md)
 - [PR3/PR4 Handoff Notes](CODEX_HANDOFF_PR3_PR4_AND_REMAINING_WORK.md)
 
 ## Project Docs
