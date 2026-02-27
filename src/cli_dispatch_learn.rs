@@ -636,6 +636,11 @@ mod tests {
             events_path.exists(),
             "capture event should be emitted on success"
         );
+        let events_text = fs::read_to_string(&events_path).expect("read events");
+        assert!(
+            events_text.contains("\"schema\":\"openagent.learning_captured.v1\""),
+            "capture event should include learning_captured schema token"
+        );
 
         let tmp_fail = tempdir().expect("tempdir");
         let fail_workdir = tmp_fail.path();
