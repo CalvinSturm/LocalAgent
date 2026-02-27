@@ -570,6 +570,14 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                                 let _ = ui_state.refresh_approvals(&paths.approvals_path);
                             }
                         }
+                        KeyCode::Backspace => {
+                            input_buf.pop();
+                            *slash_menu_index = 0;
+                        }
+                        KeyCode::Char(c) if chat_runtime::is_text_input_mods(key.modifiers) => {
+                            input_buf.push(c);
+                            *slash_menu_index = 0;
+                        }
                         KeyCode::Enter => {
                             let line = input_buf.trim().to_string();
                             if let Some(rest) = line.strip_prefix("/interrupt ") {
@@ -646,6 +654,11 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                                 }
                                 input_buf.clear();
                                 *slash_menu_index = 0;
+                            } else if !line.is_empty() {
+                                logs.push(
+                                    "during an active run, supported commands are: /interrupt <message>, /next <message>, /queue"
+                                        .to_string(),
+                                );
                             }
                         }
                         _ => {}
