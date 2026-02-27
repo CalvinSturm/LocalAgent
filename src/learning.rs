@@ -1780,6 +1780,26 @@ mod tests {
 
     use super::*;
 
+    fn secret_ghp() -> String {
+        format!("{}{}", "ghp_", "A".repeat(32))
+    }
+
+    fn secret_github_pat() -> String {
+        format!("{}{}", "github_pat_", "a".repeat(24) + "_1234567890")
+    }
+
+    fn secret_aws_akia() -> String {
+        format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP")
+    }
+
+    fn secret_aws_asia() -> String {
+        format!("{}{}", "ASIA", "ABCDEFGHIJKLMNOP")
+    }
+
+    fn secret_private_key_marker() -> String {
+        ["BEGIN", "PRIVATE", "KEY"].join(" ")
+    }
+
     fn sample_entry() -> LearningEntryV1 {
         LearningEntryV1 {
             schema_version: LEARNING_ENTRY_SCHEMA_V1.to_string(),
@@ -1892,22 +1912,17 @@ mod tests {
 
     #[test]
     fn assist_preview_is_bounded_redacted_and_labeled() {
+        let ghp = secret_ghp();
         let preview = AssistedCapturePreview {
             provider: "mock".to_string(),
             model: "mock".to_string(),
             prompt_version: LEARN_ASSIST_PROMPT_VERSION_V1.to_string(),
             input_hash_hex: "abc".to_string(),
             draft: AssistedCaptureDraft {
-                summary: Some(format!(
-                    "contains token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 {}",
-                    "x".repeat(20_000)
-                )),
+                summary: Some(format!("contains token {} {}", ghp, "x".repeat(20_000))),
                 ..AssistedCaptureDraft::default()
             },
-            raw_model_output: format!(
-                "{{\"summary\":\"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 {}\"}}",
-                "x".repeat(20_000)
-            ),
+            raw_model_output: format!("{{\"summary\":\"{} {}\"}}", ghp, "x".repeat(20_000)),
         };
         let out = render_assist_capture_preview(&preview);
         assert!(out.contains("ASSIST DRAFT PREVIEW (not saved). Use --write to persist."));
@@ -2000,10 +2015,7 @@ mod tests {
     #[test]
     fn learn_show_redacts_and_bounds_output() {
         let mut e = sample_entry();
-        e.summary = format!(
-            "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 and {}",
-            "x".repeat(20_000)
-        );
+        e.summary = format!("token {} and {}", secret_ghp(), "x".repeat(20_000));
         let out = render_learning_show_text(&e, true, true);
         assert!(out.contains(REDACTED_SECRET_TOKEN));
         assert!(!out.contains("ghp_"));
@@ -2083,15 +2095,14 @@ mod tests {
 
     #[test]
     fn sensitivity_detects_private_key_and_tokens_case_sensitive() {
-        let flags = detect_contains_secrets_suspected("BEGIN PRIVATE KEY");
+        let flags = detect_contains_secrets_suspected(&secret_private_key_marker());
         assert!(flags);
         assert!(!detect_contains_secrets_suspected("Begin Private Key"));
-        assert!(detect_contains_secrets_suspected(
-            "x ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 y"
-        ));
-        assert!(detect_contains_secrets_suspected(
-            "github_pat_abcdefghijklmnopqrstuvwxyz_1234567890"
-        ));
+        assert!(detect_contains_secrets_suspected(&format!(
+            "x {} y",
+            secret_ghp()
+        )));
+        assert!(detect_contains_secrets_suspected(&secret_github_pat()));
     }
 
     #[test]
@@ -2103,21 +2114,22 @@ mod tests {
 
     #[test]
     fn redaction_replaces_non_overlapping_left_to_right_with_cap() {
-        let input = concat!(
-            "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 ",
-            "github_pat_abcdefghijklmnopqrstuvwxyz_1234567890 ",
-            "BEGIN PRIVATE KEY ",
-            "AKIAABCDEFGHIJKLMNOP ",
-            "ASIAABCDEFGHIJKLMNOP"
+        let input = format!(
+            "{} {} {} {} {}",
+            secret_ghp(),
+            secret_github_pat(),
+            secret_private_key_marker(),
+            secret_aws_akia(),
+            secret_aws_asia()
         );
-        let out = redact_secrets_for_display(input);
+        let out = redact_secrets_for_display(&input);
         assert_eq!(
             out.matches(REDACTED_SECRET_TOKEN).count(),
             MAX_REDACTIONS_IN_DISPLAY
         );
         assert!(!out.contains("ghp_"));
         assert!(!out.contains("github_pat_"));
-        assert!(!out.contains("BEGIN PRIVATE KEY"));
+        assert!(!out.contains(&secret_private_key_marker()));
     }
 
     #[test]
@@ -2142,7 +2154,7 @@ mod tests {
             &state_dir,
             CaptureLearningInput {
                 category: LearningCategoryV1::PromptGuidance,
-                summary: "Contains ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234".to_string(),
+                summary: format!("Contains {}", secret_ghp()),
                 ..CaptureLearningInput::default()
             },
         )
