@@ -78,7 +78,6 @@ enum LearnOverlayInputFocus {
     PromoteId,
     PromoteSlug,
     PromotePackId,
-    PromoteReplayRunId,
 }
 
 #[derive(Debug, Clone)]
@@ -143,12 +142,7 @@ fn cycle_overlay_focus(overlay: &mut LearnOverlayState, reverse: bool) {
         crate::chat_ui::LearnOverlayTab::Capture => F::CaptureSummary,
         crate::chat_ui::LearnOverlayTab::Review => F::ReviewId,
         crate::chat_ui::LearnOverlayTab::Promote => {
-            let order = [
-                F::PromoteId,
-                F::PromoteSlug,
-                F::PromotePackId,
-                F::PromoteReplayRunId,
-            ];
+            let order = [F::PromoteId, F::PromoteSlug, F::PromotePackId];
             let idx = order
                 .iter()
                 .position(|v| *v == overlay.input_focus)
@@ -200,7 +194,7 @@ fn set_overlay_next_steps_promote(overlay: &mut LearnOverlayState) {
         "Step 2: Press Ctrl+W to arm write."
     };
     overlay.inline_message = Some(format!(
-        "Step 1: Confirm target + flags. {step_2} Step 3: Press Esc to close."
+        "Step 1: Confirm target + required fields. {step_2} Step 3: Press Esc to close."
     ));
 }
 
@@ -1093,16 +1087,6 @@ fn handle_tui_outer_paste_event(input: TuiOuterPasteInput<'_>) {
                     );
                 }
             }
-            LearnOverlayInputFocus::PromoteReplayRunId => {
-                let s = normalize_overlay_paste(input.pasted, true);
-                if !s.is_empty() && !overlay.promote_replay_verify_run_id.ends_with(&s) {
-                    append_overlay_field_bounded(
-                        &mut overlay.promote_replay_verify_run_id,
-                        &s,
-                        OVERLAY_ID_MAX_CHARS,
-                    );
-                }
-            }
         }
         return;
     }
@@ -1500,10 +1484,6 @@ fn build_learn_overlay_render_model(
         promote_slug: s.promote_slug.clone(),
         promote_pack_id: s.promote_pack_id.clone(),
         promote_force: s.promote_force,
-        promote_check_run: s.promote_check_run,
-        promote_replay_verify: s.promote_replay_verify,
-        promote_replay_verify_strict: s.promote_replay_verify_strict,
-        promote_replay_verify_run_id: s.promote_replay_verify_run_id.clone(),
         input_focus: learn_overlay_focus_label(s.input_focus).to_string(),
         inline_message: s.inline_message.clone(),
         review_rows: s.review_rows.clone(),
@@ -1528,7 +1508,6 @@ fn learn_overlay_focus_label(focus: LearnOverlayInputFocus) -> &'static str {
         LearnOverlayInputFocus::PromoteId => "promote.id",
         LearnOverlayInputFocus::PromoteSlug => "promote.slug",
         LearnOverlayInputFocus::PromotePackId => "promote.pack_id",
-        LearnOverlayInputFocus::PromoteReplayRunId => "promote.replay_run_id",
     }
 }
 
@@ -1665,9 +1644,6 @@ fn handle_tui_outer_key_dispatch(
                     LearnOverlayInputFocus::PromotePackId => {
                         overlay.promote_pack_id.pop();
                     }
-                    LearnOverlayInputFocus::PromoteReplayRunId => {
-                        overlay.promote_replay_verify_run_id.pop();
-                    }
                 }
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
@@ -1711,24 +1687,24 @@ fn handle_tui_outer_key_dispatch(
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Char('k') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
-                    overlay.promote_check_run = !overlay.promote_check_run;
-                }
-                overlay.inline_message = None;
+                overlay.inline_message = Some(
+                    "Promote overlay keeps core options only. Use Ctrl+W then Enter to run."
+                        .to_string(),
+                );
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Char('r') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
-                    overlay.promote_replay_verify = !overlay.promote_replay_verify;
-                }
-                overlay.inline_message = None;
+                overlay.inline_message = Some(
+                    "Promote overlay keeps core options only. Use Ctrl+W then Enter to run."
+                        .to_string(),
+                );
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Char('s') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
-                    overlay.promote_replay_verify_strict = !overlay.promote_replay_verify_strict;
-                }
-                overlay.inline_message = None;
+                overlay.inline_message = Some(
+                    "Promote overlay keeps core options only. Use Ctrl+W then Enter to run."
+                        .to_string(),
+                );
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Left | KeyCode::Right => {
@@ -1884,11 +1860,6 @@ fn handle_tui_outer_key_dispatch(
                     ),
                     LearnOverlayInputFocus::PromotePackId => append_overlay_field_bounded(
                         &mut overlay.promote_pack_id,
-                        &c.to_string(),
-                        OVERLAY_ID_MAX_CHARS,
-                    ),
-                    LearnOverlayInputFocus::PromoteReplayRunId => append_overlay_field_bounded(
-                        &mut overlay.promote_replay_verify_run_id,
                         &c.to_string(),
                         OVERLAY_ID_MAX_CHARS,
                     ),
@@ -3441,7 +3412,7 @@ mod tests {
             promote_replay_verify: false,
             promote_replay_verify_strict: false,
             promote_replay_verify_run_id: String::new(),
-            input_focus: LearnOverlayInputFocus::PromoteReplayRunId,
+            input_focus: LearnOverlayInputFocus::PromotePackId,
             inline_message: None,
             review_rows: Vec::new(),
             review_selected_idx: 0,

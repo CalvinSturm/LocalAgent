@@ -29,10 +29,6 @@ pub(crate) struct LearnOverlayRenderModel {
     pub(crate) promote_slug: String,
     pub(crate) promote_pack_id: String,
     pub(crate) promote_force: bool,
-    pub(crate) promote_check_run: bool,
-    pub(crate) promote_replay_verify: bool,
-    pub(crate) promote_replay_verify_strict: bool,
-    pub(crate) promote_replay_verify_run_id: String,
     pub(crate) input_focus: String,
     pub(crate) inline_message: Option<String>,
     pub(crate) review_rows: Vec<String>,
@@ -516,7 +512,7 @@ fn draw_learn_overlay(f: &mut ratatui::Frame<'_>, overlay: &LearnOverlayRenderMo
                 .to_string()
         }
         LearnOverlayTab::Promote => {
-            "Promote: Left/Right Target | Ctrl+W Arm | Enter Run | Ctrl+F/K/R/S Flags | Tab Focus | Esc/Q Close | Ctrl+1/2/3 Tabs".to_string()
+            "Promote: Left/Right Target | Ctrl+W Arm | Enter Run | Ctrl+F Force | Tab Focus | Esc/Q Close | Ctrl+1/2/3 Tabs".to_string()
         }
     };
     f.render_widget(
@@ -803,13 +799,8 @@ fn draw_learn_promote_form(
     } else {
         "pack_id"
     };
-    let replay_id_label = if overlay.input_focus == "promote.replay_run_id" {
-        "replay_verify_run_id [active]"
-    } else {
-        "replay_verify_run_id"
-    };
     let mut text = format!(
-        "{id_label}: {}\nTarget: {target}\n{slug_label}: {}\n{pack_label}: {}\n\nforce:{}  check_run:{}  replay_verify:{}  replay_verify_strict:{}\n{replay_id_label}: {}",
+        "{id_label}: {}\nTarget: {target}\n{slug_label}: {}\n{pack_label}: {}\n\nforce:{}",
         if overlay.promote_id.trim().is_empty() {
             "<required>"
         } else {
@@ -825,15 +816,7 @@ fn draw_learn_promote_form(
         } else {
             overlay.promote_pack_id.as_str()
         },
-        if overlay.promote_force { "ON" } else { "off" },
-        if overlay.promote_check_run { "ON" } else { "off" },
-        if overlay.promote_replay_verify { "ON" } else { "off" },
-        if overlay.promote_replay_verify_strict { "ON" } else { "off" },
-        if overlay.promote_replay_verify_run_id.trim().is_empty() {
-            "<empty>"
-        } else {
-            overlay.promote_replay_verify_run_id.as_str()
-        }
+        if overlay.promote_force { "ON" } else { "off" }
     );
     text.push_str(&format!(
         "\n\nField focus: {}\nTarget switch: [Left/Right]\nField focus cycle: [Tab]/[Shift+Tab]",
