@@ -1,9 +1,39 @@
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap};
 
 use crate::tui::state::{ToolRow, UiState};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LearnOverlayTab {
+    Capture,
+    Review,
+    Promote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LearnOverlayWriteState {
+    Preview,
+    Armed,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LearnOverlayRenderModel {
+    pub(crate) tab: LearnOverlayTab,
+    pub(crate) selected_category_idx: usize,
+    pub(crate) summary: String,
+    pub(crate) assist_on: bool,
+    pub(crate) write_state: LearnOverlayWriteState,
+    pub(crate) equivalent_cli: String,
+    pub(crate) will_write: bool,
+    pub(crate) writes_to: Vec<String>,
+    pub(crate) target_path: String,
+    pub(crate) sensitivity_paths: bool,
+    pub(crate) sensitivity_secrets: bool,
+    pub(crate) sensitivity_userdata: bool,
+    pub(crate) overlay_logs: Vec<String>,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_chat_frame(
@@ -34,6 +64,7 @@ pub(crate) fn draw_chat_frame(
     show_banner: bool,
     ui_tick: u64,
     overlay_hint: Option<String>,
+    learn_overlay: Option<&LearnOverlayRenderModel>,
 ) {
     let input_display = format!("> {input}");
     let input_width = f.area().width.saturating_sub(2).max(1) as usize;
@@ -371,6 +402,250 @@ pub(crate) fn draw_chat_frame(
             overlay[2],
         );
     }
+
+    if let Some(overlay) = learn_overlay {
+        draw_learn_overlay(f, overlay);
+    }
+}
+
+fn draw_learn_overlay(f: &mut ratatui::Frame<'_>, overlay: &LearnOverlayRenderModel) {
+    let area = centered_rect(92, 86, f.area());
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Block::default()
+            .title(" LEARN OVERLAY ")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::Yellow)),
+        area,
+    );
+
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(12),
+            Constraint::Length(1),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let tabs = format!(
+        "{}  {}  {}",
+        tab_label(1, LearnOverlayTab::Capture, overlay.tab),
+        tab_label(2, LearnOverlayTab::Review, overlay.tab),
+        tab_label(3, LearnOverlayTab::Promote, overlay.tab)
+    );
+    let target = match overlay.tab {
+        LearnOverlayTab::Capture => "Target: Capture",
+        LearnOverlayTab::Review => "Target: Review",
+        LearnOverlayTab::Promote => "Target: Promote",
+    };
+    let pad = outer[0]
+        .width
+        .saturating_sub((tabs.chars().count() + target.chars().count()) as u16)
+        as usize;
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(tabs, Style::default().fg(Color::Yellow)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(target, Style::default().fg(Color::Gray)),
+        ])),
+        outer[0],
+    );
+    f.render_widget(
+        Paragraph::new(crate::chat_view_utils::horizontal_rule(outer[1].width))
+            .style(Style::default().fg(Color::DarkGray)),
+        outer[1],
+    );
+
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(outer[2]);
+
+    draw_learn_capture_form(f, body[0], overlay);
+    draw_learn_cli_review(f, body[1], overlay);
+
+    let hints = format!(
+        "Assist: {} (a) | Enter: Preview | w: Arm Write | Esc: Close | 1/2/3: Tabs",
+        if overlay.assist_on { "ON" } else { "OFF" }
+    );
+    f.render_widget(
+        Paragraph::new(hints).style(Style::default().fg(Color::Gray)),
+        outer[3],
+    );
+
+    let logs = if overlay.overlay_logs.is_empty() {
+        "LOGS: learn".to_string()
+    } else {
+        format!("LOGS: learn  {}", overlay.overlay_logs.join("  "))
+    };
+    f.render_widget(
+        Paragraph::new(logs)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::Yellow)),
+        outer[4],
+    );
+}
+
+fn draw_learn_capture_form(
+    f: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    overlay: &LearnOverlayRenderModel,
+) {
+    let block = Block::default()
+        .title(" - CAPTURE FORM ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(4),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    f.render_widget(Paragraph::new("Category:"), rows[0]);
+    let categories = ["workflow_hint", "prompt_guidance", "check_candidate"];
+    let cat_text = categories
+        .iter()
+        .enumerate()
+        .map(|(idx, c)| {
+            if idx == overlay.selected_category_idx {
+                format!("> {c}")
+            } else {
+                format!("  {c}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    f.render_widget(
+        Paragraph::new(cat_text).style(Style::default().fg(Color::Yellow)),
+        rows[1],
+    );
+    f.render_widget(
+        Paragraph::new("Summary: <required>").style(Style::default().fg(Color::Gray)),
+        rows[2],
+    );
+    let summary = if overlay.summary.trim().is_empty() {
+        "< Enter concise summary here... >".to_string()
+    } else {
+        overlay.summary.clone()
+    };
+    f.render_widget(
+        Paragraph::new(summary)
+            .style(Style::default().fg(Color::Yellow))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(Color::DarkGray)),
+            ),
+        rows[3],
+    );
+    let requirement = if overlay.summary.trim().is_empty() {
+        "summary: <required>"
+    } else {
+        "summary: ok"
+    };
+    f.render_widget(
+        Paragraph::new(requirement).style(Style::default().fg(Color::Gray)),
+        rows[5],
+    );
+    f.render_widget(Paragraph::new("▸ Advanced Parameters"), rows[6]);
+    f.render_widget(Paragraph::new("▸ Proposed Memory"), rows[7]);
+    f.render_widget(Paragraph::new("▸ Evidence Rows"), rows[8]);
+}
+
+fn draw_learn_cli_review(
+    f: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    overlay: &LearnOverlayRenderModel,
+) {
+    let block = Block::default()
+        .title(" - CLI REVIEW (capture) ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let write_state = match overlay.write_state {
+        LearnOverlayWriteState::Preview => "PREVIEW",
+        LearnOverlayWriteState::Armed => "ARMED",
+    };
+    let writes_to = if overlay.writes_to.is_empty() {
+        "none".to_string()
+    } else {
+        overlay
+            .writes_to
+            .iter()
+            .map(|p| format!("• {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = format!(
+        "Equivalent CLI:\n{}\n\nWrite State: {write_state}\nWill write: {}\nWrites to:\n{}\n\nTarget path: {}\n\nSensitivity flags:\n• Paths: {}\n• Secrets: {}\n• Userdata: {}",
+        overlay.equivalent_cli,
+        if overlay.will_write { "YES" } else { "NO" },
+        writes_to,
+        overlay.target_path,
+        yes_no(overlay.sensitivity_paths),
+        yes_no(overlay.sensitivity_secrets),
+        yes_no(overlay.sensitivity_userdata)
+    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+}
+
+fn tab_label(num: u8, tab: LearnOverlayTab, active: LearnOverlayTab) -> String {
+    let label = match tab {
+        LearnOverlayTab::Capture => "Capture",
+        LearnOverlayTab::Review => "Review",
+        LearnOverlayTab::Promote => "Promote",
+    };
+    if tab == active {
+        format!("[{num}] {label}")
+    } else {
+        format!("[{num}] {label}")
+    }
+}
+
+fn yes_no(v: bool) -> &'static str {
+    if v {
+        "YES"
+    } else {
+        "NO"
+    }
+}
+
+fn centered_rect(
+    percent_x: u16,
+    percent_y: u16,
+    r: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 fn draw_tools_pane(

@@ -71,6 +71,29 @@ enum TuiEnterSubmitOutcome {
     ExitRequested,
 }
 
+#[derive(Debug, Clone)]
+struct LearnOverlayState {
+    tab: crate::chat_ui::LearnOverlayTab,
+    category_idx: usize,
+    summary: String,
+    assist_on: bool,
+    write_armed: bool,
+    logs: Vec<String>,
+}
+
+impl Default for LearnOverlayState {
+    fn default() -> Self {
+        Self {
+            tab: crate::chat_ui::LearnOverlayTab::Capture,
+            category_idx: 0,
+            summary: String::new(),
+            assist_on: true,
+            write_armed: false,
+            logs: vec!["info: Preflight check complete. Waiting for user action.".to_string()],
+        }
+    }
+}
+
 type TuiRunFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<RunExecutionResult>> + Send>>;
 
@@ -124,6 +147,7 @@ struct TuiEnterSubmitInput<'a> {
     search_mode: bool,
     search_query: &'a str,
     shared_chat_mcp_registry: &'a mut Option<std::sync::Arc<McpRegistry>>,
+    learn_overlay: &'a mut Option<LearnOverlayState>,
 }
 
 #[derive(Clone)]
@@ -607,6 +631,7 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                 } else {
                     None
                 },
+                None,
             );
         })?;
 
@@ -740,6 +765,7 @@ struct TuiSlashCommandDispatchInput<'a> {
     transcript_scroll: &'a mut usize,
     follow_output: &'a mut bool,
     shared_chat_mcp_registry: &'a mut Option<std::sync::Arc<McpRegistry>>,
+    learn_overlay: &'a mut Option<LearnOverlayState>,
 }
 
 struct TuiNormalSubmitPrepInput<'a> {
@@ -757,6 +783,7 @@ struct TuiNormalSubmitPrepInput<'a> {
 
 struct TuiOuterKeyPreludeInput<'a> {
     key: crossterm::event::KeyEvent,
+    learn_overlay: &'a mut Option<LearnOverlayState>,
     palette_open: &'a mut bool,
     search_mode: &'a mut bool,
     follow_output: &'a mut bool,
@@ -766,6 +793,9 @@ struct TuiOuterKeyPreludeInput<'a> {
 fn handle_tui_outer_key_prelude(input: TuiOuterKeyPreludeInput<'_>) -> TuiOuterKeyPreludeOutcome {
     if !matches!(input.key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return TuiOuterKeyPreludeOutcome::ContinueLoop;
+    }
+    if input.learn_overlay.is_some() {
+        return TuiOuterKeyPreludeOutcome::Proceed;
     }
     if input.key.code == KeyCode::Esc {
         return TuiOuterKeyPreludeOutcome::BreakLoop;
@@ -790,6 +820,8 @@ fn handle_tui_outer_key_prelude(input: TuiOuterKeyPreludeInput<'_>) -> TuiOuterK
 
 struct TuiOuterKeyDispatchInput<'a> {
     key: crossterm::event::KeyEvent,
+    learn_overlay: &'a mut Option<LearnOverlayState>,
+    run_busy: bool,
     input: &'a mut String,
     prompt_history: &'a mut Vec<String>,
     history_idx: &'a mut Option<usize>,
@@ -852,6 +884,7 @@ fn handle_tui_outer_paste_event(input: TuiOuterPasteInput<'_>) {
 
 struct TuiOuterEventDispatchInput<'a> {
     event: CEvent,
+    status: &'a str,
     prompt_history: &'a mut Vec<String>,
     transcript: &'a mut Vec<(String, String)>,
     streaming_assistant: &'a mut String,
@@ -877,6 +910,7 @@ struct TuiOuterEventDispatchInput<'a> {
     approvals_selected: &'a mut usize,
     paths: &'a store::StatePaths,
     logs: &'a mut Vec<String>,
+    learn_overlay: &'a mut Option<LearnOverlayState>,
 }
 
 fn handle_tui_outer_event_dispatch(
@@ -905,6 +939,7 @@ fn handle_tui_outer_event_dispatch(
         CEvent::Key(key) => {
             match handle_tui_outer_key_prelude(TuiOuterKeyPreludeInput {
                 key,
+                learn_overlay: input.learn_overlay,
                 palette_open: input.palette_open,
                 search_mode: input.search_mode,
                 follow_output: input.follow_output,
@@ -920,6 +955,8 @@ fn handle_tui_outer_event_dispatch(
             }
             match handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
                 key,
+                learn_overlay: input.learn_overlay,
+                run_busy: input.status == "running",
                 input: input.input,
                 prompt_history: input.prompt_history,
                 history_idx: input.history_idx,
@@ -987,6 +1024,7 @@ struct TuiRenderFrameInput<'a> {
     show_banner: bool,
     ui_tick: u64,
     overlay_text: Option<String>,
+    learn_overlay: Option<crate::chat_ui::LearnOverlayRenderModel>,
 }
 
 struct TuiRenderFrameBuildInput<'a> {
@@ -1021,6 +1059,7 @@ struct TuiRenderFrameBuildInput<'a> {
     search_mode: bool,
     search_query: &'a str,
     slash_menu_index: usize,
+    learn_overlay: &'a Option<LearnOverlayState>,
 }
 
 fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRenderFrameInput<'_> {
@@ -1047,7 +1086,9 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
         *input.show_tool_details = false;
     }
 
-    let overlay_text = if input.palette_open {
+    let overlay_text = if input.learn_overlay.is_some() {
+        None
+    } else if input.palette_open {
         Some(format!(
             "⌘ {}  (Up/Down, Enter, Esc)",
             input.palette_items[input.palette_selected]
@@ -1064,6 +1105,60 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
     } else {
         None
     };
+
+    let learn_overlay = input.learn_overlay.as_ref().map(|s| {
+        let category = match s.category_idx {
+            0 => "workflow_hint",
+            1 => "prompt_guidance",
+            _ => "check_candidate",
+        };
+        let mut cli = format!("learn capture --category {category} --summary ");
+        if s.summary.trim().is_empty() {
+            cli.push_str("<required>");
+        } else {
+            cli.push('"');
+            cli.push_str(&s.summary);
+            cli.push('"');
+        }
+        if s.assist_on {
+            cli.push_str(" --assist");
+        }
+        let write_state = if s.write_armed {
+            crate::chat_ui::LearnOverlayWriteState::Armed
+        } else {
+            crate::chat_ui::LearnOverlayWriteState::Preview
+        };
+        let writes_to = if s.write_armed {
+            if s.assist_on {
+                vec![
+                    ".localagent/learn/entries/<new_ulid>.json (staged)".to_string(),
+                    ".localagent/learn/events.jsonl (staged)".to_string(),
+                ]
+            } else {
+                vec![
+                    ".localagent/learn/entries/<new_ulid>.json (staged)".to_string(),
+                    ".localagent/learn/events.jsonl (staged)".to_string(),
+                ]
+            }
+        } else {
+            Vec::new()
+        };
+        crate::chat_ui::LearnOverlayRenderModel {
+            tab: s.tab,
+            selected_category_idx: s.category_idx,
+            summary: s.summary.clone(),
+            assist_on: s.assist_on,
+            write_state,
+            equivalent_cli: cli,
+            will_write: s.write_armed,
+            writes_to,
+            target_path: "N/A".to_string(),
+            sensitivity_paths: false,
+            sensitivity_secrets: false,
+            sensitivity_userdata: false,
+            overlay_logs: s.logs.clone(),
+        }
+    });
 
     TuiRenderFrameInput {
         mode_label: chat_runtime::chat_mode_label(input.active_run),
@@ -1092,12 +1187,110 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
         show_banner: input.show_banner,
         ui_tick: input.ui_tick,
         overlay_text,
+        learn_overlay,
     }
 }
 
 fn handle_tui_outer_key_dispatch(
     input: TuiOuterKeyDispatchInput<'_>,
 ) -> TuiOuterKeyDispatchOutcome {
+    if let Some(overlay) = input.learn_overlay.as_mut() {
+        match input.key.code {
+            KeyCode::Esc => {
+                *input.learn_overlay = None;
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Char('1') => {
+                overlay.tab = crate::chat_ui::LearnOverlayTab::Capture;
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Char('2') => {
+                overlay.tab = crate::chat_ui::LearnOverlayTab::Review;
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Char('3') => {
+                overlay.tab = crate::chat_ui::LearnOverlayTab::Promote;
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Up => {
+                if overlay.tab == crate::chat_ui::LearnOverlayTab::Capture {
+                    overlay.category_idx = overlay.category_idx.saturating_sub(1);
+                }
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Down => {
+                if overlay.tab == crate::chat_ui::LearnOverlayTab::Capture {
+                    overlay.category_idx = (overlay.category_idx + 1).min(2);
+                }
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Backspace => {
+                if overlay.tab == crate::chat_ui::LearnOverlayTab::Capture {
+                    overlay.summary.pop();
+                }
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Char('a') => {
+                if overlay.tab == crate::chat_ui::LearnOverlayTab::Capture {
+                    overlay.assist_on = !overlay.assist_on;
+                }
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Char('w') => {
+                if overlay.tab == crate::chat_ui::LearnOverlayTab::Capture {
+                    overlay.write_armed = !overlay.write_armed;
+                    overlay.logs.push(if overlay.write_armed {
+                        "info: Write state armed.".to_string()
+                    } else {
+                        "info: Write state returned to preview.".to_string()
+                    });
+                }
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Enter => {
+                if overlay.tab == crate::chat_ui::LearnOverlayTab::Capture {
+                    if input.run_busy {
+                        overlay
+                            .logs
+                            .push("System busy. Operation deferred.".to_string());
+                        overlay.logs.push("ERR_TUI_BUSY_TRY_AGAIN".to_string());
+                        return TuiOuterKeyDispatchOutcome::Handled;
+                    }
+                    if overlay.summary.trim().is_empty() {
+                        overlay.logs.push("summary: <required>".to_string());
+                        return TuiOuterKeyDispatchOutcome::Handled;
+                    }
+                    if overlay.write_armed {
+                        let category = match overlay.category_idx {
+                            0 => "workflow-hint",
+                            1 => "prompt-guidance",
+                            _ => "check-candidate",
+                        };
+                        let assist = if overlay.assist_on { " --assist" } else { "" };
+                        let write = if overlay.assist_on { " --write" } else { "" };
+                        *input.input = format!(
+                            "/learn capture --category {category} --summary \"{}\"{assist}{write}",
+                            overlay.summary.replace('"', "\\\"")
+                        );
+                        return TuiOuterKeyDispatchOutcome::EnterInline;
+                    }
+                    overlay.logs.push(
+                        "info: Preflight check complete. Waiting for user action.".to_string(),
+                    );
+                    return TuiOuterKeyDispatchOutcome::Handled;
+                }
+                return TuiOuterKeyDispatchOutcome::Handled;
+            }
+            KeyCode::Char(c) if chat_runtime::is_text_input_mods(input.key.modifiers) => {
+                if overlay.tab == crate::chat_ui::LearnOverlayTab::Capture {
+                    overlay.summary.push(c);
+                    return TuiOuterKeyDispatchOutcome::Handled;
+                }
+            }
+            _ => return TuiOuterKeyDispatchOutcome::Handled,
+        }
+    }
+
     if *input.palette_open {
         match input.key.code {
             KeyCode::Esc => *input.palette_open = false,
@@ -1585,6 +1778,7 @@ async fn handle_tui_enter_submit(
         search_mode,
         search_query,
         shared_chat_mcp_registry,
+        learn_overlay,
     } = input;
 
     let line = input_buf.trim().to_string();
@@ -1650,6 +1844,7 @@ async fn handle_tui_enter_submit(
             transcript_scroll,
             follow_output,
             shared_chat_mcp_registry,
+            learn_overlay,
         })
         .await?
         {
@@ -1728,6 +1923,7 @@ async fn handle_tui_enter_submit(
             } else {
                 None
             },
+            None,
         );
     })?;
     *ui_tick = ui_tick.saturating_add(1);
@@ -1808,6 +2004,11 @@ async fn handle_tui_slash_command(
     input: TuiSlashCommandDispatchInput<'_>,
 ) -> anyhow::Result<SlashCommandDispatchOutcome> {
     let line = input.line;
+    if line.trim() == "/learn" {
+        *input.learn_overlay = Some(LearnOverlayState::default());
+        *input.show_logs = false;
+        return Ok(SlashCommandDispatchOutcome::Handled);
+    }
     if line.starts_with("/learn") {
         if input.run_busy {
             input.logs.push("ERR_TUI_BUSY_TRY_AGAIN".to_string());
@@ -2110,6 +2311,7 @@ pub(crate) async fn run_chat_tui(
     let mut search_query = String::new();
     let mut search_line_cursor = 0usize;
     let mut slash_menu_index: usize = 0;
+    let mut learn_overlay: Option<LearnOverlayState> = None;
     let mut shared_chat_mcp_registry: Option<std::sync::Arc<McpRegistry>> = None;
     let mut pending_timeout_input = false;
     let mut pending_params_input = false;
@@ -2156,6 +2358,7 @@ pub(crate) async fn run_chat_tui(
                 search_mode,
                 search_query: &search_query,
                 slash_menu_index,
+                learn_overlay: &learn_overlay,
             });
             let visible_tool_count =
                 frame
@@ -2193,12 +2396,14 @@ pub(crate) async fn run_chat_tui(
                     frame.show_banner,
                     frame.ui_tick,
                     frame.overlay_text.clone(),
+                    frame.learn_overlay.as_ref(),
                 );
             })?;
 
             if event::poll(Duration::from_millis(base_run.tui_refresh_ms))? {
                 match handle_tui_outer_event_dispatch(TuiOuterEventDispatchInput {
                     event: event::read()?,
+                    status: &status,
                     prompt_history: &mut prompt_history,
                     transcript: &mut transcript,
                     streaming_assistant: &mut streaming_assistant,
@@ -2224,6 +2429,7 @@ pub(crate) async fn run_chat_tui(
                     approvals_selected: &mut approvals_selected,
                     paths,
                     logs: &mut logs,
+                    learn_overlay: &mut learn_overlay,
                 }) {
                     TuiOuterEventDispatchOutcome::BreakLoop => break,
                     TuiOuterEventDispatchOutcome::ContinueLoop => continue,
@@ -2280,6 +2486,7 @@ pub(crate) async fn run_chat_tui(
                             search_mode,
                             search_query: &search_query,
                             shared_chat_mcp_registry: &mut shared_chat_mcp_registry,
+                            learn_overlay: &mut learn_overlay,
                         })
                         .await?
                         {
