@@ -590,17 +590,17 @@ fn draw_learn_capture_form(
     };
     f.render_widget(
         Paragraph::new(requirement).style(Style::default().fg(Color::Gray)),
-        rows[5],
+        rows[4],
     );
     let focus_line = format!("field focus: {}", overlay.input_focus);
     f.render_widget(
         Paragraph::new(focus_line).style(Style::default().fg(Color::Gray)),
-        rows[9],
+        rows[5],
     );
     if let Some(msg) = overlay.inline_message.as_deref() {
         f.render_widget(
             Paragraph::new(msg).style(Style::default().fg(Color::Red)),
-            rows[9],
+            rows[5],
         );
     }
     f.render_widget(Paragraph::new("▸ Advanced Parameters"), rows[6]);
