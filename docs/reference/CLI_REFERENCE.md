@@ -1,5 +1,9 @@
 # LocalAgent CLI Reference
 
+Status: Active  
+Owner: LocalAgent maintainers  
+Last reviewed: 2026-02-27
+
 This document is a comprehensive command and flag reference for `localagent`.
 
 ## Binary
@@ -407,4 +411,5 @@ Mode naming note:
 
 ---
 
-For provider install/setup walkthroughs, see `docs/LLM_SETUP.md`.
+For provider install/setup walkthroughs, see `docs/guides/LLM_SETUP.md`.
+

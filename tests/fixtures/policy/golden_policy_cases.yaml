@@ -3,7 +3,7 @@ cases:
   - name: "allow docs read"
     tool: "read_file"
     arguments:
-      path: "docs/CLI_REFERENCE.md"
+      path: "docs/reference/CLI_REFERENCE.md"
     context:
       workdir: "."
       exec_target: "host"
@@ -71,4 +71,5 @@ cases:
       decision: "require_approval"
       reason_contains: "writes require approval"
       source_contains: "golden_policy.yaml"
+
 

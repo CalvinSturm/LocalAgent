@@ -475,12 +475,14 @@ fn draw_learn_overlay(f: &mut ratatui::Frame<'_>, overlay: &LearnOverlayRenderMo
             Span::styled(tabs, Style::default().fg(Color::Yellow)),
             Span::raw(" ".repeat(pad)),
             Span::styled(target, Style::default().fg(Color::Gray)),
-        ])),
+        ]))
+        .wrap(Wrap { trim: false }),
         outer[0],
     );
     f.render_widget(
         Paragraph::new(crate::chat_view_utils::horizontal_rule(outer[1].width))
-            .style(Style::default().fg(Color::DarkGray)),
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: false }),
         outer[1],
     );
 
@@ -553,97 +555,124 @@ fn draw_learn_capture_form(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(4),
             Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(1),
         ])
         .split(inner);
-    f.render_widget(Paragraph::new("Category:"), rows[0]);
+    f.render_widget(
+        Paragraph::new("Step 1: Choose category  Step 2: Type summary  Step 3: Enter preview")
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: false }),
+        rows[0],
+    );
     let categories = ["workflow_hint", "prompt_guidance", "check_candidate"];
-    let cat_text = categories
+    let category_tokens = categories
         .iter()
         .enumerate()
         .map(|(idx, c)| {
             if idx == overlay.selected_category_idx {
-                format!("> {c}")
+                format!("> {c} <")
             } else {
-                format!("  {c}")
+                c.to_string()
             }
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    f.render_widget(
-        Paragraph::new(cat_text).style(Style::default().fg(Color::Yellow)),
-        rows[1],
-    );
+        .join("  ");
     let category_help = match overlay.selected_category_idx {
         0 => "workflow_hint: reusable process/pattern to follow next time",
         1 => "prompt_guidance: prompting instruction that improves tool/model behavior",
         _ => "check_candidate: candidate check to promote into .localagent/checks/",
     };
-    f.render_widget(
-        Paragraph::new(category_help)
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(Color::Gray)),
-        rows[2],
+    let cat_text = format!(
+        "Category [Up/Down]: {}\n{}",
+        category_tokens, category_help
     );
-    let summary_label = if overlay.input_focus == "capture.summary" {
+    f.render_widget(
+        Paragraph::new(soft_break_long_tokens(
+            &cat_text,
+            rows[1].width.saturating_sub(1) as usize,
+        ))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(Color::Yellow)),
+        rows[1],
+    );
+    let summary_active = overlay.input_focus == "capture.summary";
+    let summary_label = if summary_active {
         "Summary: <required>  [active]"
     } else {
         "Summary: <required>"
     };
     f.render_widget(
-        Paragraph::new(summary_label).style(Style::default().fg(Color::Gray)),
-        rows[3],
+        Paragraph::new(summary_label)
+            .style(Style::default().fg(if summary_active {
+                Color::Yellow
+            } else {
+                Color::Gray
+            }))
+            .wrap(Wrap { trim: false }),
+        rows[2],
     );
     let summary = if overlay.summary.trim().is_empty() {
         "< Enter concise summary here... >".to_string()
     } else {
-        soft_break_long_tokens(&overlay.summary, rows[4].width.saturating_sub(3) as usize)
+        right_fit_single_line(&overlay.summary, rows[3].width.saturating_sub(4) as usize)
     };
     f.render_widget(
         Paragraph::new(summary)
-            .style(Style::default().fg(Color::Yellow))
+            .style(Style::default().fg(if summary_active {
+                Color::Yellow
+            } else {
+                Color::White
+            }))
+            .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .style(Style::default().fg(Color::DarkGray)),
             ),
-        rows[4],
+        rows[3],
     );
     let requirement = if overlay.summary.trim().is_empty() {
         "summary: <required>"
     } else {
         "summary: ok"
     };
+    let focus_line = format!("{requirement}  |  field focus: {}", overlay.input_focus);
     f.render_widget(
-        Paragraph::new(requirement).style(Style::default().fg(Color::Gray)),
-        rows[5],
-    );
-    let focus_line = format!("field focus: {}", overlay.input_focus);
-    f.render_widget(
-        Paragraph::new(focus_line).style(Style::default().fg(Color::Gray)),
-        rows[6],
+        Paragraph::new(focus_line)
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: false }),
+        rows[4],
     );
     if let Some(msg) = overlay.inline_message.as_deref() {
-        let msg_wrapped = soft_break_long_tokens(msg, rows[6].width.saturating_sub(1) as usize);
+        let msg_wrapped = soft_break_long_tokens(msg, rows[5].width.saturating_sub(1) as usize);
+        let msg_style = if msg.contains("<required>")
+            || msg.contains("ERR_")
+            || msg.to_ascii_lowercase().contains("failed")
+            || msg.to_ascii_lowercase().contains("error")
+        {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
         f.render_widget(
             Paragraph::new(msg_wrapped)
                 .wrap(Wrap { trim: true })
-                .style(Style::default().fg(Color::Red)),
-            rows[6],
+                .style(msg_style),
+            rows[5],
         );
     }
-    f.render_widget(Paragraph::new("▸ Advanced Parameters"), rows[7]);
-    f.render_widget(Paragraph::new("▸ Proposed Memory"), rows[8]);
-    f.render_widget(Paragraph::new("▸ Evidence Rows"), rows[9]);
+    f.render_widget(
+        Paragraph::new("▸ Advanced Parameters  ▸ Proposed Memory  ▸ Evidence Rows")
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: false }),
+        rows[6],
+    );
 }
 
 fn draw_learn_cli_review(
@@ -676,10 +705,20 @@ fn draw_learn_cli_review(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let assist_line = if overlay.tab == LearnOverlayTab::Capture {
+        if overlay.assist_on {
+            "Assist: ON (running armed capture calls LLM and uses tokens)"
+        } else {
+            "Assist: OFF (capture run is local; no LLM assist call)"
+        }
+    } else {
+        "Assist: N/A"
+    };
     let text = format!(
-        "Equivalent CLI:\n{}\n\nWrite State: {write_state}\nWill write: {}\nWrites to:\n{}\n\nTarget path: {}\n\nSensitivity flags:\n• Paths: {}\n• Secrets: {}\n• Userdata: {}",
+        "Equivalent CLI:\n{}\n\nWrite State: {write_state}\nWill write: {}\n{}\nWrites to:\n{}\n\nTarget path: {}\n\nSensitivity flags:\n• Paths: {}\n• Secrets: {}\n• Userdata: {}",
         overlay.equivalent_cli,
         if overlay.will_write { "YES" } else { "NO" },
+        assist_line,
         writes_to,
         overlay.target_path,
         yes_no(overlay.sensitivity_paths),
@@ -830,17 +869,24 @@ fn soft_break_long_tokens(input: &str, width: usize) -> String {
     out
 }
 
-fn tab_label(num: u8, tab: LearnOverlayTab, active: LearnOverlayTab) -> String {
+fn right_fit_single_line(input: &str, width: usize) -> String {
+    let maxw = width.max(4);
+    let chars: Vec<char> = input.chars().collect();
+    if chars.len() <= maxw {
+        return input.to_string();
+    }
+    let keep = maxw.saturating_sub(1);
+    let tail: String = chars[chars.len().saturating_sub(keep)..].iter().collect();
+    format!("…{tail}")
+}
+
+fn tab_label(num: u8, tab: LearnOverlayTab, _active: LearnOverlayTab) -> String {
     let label = match tab {
         LearnOverlayTab::Capture => "Capture",
         LearnOverlayTab::Review => "Review",
         LearnOverlayTab::Promote => "Promote",
     };
-    if tab == active {
-        format!("[{num}] {label}")
-    } else {
-        format!("[{num}] {label}")
-    }
+    format!("[{num}] {label}")
 }
 
 fn yes_no(v: bool) -> &'static str {

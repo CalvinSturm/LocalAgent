@@ -1,5 +1,9 @@
 # Instruction Profiles (Per-Model Tuning)
 
+Status: Active  
+Owner: LocalAgent maintainers  
+Last reviewed: 2026-02-27
+
 LocalAgent supports per-model and per-task prompt tuning through an `instructions.yaml` file.
 
 This is the recommended way to improve reliability for individual local models (especially smaller models) without changing code.

@@ -1,37 +1,58 @@
 # LocalAgent Docs
 
-This directory contains deeper setup guides, reference docs, tuning guides, and release history for LocalAgent.
+Status: Active  
+Owner: LocalAgent maintainers  
+Last reviewed: 2026-02-27
 
-## Getting Started
+This docs tree is organized by document type.
 
-- [Install](INSTALL.md)
-- [LLM Provider Setup](LLM_SETUP.md)
-- [Templates](TEMPLATES.md)
+Normative docs (source of truth for users/operators):
+- `docs/guides/`
+- `docs/reference/`
+- `docs/adr/`
+
+Non-normative docs (contributor context/history only):
+- `docs/research/`
+- `docs/archive/`
+
+## Guides
+
+- [Install](guides/INSTALL.md)
+- [LLM Provider Setup](guides/LLM_SETUP.md)
+- [Templates](guides/TEMPLATES.md)
 
 ## Reference
 
-- [CLI Reference](CLI_REFERENCE.md)
-- [Learn Workflow Reference](LEARN_WORKFLOW_REFERENCE.md)
-- [Runtime Architecture](RUNTIME_ARCHITECTURE.md)
+- [CLI Reference](reference/CLI_REFERENCE.md)
+- [Learn Workflow Reference](reference/LEARN_WORKFLOW_REFERENCE.md)
+- [Learn Output Contract](reference/LEARN_OUTPUT_CONTRACT.md)
+- [Runtime Architecture](reference/RUNTIME_ARCHITECTURE.md)
+- [Instruction Profiles](reference/INSTRUCTION_PROFILES.md)
+- [Safe Tool Tuning Profile](reference/SAFE_TOOL_TUNING_PROFILE.md)
 
-## Tuning and Reliability
+## Research
 
-- [Instruction Profiles](INSTRUCTION_PROFILES.md)
-- [Safe Tool Tuning Profile](SAFE_TOOL_TUNING_PROFILE.md)
+- Status: Non-normative; for contributor roadmap/design context only.
+- [Learn Research Brief](research/LEARN_RESEARCH_BRIEF.md)
+- [Learn Research (Merged)](research/LEARN_RESEARCH_MERGED.md)
 
-## Releases and History
+## ADR
+
+- [ADR-0001: Learn Overlay Governance](adr/ADR-0001-learn-overlay-governance.md)
+
+## Archive
+
+- Status: Non-normative; historical planning snapshots.
+- [PR3/PR4 Handoff Notes](archive/CODEX_HANDOFF_PR3_PR4_AND_REMAINING_WORK.md)
+- [PR4 Scope](archive/PR4_SCOPE_LEARN_PROMOTE_PACK_AND_AGENTS.md)
+- [PR5 Scope](archive/PR5_SCOPE_ASSISTED_LEARN_CAPTURE.md)
+- [PR6 Scope](archive/PR6_SCOPE_TUI_LEARN_COMMANDS.md)
+- [PR7 Scope Archive Summary](archive/PR7_SCOPE_ARCHIVE_SUMMARY.md)
+
+## Releases
 
 - [Release Notes Index](release-notes/README.md)
 - [Changelog](../CHANGELOG.md)
-
-## Historical Planning Docs
-
-- [PR4 Scope](PR4_SCOPE_LEARN_PROMOTE_PACK_AND_AGENTS.md)
-- [PR5 Scope](PR5_SCOPE_ASSISTED_LEARN_CAPTURE.md)
-- [PR6 Scope](PR6_SCOPE_TUI_LEARN_COMMANDS.md)
-- [PR7 Scope](PR7_SCOPE_TUI_LEARN_OVERLAY_UX.md)
-- [PR7B Scope](PR7B_SCOPE_TUI_LEARN_OVERLAY_REVIEW_PROMOTE.md)
-- [PR3/PR4 Handoff Notes](CODEX_HANDOFF_PR3_PR4_AND_REMAINING_WORK.md)
 
 ## Project Docs
 

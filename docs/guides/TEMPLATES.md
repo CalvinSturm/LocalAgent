@@ -1,5 +1,9 @@
 # LocalAgent Templates
 
+Status: Active  
+Owner: LocalAgent maintainers  
+Last reviewed: 2026-02-27
+
 Use `localagent template list` to see all embedded templates.
 
 ## Available Names

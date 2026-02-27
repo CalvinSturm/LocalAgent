@@ -39,17 +39,27 @@ fn is_diff_deletion_line(line: &str) -> bool {
     line.starts_with('-') && !line.starts_with("---")
 }
 
+fn has_unified_diff_context(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.starts_with("diff --git ")
+            || line.starts_with("@@")
+            || line.starts_with("+++ ")
+            || line.starts_with("--- ")
+    })
+}
+
 pub(crate) fn styled_chat_text(chat_text: &str, base_style: Style) -> (Text<'static>, String) {
     let mut lines = Vec::<Line<'static>>::new();
     let mut plain = String::new();
     let mut change_line_no = 1usize;
+    let treat_as_diff = has_unified_diff_context(chat_text);
 
     for raw in chat_text.lines() {
-        let (content, style) = if is_diff_addition_line(raw) {
+        let (content, style) = if treat_as_diff && is_diff_addition_line(raw) {
             let numbered = format!("{:>4} | {raw}", change_line_no);
             change_line_no = change_line_no.saturating_add(1);
             (numbered, Style::default().fg(Color::Green))
-        } else if is_diff_deletion_line(raw) {
+        } else if treat_as_diff && is_diff_deletion_line(raw) {
             let numbered = format!("{:>4} | {raw}", change_line_no);
             change_line_no = change_line_no.saturating_add(1);
             (numbered, Style::default().fg(Color::Red))
@@ -173,4 +183,27 @@ pub(crate) fn rotating_status_word<'a>(
     x ^= x << 25;
     x ^= x >> 27;
     words[(x as usize) % words.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::styled_chat_text;
+    use ratatui::style::Style;
+
+    #[test]
+    fn markdown_bullets_are_not_treated_as_diff() {
+        let input = "- item one\n- item two\n+ item three";
+        let (_styled, plain) = styled_chat_text(input, Style::default());
+        assert_eq!(plain, input);
+        assert!(!plain.contains("| - "));
+        assert!(!plain.contains("| + "));
+    }
+
+    #[test]
+    fn unified_diff_lines_are_numbered_when_context_present() {
+        let input = "--- a/file.rs\n+++ b/file.rs\n@@ -1,2 +1,2 @@\n-old\n+new";
+        let (_styled, plain) = styled_chat_text(input, Style::default());
+        assert!(plain.contains("   1 | -old"));
+        assert!(plain.contains("   2 | +new"));
+    }
 }

@@ -1,5 +1,9 @@
 # Runtime Architecture
 
+Status: Active  
+Owner: LocalAgent maintainers  
+Last reviewed: 2026-02-27
+
 This document maps LocalAgent runtime flow after the CLI/runtime modularization refactor.
 
 Use it to answer:

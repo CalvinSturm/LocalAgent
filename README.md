@@ -56,7 +56,7 @@ For local providers (`LM Studio`, `Ollama`, `llama.cpp`), start the provider fir
 
 ## Installation
 
-For the full install, update, Windows troubleshooting, and verification flow, see [docs/INSTALL.md](docs/INSTALL.md).
+For the full install, update, Windows troubleshooting, and verification flow, see [docs/guides/INSTALL.md](docs/guides/INSTALL.md).
 
 ### Option 1: Build from source
 
@@ -418,13 +418,13 @@ localagent doctor --provider llamacpp
 
 Need deeper setup, profiles, or reference docs? Start here.
 
-- [Install](docs/INSTALL.md)
-- [Templates](docs/TEMPLATES.md)
-- [CLI reference](docs/CLI_REFERENCE.md)
-- [Provider setup](docs/LLM_SETUP.md)
-- [Runtime architecture](docs/RUNTIME_ARCHITECTURE.md)
-- [Instruction profiles](docs/INSTRUCTION_PROFILES.md)
-- [Safe tool tuning profile](docs/SAFE_TOOL_TUNING_PROFILE.md)
+- [Install](docs/guides/INSTALL.md)
+- [Templates](docs/guides/TEMPLATES.md)
+- [CLI reference](docs/reference/CLI_REFERENCE.md)
+- [Provider setup](docs/guides/LLM_SETUP.md)
+- [Runtime architecture](docs/reference/RUNTIME_ARCHITECTURE.md)
+- [Instruction profiles](docs/reference/INSTRUCTION_PROFILES.md)
+- [Safe tool tuning profile](docs/reference/SAFE_TOOL_TUNING_PROFILE.md)
 - [Contributing](CONTRIBUTING.md)
 - [Release notes](docs/release-notes/README.md)
 - [Changelog](CHANGELOG.md)
@@ -434,3 +434,4 @@ Need deeper setup, profiles, or reference docs? Start here.
 ## License
 
 MIT
+

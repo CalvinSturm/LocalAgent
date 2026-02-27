@@ -1,6 +1,9 @@
 # /learn Workflow Reference
 
 Version context: LocalAgent `v0.3.0` (2026-02-27)
+Status: Draft
+Owner: LocalAgent maintainers  
+Last reviewed: 2026-02-27
 
 ## 1. What `/learn` is for
 

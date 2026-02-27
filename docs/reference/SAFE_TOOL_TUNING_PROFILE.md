@@ -1,5 +1,9 @@
 # Safe Tool Tuning Profile (V1)
 
+Status: Active  
+Owner: LocalAgent maintainers  
+Last reviewed: 2026-02-27
+
 This guide gives you a concrete, low-risk baseline for tuning tool usage with:
 
 - `instructions.yaml`

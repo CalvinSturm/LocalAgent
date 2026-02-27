@@ -2,6 +2,8 @@
 
 Version context: LocalAgent `v0.3.0` (2026-02-27)
 Status: Draft research plan + alignment framework
+Owner: LocalAgent maintainers  
+Last reviewed: 2026-02-27
 
 ## 1. Objective
 
