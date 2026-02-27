@@ -529,9 +529,10 @@ fn draw_learn_overlay(f: &mut ratatui::Frame<'_>, overlay: &LearnOverlayRenderMo
     } else {
         format!("LOGS: learn  {}", overlay.overlay_logs.join("  "))
     };
+    let logs_wrapped = soft_break_long_tokens(&logs, outer[4].width.saturating_sub(2) as usize);
     f.render_widget(
-        Paragraph::new(logs)
-            .wrap(Wrap { trim: false })
+        Paragraph::new(logs_wrapped)
+            .wrap(Wrap { trim: true })
             .style(Style::default().fg(Color::Yellow)),
         outer[4],
     );
@@ -557,7 +558,7 @@ fn draw_learn_capture_form(
             Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -605,7 +606,7 @@ fn draw_learn_capture_form(
     let summary = if overlay.summary.trim().is_empty() {
         "< Enter concise summary here... >".to_string()
     } else {
-        overlay.summary.clone()
+        soft_break_long_tokens(&overlay.summary, rows[4].width.saturating_sub(3) as usize)
     };
     f.render_widget(
         Paragraph::new(summary)
@@ -632,8 +633,11 @@ fn draw_learn_capture_form(
         rows[6],
     );
     if let Some(msg) = overlay.inline_message.as_deref() {
+        let msg_wrapped = soft_break_long_tokens(msg, rows[6].width.saturating_sub(1) as usize);
         f.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(Color::Red)),
+            Paragraph::new(msg_wrapped)
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(Color::Red)),
             rows[6],
         );
     }
@@ -682,7 +686,8 @@ fn draw_learn_cli_review(
         yes_no(overlay.sensitivity_secrets),
         yes_no(overlay.sensitivity_userdata)
     );
-    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+    let wrapped = soft_break_long_tokens(&text, inner.width.saturating_sub(2) as usize);
+    f.render_widget(Paragraph::new(wrapped).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_learn_review_form(
@@ -730,7 +735,8 @@ fn draw_learn_review_form(
     if let Some(msg) = overlay.inline_message.as_deref() {
         text.push_str(&format!("\n\n{msg}"));
     }
-    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+    let wrapped = soft_break_long_tokens(&text, inner.width.saturating_sub(2) as usize);
+    f.render_widget(Paragraph::new(wrapped).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_learn_promote_form(
@@ -800,7 +806,28 @@ fn draw_learn_promote_form(
     if let Some(msg) = overlay.inline_message.as_deref() {
         text.push_str(&format!("\n\n{msg}"));
     }
-    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+    let wrapped = soft_break_long_tokens(&text, inner.width.saturating_sub(2) as usize);
+    f.render_widget(Paragraph::new(wrapped).wrap(Wrap { trim: false }), inner);
+}
+
+fn soft_break_long_tokens(input: &str, width: usize) -> String {
+    let maxw = width.max(8);
+    let mut out = String::with_capacity(input.len() + input.len() / maxw + 8);
+    let mut col = 0usize;
+    for ch in input.chars() {
+        if ch == '\n' {
+            out.push('\n');
+            col = 0;
+            continue;
+        }
+        if col >= maxw {
+            out.push('\n');
+            col = 0;
+        }
+        out.push(ch);
+        col += 1;
+    }
+    out
 }
 
 fn tab_label(num: u8, tab: LearnOverlayTab, active: LearnOverlayTab) -> String {

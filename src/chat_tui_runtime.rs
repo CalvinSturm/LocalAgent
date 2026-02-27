@@ -1008,6 +1008,9 @@ struct TuiOuterPasteInput<'a> {
     learn_overlay: &'a mut Option<LearnOverlayState>,
 }
 
+const OVERLAY_CAPTURE_SUMMARY_MAX_CHARS: usize = 360;
+const OVERLAY_ID_MAX_CHARS: usize = 96;
+
 fn normalize_overlay_paste(pasted: &str, single_token: bool) -> String {
     let normalized = chat_runtime::normalize_pasted_text(pasted);
     let first_line = normalized
@@ -1031,45 +1034,63 @@ fn normalize_overlay_paste(pasted: &str, single_token: bool) -> String {
     cooked.chars().take(180).collect::<String>()
 }
 
+fn append_overlay_field_bounded(dst: &mut String, src: &str, max_chars: usize) {
+    if src.is_empty() {
+        return;
+    }
+    if dst.ends_with(src) {
+        return;
+    }
+    let used = dst.chars().count();
+    if used >= max_chars {
+        return;
+    }
+    let take_n = max_chars - used;
+    let chunk: String = src.chars().take(take_n).collect();
+    dst.push_str(&chunk);
+}
+
 fn handle_tui_outer_paste_event(input: TuiOuterPasteInput<'_>) {
     if let Some(overlay) = input.learn_overlay.as_mut() {
         match overlay.input_focus {
             LearnOverlayInputFocus::CaptureSummary => {
                 let s = normalize_overlay_paste(input.pasted, false);
-                if !s.is_empty() {
-                    overlay.summary.push_str(&s);
-                }
+                append_overlay_field_bounded(
+                    &mut overlay.summary,
+                    &s,
+                    OVERLAY_CAPTURE_SUMMARY_MAX_CHARS,
+                );
             }
             LearnOverlayInputFocus::ReviewId => {
                 let s = normalize_overlay_paste(input.pasted, true);
+                append_overlay_field_bounded(&mut overlay.review_id, &s, OVERLAY_ID_MAX_CHARS);
                 if !s.is_empty() {
-                    overlay.review_id.push_str(&s);
                     overlay.review_selected_idx = usize::MAX;
                 }
             }
             LearnOverlayInputFocus::PromoteId => {
                 let s = normalize_overlay_paste(input.pasted, true);
-                if !s.is_empty() {
-                    overlay.promote_id.push_str(&s);
-                }
+                append_overlay_field_bounded(&mut overlay.promote_id, &s, OVERLAY_ID_MAX_CHARS);
             }
             LearnOverlayInputFocus::PromoteSlug => {
                 let s = normalize_overlay_paste(input.pasted, true);
-                if !s.is_empty() {
-                    overlay.promote_slug.push_str(&s);
-                }
+                append_overlay_field_bounded(&mut overlay.promote_slug, &s, OVERLAY_ID_MAX_CHARS);
             }
             LearnOverlayInputFocus::PromotePackId => {
                 let s = normalize_overlay_paste(input.pasted, true);
-                if !s.is_empty() {
-                    overlay.promote_pack_id.push_str(&s);
-                }
+                append_overlay_field_bounded(
+                    &mut overlay.promote_pack_id,
+                    &s,
+                    OVERLAY_ID_MAX_CHARS,
+                );
             }
             LearnOverlayInputFocus::PromoteReplayRunId => {
                 let s = normalize_overlay_paste(input.pasted, true);
-                if !s.is_empty() {
-                    overlay.promote_replay_verify_run_id.push_str(&s);
-                }
+                append_overlay_field_bounded(
+                    &mut overlay.promote_replay_verify_run_id,
+                    &s,
+                    OVERLAY_ID_MAX_CHARS,
+                );
             }
         }
         return;
@@ -1832,17 +1853,39 @@ fn handle_tui_outer_key_dispatch(
             }
             KeyCode::Char(c) if chat_runtime::is_text_input_mods(input.key.modifiers) => {
                 match overlay.input_focus {
-                    LearnOverlayInputFocus::CaptureSummary => overlay.summary.push(c),
+                    LearnOverlayInputFocus::CaptureSummary => append_overlay_field_bounded(
+                        &mut overlay.summary,
+                        &c.to_string(),
+                        OVERLAY_CAPTURE_SUMMARY_MAX_CHARS,
+                    ),
                     LearnOverlayInputFocus::ReviewId => {
-                        overlay.review_id.push(c);
+                        append_overlay_field_bounded(
+                            &mut overlay.review_id,
+                            &c.to_string(),
+                            OVERLAY_ID_MAX_CHARS,
+                        );
                         overlay.review_selected_idx = usize::MAX;
                     }
-                    LearnOverlayInputFocus::PromoteId => overlay.promote_id.push(c),
-                    LearnOverlayInputFocus::PromoteSlug => overlay.promote_slug.push(c),
-                    LearnOverlayInputFocus::PromotePackId => overlay.promote_pack_id.push(c),
-                    LearnOverlayInputFocus::PromoteReplayRunId => {
-                        overlay.promote_replay_verify_run_id.push(c)
-                    }
+                    LearnOverlayInputFocus::PromoteId => append_overlay_field_bounded(
+                        &mut overlay.promote_id,
+                        &c.to_string(),
+                        OVERLAY_ID_MAX_CHARS,
+                    ),
+                    LearnOverlayInputFocus::PromoteSlug => append_overlay_field_bounded(
+                        &mut overlay.promote_slug,
+                        &c.to_string(),
+                        OVERLAY_ID_MAX_CHARS,
+                    ),
+                    LearnOverlayInputFocus::PromotePackId => append_overlay_field_bounded(
+                        &mut overlay.promote_pack_id,
+                        &c.to_string(),
+                        OVERLAY_ID_MAX_CHARS,
+                    ),
+                    LearnOverlayInputFocus::PromoteReplayRunId => append_overlay_field_bounded(
+                        &mut overlay.promote_replay_verify_run_id,
+                        &c.to_string(),
+                        OVERLAY_ID_MAX_CHARS,
+                    ),
                 }
                 overlay.inline_message = None;
                 return TuiOuterKeyDispatchOutcome::Handled;
@@ -3997,5 +4040,50 @@ mod tests {
         ));
         let ov_ctrl = overlay.as_ref().expect("overlay");
         assert_eq!(ov_ctrl.tab, LearnOverlayTab::Capture);
+    }
+
+    #[test]
+    fn overlay_paste_is_bounded_and_deduped_for_summary() {
+        let mut overlay = Some(LearnOverlayState {
+            tab: LearnOverlayTab::Capture,
+            category_idx: 0,
+            summary: String::new(),
+            review_id: String::new(),
+            promote_id: String::new(),
+            promote_target_idx: 0,
+            promote_slug: String::new(),
+            promote_pack_id: String::new(),
+            promote_force: false,
+            promote_check_run: false,
+            promote_replay_verify: false,
+            promote_replay_verify_strict: false,
+            promote_replay_verify_run_id: String::new(),
+            input_focus: LearnOverlayInputFocus::CaptureSummary,
+            inline_message: None,
+            review_rows: Vec::new(),
+            review_selected_idx: 0,
+            assist_on: true,
+            write_armed: false,
+            logs: vec![],
+            pending_submit_line: None,
+        });
+        let mut input = String::new();
+        let mut history_idx = None;
+        let mut slash_menu_index = 0usize;
+        let spam = "'FastVideoProcessor' object has no attribute '_artifact_manager'";
+
+        for _ in 0..10 {
+            super::handle_tui_outer_paste_event(super::TuiOuterPasteInput {
+                pasted: spam,
+                input: &mut input,
+                history_idx: &mut history_idx,
+                slash_menu_index: &mut slash_menu_index,
+                learn_overlay: &mut overlay,
+            });
+        }
+
+        let ov = overlay.expect("overlay");
+        assert!(ov.summary.len() <= super::OVERLAY_CAPTURE_SUMMARY_MAX_CHARS);
+        assert!(ov.summary.contains("_artifact_manager"));
     }
 }
