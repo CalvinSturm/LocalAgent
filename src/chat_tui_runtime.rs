@@ -1519,14 +1519,14 @@ fn handle_tui_outer_key_dispatch(
                 overlay.inline_message = None;
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
-            KeyCode::Char('a') => {
+            KeyCode::Char('a') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if overlay.tab == crate::chat_ui::LearnOverlayTab::Capture {
                     overlay.assist_on = !overlay.assist_on;
                 }
                 overlay.inline_message = None;
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
-            KeyCode::Char('w') => {
+            KeyCode::Char('w') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
                 overlay.write_armed = !overlay.write_armed;
                 overlay.logs.push(if overlay.write_armed {
                     "info: Write state armed.".to_string()
@@ -1536,37 +1536,45 @@ fn handle_tui_outer_key_dispatch(
                 overlay.inline_message = None;
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
-            KeyCode::Char('f') => {
+            KeyCode::Char('f') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
                     overlay.promote_force = !overlay.promote_force;
                 }
                 overlay.inline_message = None;
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
-            KeyCode::Char('k') => {
+            KeyCode::Char('k') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
                     overlay.promote_check_run = !overlay.promote_check_run;
                 }
                 overlay.inline_message = None;
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('r') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
                     overlay.promote_replay_verify = !overlay.promote_replay_verify;
                 }
                 overlay.inline_message = None;
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
-            KeyCode::Char('s') => {
+            KeyCode::Char('s') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
                     overlay.promote_replay_verify_strict = !overlay.promote_replay_verify_strict;
                 }
                 overlay.inline_message = None;
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
-            KeyCode::Char('t') => {
+            KeyCode::Left | KeyCode::Right => {
                 if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
-                    overlay.promote_target_idx = (overlay.promote_target_idx + 1) % 3;
+                    if matches!(input.key.code, KeyCode::Left) {
+                        overlay.promote_target_idx = if overlay.promote_target_idx == 0 {
+                            2
+                        } else {
+                            overlay.promote_target_idx - 1
+                        };
+                    } else {
+                        overlay.promote_target_idx = (overlay.promote_target_idx + 1) % 3;
+                    }
                     overlay.input_focus = match overlay.promote_target_idx {
                         0 => LearnOverlayInputFocus::PromoteSlug,
                         1 => LearnOverlayInputFocus::PromotePackId,
@@ -1574,32 +1582,6 @@ fn handle_tui_outer_key_dispatch(
                     };
                 }
                 overlay.inline_message = None;
-                return TuiOuterKeyDispatchOutcome::Handled;
-            }
-            KeyCode::Char('i') => {
-                if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
-                    overlay.input_focus = LearnOverlayInputFocus::PromoteId;
-                } else if overlay.tab == crate::chat_ui::LearnOverlayTab::Review {
-                    overlay.input_focus = LearnOverlayInputFocus::ReviewId;
-                }
-                return TuiOuterKeyDispatchOutcome::Handled;
-            }
-            KeyCode::Char('g') => {
-                if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
-                    overlay.input_focus = LearnOverlayInputFocus::PromoteSlug;
-                }
-                return TuiOuterKeyDispatchOutcome::Handled;
-            }
-            KeyCode::Char('p') => {
-                if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
-                    overlay.input_focus = LearnOverlayInputFocus::PromotePackId;
-                }
-                return TuiOuterKeyDispatchOutcome::Handled;
-            }
-            KeyCode::Char('u') => {
-                if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
-                    overlay.input_focus = LearnOverlayInputFocus::PromoteReplayRunId;
-                }
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Enter => {

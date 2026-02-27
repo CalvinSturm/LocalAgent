@@ -495,7 +495,7 @@ fn draw_learn_overlay(f: &mut ratatui::Frame<'_>, overlay: &LearnOverlayRenderMo
     }
 
     let hints = format!(
-        "Assist: {} (a) | Enter: Preview/Run | w: Arm Write | t: Target | f/k/r/s: Flags | Tab: Next Field | Esc: Close | 1/2/3: Tabs",
+        "Assist: {} (Ctrl+A) | Enter: Preview/Run | Ctrl+W: Arm Write | Left/Right: Target | Ctrl+F/K/R/S: Flags | Tab: Next Field | Esc: Close | 1/2/3: Tabs",
         if overlay.assist_on { "ON" } else { "OFF" },
     );
     f.render_widget(
@@ -760,7 +760,7 @@ fn draw_learn_promote_form(
         }
     );
     text.push_str(&format!(
-        "\n\nField focus: {}\nTarget switch: [t]\nEdit fields: [i]=id [g]=slug [p]=pack_id [u]=replay_run_id",
+        "\n\nField focus: {}\nTarget switch: [Left/Right]\nField focus cycle: [Tab]/[Shift+Tab]",
         overlay.input_focus
     ));
     if let Some(msg) = overlay.inline_message.as_deref() {
