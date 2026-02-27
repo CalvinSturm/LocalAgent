@@ -57,6 +57,7 @@ struct ContextAugmentations {
 
 struct UiRuntimeSetup {
     event_sink: Option<Box<dyn crate::events::EventSink>>,
+    _cancel_tx: watch::Sender<bool>,
     cancel_rx: watch::Receiver<bool>,
     ui_join: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
 }
@@ -340,6 +341,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
 
     let UiRuntimeSetup {
         mut event_sink,
+        _cancel_tx: _cancel_tx_guard,
         mut cancel_rx,
         ui_join,
     } = build_ui_runtime_setup(UiRuntimeSetupInput {
@@ -1696,6 +1698,7 @@ fn build_ui_runtime_setup(input: UiRuntimeSetupInput<'_>) -> anyhow::Result<UiRu
         (input.external_ui_tx, None)
     };
     let (cancel_tx, cancel_rx) = watch::channel(false);
+    let cancel_tx_for_tui = cancel_tx.clone();
     let ui_join = if let Some(rx) = ui_rx {
         let approvals_path = input.paths.approvals_path.clone();
         let cfg = tui::TuiConfig {
@@ -1722,7 +1725,7 @@ fn build_ui_runtime_setup(input: UiRuntimeSetupInput<'_>) -> anyhow::Result<UiRu
             mcp_catalog_hash: input.mcp_tool_catalog_hash_hex.clone().unwrap_or_default(),
         };
         Some(std::thread::spawn(move || {
-            tui::run_live(rx, approvals_path, cfg, cancel_tx.clone())
+            tui::run_live(rx, approvals_path, cfg, cancel_tx_for_tui)
         }))
     } else {
         None
@@ -1736,6 +1739,7 @@ fn build_ui_runtime_setup(input: UiRuntimeSetupInput<'_>) -> anyhow::Result<UiRu
     )?;
     Ok(UiRuntimeSetup {
         event_sink,
+        _cancel_tx: cancel_tx,
         cancel_rx,
         ui_join,
     })
