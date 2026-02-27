@@ -140,16 +140,18 @@ pub(crate) fn draw_chat_frame(
     );
 
     let has_side = show_tools || show_approvals;
-    let mid = if has_side {
-        Layout::default()
+    let (chat_area, separator_area, side_area) = if has_side {
+        let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(72), Constraint::Percentage(28)])
-            .split(outer[2])
+            .constraints([
+                Constraint::Percentage(71),
+                Constraint::Length(1),
+                Constraint::Percentage(28),
+            ])
+            .split(outer[2]);
+        (cols[0], Some(cols[1]), Some(cols[2]))
     } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100), Constraint::Percentage(0)])
-            .split(outer[2])
+        (outer[2], None, None)
     };
 
     let show_hero_banner = show_banner && transcript.is_empty() && streaming_assistant.is_empty();
@@ -157,13 +159,13 @@ pub(crate) fn draw_chat_frame(
     if show_hero_banner {
         chat_text.push_str(&crate::chat_view_utils::centered_multiline(
             &crate::chat_view_utils::localagent_banner(ui_tick),
-            mid[0].width,
+            chat_area.width,
             0,
         ));
         chat_text.push_str("\n\n");
         chat_text.push_str(&crate::chat_view_utils::centered_left_block(
             "+ Type your message and press enter\n+ /help for a list of commands\n+ /mode to switch between Safe, Coding, Web, and Custom modes",
-            mid[0].width,
+            chat_area.width,
             0,
         ));
     }
@@ -191,8 +193,8 @@ pub(crate) fn draw_chat_frame(
     };
     let (chat_render, chat_plain) =
         crate::chat_view_utils::styled_chat_text(&chat_text, chat_style);
-    let chat_width = mid[0].width.max(1) as usize;
-    let chat_visible_lines = mid[0].height.max(1) as usize;
+    let chat_width = chat_area.width.max(1) as usize;
+    let chat_visible_lines = chat_area.height.max(1) as usize;
     let chat_total_lines = crate::chat_view_utils::wrapped_line_count(&chat_plain, chat_width);
     let max_scroll = chat_total_lines.saturating_sub(chat_visible_lines);
     let scroll = if transcript_scroll == usize::MAX {
@@ -204,16 +206,24 @@ pub(crate) fn draw_chat_frame(
         Paragraph::new(chat_render)
             .wrap(Wrap { trim: false })
             .scroll((scroll.min(u16::MAX as usize) as u16, 0)),
-        mid[0],
+        chat_area,
     );
 
-    if has_side {
+    if let Some(sep) = separator_area {
+        let sep_text = vec!["│"; sep.height as usize].join("\n");
+        f.render_widget(
+            Paragraph::new(sep_text).style(Style::default().fg(Color::Yellow)),
+            sep,
+        );
+    }
+
+    if let Some(side) = side_area {
         match (show_tools, show_approvals) {
             (true, true) => {
                 let right = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-                    .split(mid[1]);
+                    .split(side);
                 draw_tools_pane(
                     f,
                     right[0],
@@ -227,14 +237,14 @@ pub(crate) fn draw_chat_frame(
             }
             (true, false) => draw_tools_pane(
                 f,
-                mid[1],
+                side,
                 ui_state,
                 compact_tools,
                 tools_selected,
                 true,
                 show_tool_details,
             ),
-            (false, true) => draw_approvals_pane(f, mid[1], ui_state, approvals_selected, true),
+            (false, true) => draw_approvals_pane(f, side, ui_state, approvals_selected, true),
             (false, false) => {}
         }
     }

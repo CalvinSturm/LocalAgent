@@ -654,9 +654,21 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                                 }
                                 input_buf.clear();
                                 *slash_menu_index = 0;
+                            } else if line == "/help" {
+                                logs.push(
+                                    "active-run commands: /interrupt <message>, /next <message>, /queue ; /learn is blocked while run is active"
+                                        .to_string(),
+                                );
+                                input_buf.clear();
+                                *slash_menu_index = 0;
+                            } else if line.starts_with("/learn") {
+                                logs.push("System busy. Operation deferred.".to_string());
+                                logs.push("ERR_TUI_BUSY_TRY_AGAIN".to_string());
+                                input_buf.clear();
+                                *slash_menu_index = 0;
                             } else if !line.is_empty() {
                                 logs.push(
-                                    "during an active run, supported commands are: /interrupt <message>, /next <message>, /queue"
+                                    "during an active run, supported commands are: /interrupt <message>, /next <message>, /queue, /help"
                                         .to_string(),
                                 );
                             }
