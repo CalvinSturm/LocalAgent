@@ -44,6 +44,8 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/learn list", "list learning entries"),
     ("/learn show <id>", "show one learning entry"),
     ("/learn archive <id>", "archive one learning entry"),
+    ("/learn capture ...", "capture learning entry from TUI"),
+    ("/learn promote ...", "promote learning entry from TUI"),
     ("/clear", "clear transcript (and session if enabled)"),
     ("/exit", "exit chat"),
     ("/hide tools", "hide tools pane"),
@@ -159,6 +161,8 @@ pub(crate) fn keybinds_overlay_text() -> Option<String> {
         ("/learn list", "list learning entries in logs"),
         ("/learn show <id>", "show one learning entry in logs"),
         ("/learn archive <id>", "archive one learning entry"),
+        ("/learn capture ...", "capture learning entry in logs"),
+        ("/learn promote ...", "promote learning entry in logs"),
         ("/...", "slash commands dropdown"),
         ("?", "show this keybinds panel"),
     ];

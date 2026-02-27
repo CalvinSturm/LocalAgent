@@ -243,7 +243,7 @@ pub(crate) fn write_check_run_outputs(
     json_out: Option<&PathBuf>,
     junit_out: Option<&PathBuf>,
 ) -> anyhow::Result<()> {
-    let json = serde_json::to_string_pretty(&out.report)?;
+    let json = render_check_run_output(out)?;
     if let Some(path) = json_out {
         std::fs::write(path, &json)?;
     } else {
@@ -253,6 +253,10 @@ pub(crate) fn write_check_run_outputs(
         checks::report::write_junit(junit, &out.report)?;
     }
     Ok(())
+}
+
+pub(crate) fn render_check_run_output(out: &CheckRunCommandOutput) -> anyhow::Result<String> {
+    Ok(serde_json::to_string_pretty(&out.report)?)
 }
 
 fn check_capability_denial(

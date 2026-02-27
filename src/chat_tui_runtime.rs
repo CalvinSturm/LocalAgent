@@ -1816,8 +1816,11 @@ async fn handle_tui_slash_command(
         }
         match crate::chat_tui_learn_adapter::parse_and_dispatch_learn_slash(
             line,
-            &input.paths.state_dir,
-        ) {
+            input.active_run,
+            input.paths,
+        )
+        .await
+        {
             Ok(output) => {
                 if !output.is_empty() {
                     input.logs.push(output);
