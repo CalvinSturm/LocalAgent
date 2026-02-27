@@ -282,7 +282,7 @@ Payload includes at least:
 
 ---
 
-## PR4 Scope (Planned): `feat: add learn promote --to pack and --to agents`
+## PR4 Scope (Historical Plan): `feat: add learn promote --to pack and --to agents`
 
 This is the follow-up after PR3 and should reuse the same safety model.
 

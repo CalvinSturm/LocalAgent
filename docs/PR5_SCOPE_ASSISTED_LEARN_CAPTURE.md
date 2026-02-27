@@ -1,4 +1,4 @@
-# PR5 Scope: `feat: add assisted learn capture drafts with provenance` (Draft)
+# PR5 Scope: `feat: add assisted learn capture drafts with provenance` (Finalized)
 
 ## Goal
 

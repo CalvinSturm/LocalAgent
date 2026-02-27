@@ -1,4 +1,4 @@
-# PR4 Scope: `feat: add learn promote --to pack and --to agents` (Draft)
+# PR4 Scope: `feat: add learn promote --to pack and --to agents` (Finalized)
 
 ## Goal
 

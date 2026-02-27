@@ -1,4 +1,4 @@
-# PR6 Scope: `feat: add TUI /learn commands` (Draft)
+# PR6 Scope: `feat: add TUI /learn commands` (Finalized)
 
 ## Goal
 
