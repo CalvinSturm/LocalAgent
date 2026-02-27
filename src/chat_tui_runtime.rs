@@ -79,6 +79,7 @@ struct LearnOverlayState {
     assist_on: bool,
     write_armed: bool,
     logs: Vec<String>,
+    pending_submit_line: Option<String>,
 }
 
 impl Default for LearnOverlayState {
@@ -90,6 +91,7 @@ impl Default for LearnOverlayState {
             assist_on: true,
             write_armed: false,
             logs: vec!["info: Preflight check complete. Waiting for user action.".to_string()],
+            pending_submit_line: None,
         }
     }
 }
@@ -1106,59 +1108,10 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
         None
     };
 
-    let learn_overlay = input.learn_overlay.as_ref().map(|s| {
-        let category = match s.category_idx {
-            0 => "workflow_hint",
-            1 => "prompt_guidance",
-            _ => "check_candidate",
-        };
-        let mut cli = format!("learn capture --category {category} --summary ");
-        if s.summary.trim().is_empty() {
-            cli.push_str("<required>");
-        } else {
-            cli.push('"');
-            cli.push_str(&s.summary);
-            cli.push('"');
-        }
-        if s.assist_on {
-            cli.push_str(" --assist");
-        }
-        let write_state = if s.write_armed {
-            crate::chat_ui::LearnOverlayWriteState::Armed
-        } else {
-            crate::chat_ui::LearnOverlayWriteState::Preview
-        };
-        let writes_to = if s.write_armed {
-            if s.assist_on {
-                vec![
-                    ".localagent/learn/entries/<new_ulid>.json (staged)".to_string(),
-                    ".localagent/learn/events.jsonl (staged)".to_string(),
-                ]
-            } else {
-                vec![
-                    ".localagent/learn/entries/<new_ulid>.json (staged)".to_string(),
-                    ".localagent/learn/events.jsonl (staged)".to_string(),
-                ]
-            }
-        } else {
-            Vec::new()
-        };
-        crate::chat_ui::LearnOverlayRenderModel {
-            tab: s.tab,
-            selected_category_idx: s.category_idx,
-            summary: s.summary.clone(),
-            assist_on: s.assist_on,
-            write_state,
-            equivalent_cli: cli,
-            will_write: s.write_armed,
-            writes_to,
-            target_path: "N/A".to_string(),
-            sensitivity_paths: false,
-            sensitivity_secrets: false,
-            sensitivity_userdata: false,
-            overlay_logs: s.logs.clone(),
-        }
-    });
+    let learn_overlay = input
+        .learn_overlay
+        .as_ref()
+        .map(build_learn_overlay_render_model);
 
     TuiRenderFrameInput {
         mode_label: chat_runtime::chat_mode_label(input.active_run),
@@ -1188,6 +1141,55 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
         ui_tick: input.ui_tick,
         overlay_text,
         learn_overlay,
+    }
+}
+
+fn build_learn_overlay_render_model(
+    s: &LearnOverlayState,
+) -> crate::chat_ui::LearnOverlayRenderModel {
+    let category = match s.category_idx {
+        0 => "workflow_hint",
+        1 => "prompt_guidance",
+        _ => "check_candidate",
+    };
+    let mut cli = format!("learn capture --category {category} --summary ");
+    if s.summary.trim().is_empty() {
+        cli.push_str("<required>");
+    } else {
+        cli.push('"');
+        cli.push_str(&s.summary);
+        cli.push('"');
+    }
+    if s.assist_on {
+        cli.push_str(" --assist");
+    }
+    let write_state = if s.write_armed {
+        crate::chat_ui::LearnOverlayWriteState::Armed
+    } else {
+        crate::chat_ui::LearnOverlayWriteState::Preview
+    };
+    let writes_to = if s.write_armed {
+        vec![
+            ".localagent/learn/entries/<new_ulid>.json (staged)".to_string(),
+            ".localagent/learn/events.jsonl (staged)".to_string(),
+        ]
+    } else {
+        Vec::new()
+    };
+    crate::chat_ui::LearnOverlayRenderModel {
+        tab: s.tab,
+        selected_category_idx: s.category_idx,
+        summary: s.summary.clone(),
+        assist_on: s.assist_on,
+        write_state,
+        equivalent_cli: cli,
+        will_write: s.write_armed,
+        writes_to,
+        target_path: "N/A".to_string(),
+        sensitivity_paths: false,
+        sensitivity_secrets: false,
+        sensitivity_userdata: false,
+        overlay_logs: s.logs.clone(),
     }
 }
 
@@ -1268,11 +1270,11 @@ fn handle_tui_outer_key_dispatch(
                         };
                         let assist = if overlay.assist_on { " --assist" } else { "" };
                         let write = if overlay.assist_on { " --write" } else { "" };
-                        *input.input = format!(
+                        overlay.pending_submit_line = Some(format!(
                             "/learn capture --category {category} --summary \"{}\"{assist}{write}",
                             overlay.summary.replace('"', "\\\"")
-                        );
-                        return TuiOuterKeyDispatchOutcome::EnterInline;
+                        ));
+                        return TuiOuterKeyDispatchOutcome::Handled;
                     }
                     overlay.logs.push(
                         "info: Preflight check complete. Waiting for user action.".to_string(),
@@ -2434,6 +2436,28 @@ pub(crate) async fn run_chat_tui(
                     TuiOuterEventDispatchOutcome::BreakLoop => break,
                     TuiOuterEventDispatchOutcome::ContinueLoop => continue,
                     TuiOuterEventDispatchOutcome::HandledKey => {
+                        if let Some(overlay) = learn_overlay.as_mut() {
+                            if let Some(line) = overlay.pending_submit_line.take() {
+                                match crate::chat_tui_learn_adapter::parse_and_dispatch_learn_slash(
+                                    &line,
+                                    &active_run,
+                                    paths,
+                                )
+                                .await
+                                {
+                                    Ok(output) => {
+                                        if !output.is_empty() {
+                                            overlay.logs.push(output);
+                                        }
+                                        overlay.write_armed = false;
+                                    }
+                                    Err(e) => {
+                                        overlay.logs.push(format!("learn command failed: {e}"));
+                                        overlay.write_armed = false;
+                                    }
+                                }
+                            }
+                        }
                         if logs.len() > max_logs {
                             let drop_n = logs.len() - max_logs;
                             logs.drain(0..drop_n);
@@ -2519,4 +2543,47 @@ pub(crate) async fn run_chat_tui(
     }
     terminal.show_cursor()?;
     run_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_learn_overlay_render_model, LearnOverlayState};
+    use crate::chat_ui::{LearnOverlayTab, LearnOverlayWriteState};
+
+    #[test]
+    fn learn_overlay_preview_mode_shows_no_writes() {
+        let s = LearnOverlayState {
+            tab: LearnOverlayTab::Capture,
+            category_idx: 0,
+            summary: String::new(),
+            assist_on: true,
+            write_armed: false,
+            logs: vec![],
+            pending_submit_line: None,
+        };
+        let model = build_learn_overlay_render_model(&s);
+        assert_eq!(model.write_state, LearnOverlayWriteState::Preview);
+        assert!(!model.will_write);
+        assert!(model.writes_to.is_empty());
+        assert!(model.equivalent_cli.contains("<required>"));
+    }
+
+    #[test]
+    fn learn_overlay_armed_mode_shows_staged_writes() {
+        let s = LearnOverlayState {
+            tab: LearnOverlayTab::Capture,
+            category_idx: 1,
+            summary: "hello".to_string(),
+            assist_on: true,
+            write_armed: true,
+            logs: vec![],
+            pending_submit_line: None,
+        };
+        let model = build_learn_overlay_render_model(&s);
+        assert_eq!(model.write_state, LearnOverlayWriteState::Armed);
+        assert!(model.will_write);
+        assert_eq!(model.writes_to.len(), 2);
+        assert!(model.equivalent_cli.contains("prompt_guidance"));
+        assert!(model.equivalent_cli.contains("--assist"));
+    }
 }
