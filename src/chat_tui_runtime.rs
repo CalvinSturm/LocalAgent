@@ -91,10 +91,6 @@ struct LearnOverlayState {
     promote_slug: String,
     promote_pack_id: String,
     promote_force: bool,
-    promote_check_run: bool,
-    promote_replay_verify: bool,
-    promote_replay_verify_strict: bool,
-    promote_replay_verify_run_id: String,
     input_focus: LearnOverlayInputFocus,
     inline_message: Option<String>,
     review_rows: Vec<String>,
@@ -120,10 +116,6 @@ impl Default for LearnOverlayState {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
@@ -1453,21 +1445,6 @@ fn build_learn_overlay_render_model(
             if s.promote_force {
                 cli.push_str(" --force");
             }
-            if s.promote_check_run {
-                cli.push_str(" --check-run");
-            }
-            if s.promote_replay_verify {
-                cli.push_str(" --replay-verify");
-            }
-            if s.promote_replay_verify_strict {
-                cli.push_str(" --replay-verify-strict");
-            }
-            if !s.promote_replay_verify_run_id.trim().is_empty() {
-                cli.push_str(&format!(
-                    " --replay-verify-run-id {}",
-                    s.promote_replay_verify_run_id
-                ));
-            }
             let writes = if s.write_armed {
                 match target {
                     "check" => vec![
@@ -1546,15 +1523,6 @@ fn build_overlay_promote_submit_line(overlay: &LearnOverlayState) -> Result<Stri
         1 => "pack",
         _ => "agents",
     };
-    if overlay.promote_check_run && target != "check" {
-        return Err("check_run is only valid for --to check".to_string());
-    }
-    if (overlay.promote_replay_verify_strict
-        || !overlay.promote_replay_verify_run_id.trim().is_empty())
-        && !overlay.promote_replay_verify
-    {
-        return Err("replay strict/run-id requires --replay-verify".to_string());
-    }
     let mut line = format!("/learn promote {} --to {target}", overlay.promote_id);
     if target == "check" {
         if overlay.promote_slug.trim().is_empty() {
@@ -1570,21 +1538,6 @@ fn build_overlay_promote_submit_line(overlay: &LearnOverlayState) -> Result<Stri
     }
     if overlay.promote_force {
         line.push_str(" --force");
-    }
-    if overlay.promote_check_run {
-        line.push_str(" --check-run");
-    }
-    if overlay.promote_replay_verify {
-        line.push_str(" --replay-verify");
-    }
-    if overlay.promote_replay_verify_strict {
-        line.push_str(" --replay-verify-strict");
-    }
-    if !overlay.promote_replay_verify_run_id.trim().is_empty() {
-        line.push_str(&format!(
-            " --replay-verify-run-id {}",
-            overlay.promote_replay_verify_run_id
-        ));
     }
     Ok(line)
 }
@@ -2631,7 +2584,7 @@ async fn handle_tui_slash_command(
         "/exit" => return Ok(SlashCommandDispatchOutcome::ExitRequested),
         "/help" => {
             input.logs.push(
-                "commands: /help /mode <safe|coding|web|custom> /timeout [seconds|+N|-N|off] /params [key value] /project guidance /tool docs <name> /learn help|list|show|archive /dismiss /clear /exit /hide tools|approvals|logs /show tools|approvals|logs|all ; slash dropdown: type / then Up/Down + Enter ; panes: Ctrl+T/Ctrl+Y/Ctrl+G (Ctrl+1/2/3 aliases, terminal-dependent) ; scroll: PgUp/PgDn, Ctrl+U/Ctrl+D, mouse wheel ; approvals: Ctrl+J/K select, Ctrl+A approve, Ctrl+X deny, Ctrl+R refresh ; history: Up/Down ; Esc quits"
+                "commands: /help /mode <safe|coding|web|custom> /timeout [seconds|+N|-N|off] /params [key value] /project guidance /tool docs <name> /learn help|list|show|archive|capture|promote /dismiss /clear /exit /hide tools|approvals|logs /show tools|approvals|logs|all ; slash dropdown: type / then Up/Down + Enter ; panes: Ctrl+T/Ctrl+Y/Ctrl+G (Ctrl+1/2/3 aliases, terminal-dependent) ; scroll: PgUp/PgDn, Ctrl+U/Ctrl+D, mouse wheel ; approvals: Ctrl+J/K select, Ctrl+A approve, Ctrl+X deny, Ctrl+R refresh ; history: Up/Down ; Esc quits"
                     .to_string(),
             );
             *input.show_logs = true;
@@ -3165,10 +3118,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3200,10 +3149,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3236,10 +3181,6 @@ mod tests {
             promote_slug: "my_slug".to_string(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::PromoteId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3273,10 +3214,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: "core".to_string(),
             promote_force: true,
-            promote_check_run: false,
-            promote_replay_verify: true,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::PromotePackId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3295,7 +3232,6 @@ mod tests {
         assert_eq!(model.target_path, ".localagent/packs/<pack_id>/PACK.md");
         assert!(model.equivalent_cli.contains("--pack-id core"));
         assert!(model.equivalent_cli.contains("--force"));
-        assert!(model.equivalent_cli.contains("--replay-verify"));
     }
 
     #[test]
@@ -3310,10 +3246,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::PromoteSlug,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3342,10 +3274,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: true,
-            promote_check_run: false,
-            promote_replay_verify: true,
-            promote_replay_verify_strict: true,
-            promote_replay_verify_run_id: "run_123".to_string(),
             input_focus: LearnOverlayInputFocus::PromoteId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3361,9 +3289,6 @@ mod tests {
         let line = super::build_overlay_promote_submit_line(&s).expect("line");
         assert!(line.contains("/learn promote 01ABC --to agents"));
         assert!(line.contains("--force"));
-        assert!(line.contains("--replay-verify"));
-        assert!(line.contains("--replay-verify-strict"));
-        assert!(line.contains("--replay-verify-run-id run_123"));
     }
 
     #[test]
@@ -3378,10 +3303,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::PromotePackId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3410,10 +3331,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::ReviewId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3445,10 +3362,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::PromotePackId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3466,38 +3379,6 @@ mod tests {
     }
 
     #[test]
-    fn promote_submit_line_replay_strict_requires_replay_verify() {
-        let s = LearnOverlayState {
-            tab: LearnOverlayTab::Promote,
-            category_idx: 0,
-            summary: String::new(),
-            review_id: String::new(),
-            promote_id: "01ABC".to_string(),
-            promote_target_idx: 2,
-            promote_slug: String::new(),
-            promote_pack_id: String::new(),
-            promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: true,
-            promote_replay_verify_run_id: String::new(),
-            input_focus: LearnOverlayInputFocus::PromoteId,
-            inline_message: None,
-            review_rows: Vec::new(),
-            review_selected_idx: 0,
-            assist_on: false,
-            write_armed: true,
-            logs: vec![],
-            pending_submit_line: None,
-            assist_summary: None,
-            summary_choice: crate::chat_ui::LearnOverlaySummaryChoice::Original,
-            selected_summary: None,
-        };
-        let err = super::build_overlay_promote_submit_line(&s).expect_err("should fail");
-        assert!(err.contains("replay strict/run-id"));
-    }
-
-    #[test]
     fn busy_enter_logs_busy_token_for_review() {
         let tmp = tempdir().expect("tempdir");
         let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
@@ -3511,10 +3392,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::ReviewId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3599,10 +3476,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::PromoteId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3687,10 +3560,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3782,10 +3651,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3876,10 +3741,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
@@ -3963,10 +3824,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::PromoteId,
             inline_message: None,
             review_rows: Vec::new(),
@@ -4091,10 +3948,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
@@ -4141,10 +3994,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
@@ -4260,10 +4109,6 @@ mod tests {
             promote_slug: String::new(),
             promote_pack_id: String::new(),
             promote_force: false,
-            promote_check_run: false,
-            promote_replay_verify: false,
-            promote_replay_verify_strict: false,
-            promote_replay_verify_run_id: String::new(),
             input_focus: LearnOverlayInputFocus::CaptureSummary,
             inline_message: None,
             review_rows: Vec::new(),
