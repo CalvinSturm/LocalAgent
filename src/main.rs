@@ -19,6 +19,7 @@ mod chat_repl_runtime;
 
 mod chat_runtime;
 
+mod chat_tui_learn_adapter;
 mod chat_tui_runtime;
 
 mod chat_ui;

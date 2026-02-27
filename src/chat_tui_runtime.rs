@@ -1814,7 +1814,7 @@ async fn handle_tui_slash_command(
             *input.show_logs = true;
             return Ok(SlashCommandDispatchOutcome::Handled);
         }
-        match crate::tui::learn_adapter::parse_and_dispatch_learn_slash(
+        match crate::chat_tui_learn_adapter::parse_and_dispatch_learn_slash(
             line,
             &input.paths.state_dir,
         ) {
