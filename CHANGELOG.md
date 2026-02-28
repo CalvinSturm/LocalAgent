@@ -40,6 +40,7 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
   - Improved slash handling while active runs are in progress
   - Bounded and normalized overlay paste behavior
   - Improved category guidance and wrapped long overlay text
+  - Added visible in-overlay progress feedback for assist-enhanced capture (`Enhancing summary...`) and aligned capture title/options presentation
 
 ### Docs
 

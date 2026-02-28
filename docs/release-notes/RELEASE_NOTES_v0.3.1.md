@@ -30,6 +30,7 @@ Release date: 2026-02-28
 - Removed overlay letter shortcuts that interfered with typing.
 - Improved active-run slash handling and pane separation behavior.
 - Bounded/normalized overlay paste and improved long-text wrapping.
+- Added visible in-overlay progress feedback during assist-enhanced capture (`Enhancing summary...`) and aligned capture title/options layout with controls.
 
 ### Documentation and Reference Alignment
 
