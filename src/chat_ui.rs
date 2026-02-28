@@ -541,7 +541,12 @@ fn draw_learn_capture_form(
             Constraint::Length(5), // receipt
         ])
         .split(inner);
-    let step_lines = ["1) Enter summary", "2) Enter saves draft", "3) Promote publishes"].join("\n");
+    let step_lines = [
+        "1) Enter summary",
+        "2) Enter saves draft",
+        "3) Promote publishes",
+    ]
+    .join("\n");
     let category_section = sections[0];
     let category_inner = Layout::default()
         .direction(Direction::Vertical)

@@ -737,18 +737,17 @@ mod tests {
             .expect("event line");
         let v: serde_json::Value = serde_json::from_str(last).expect("parse event");
         assert_eq!(v["kind"], "learning_promoted");
-        assert_eq!(
-            v["data"]["schema"],
-            learning::LEARNING_PROMOTED_SCHEMA_V1
-        );
+        assert_eq!(v["data"]["schema"], learning::LEARNING_PROMOTED_SCHEMA_V1);
         assert_eq!(v["data"]["learning_id"], e.id);
         assert_eq!(v["data"]["target"], "check");
         assert_eq!(v["data"]["slug"], "tui_receipt");
-        assert!(v["data"]["target_file_sha256_hex"]
-            .as_str()
-            .unwrap_or("")
-            .len()
-            > 0);
+        assert!(
+            v["data"]["target_file_sha256_hex"]
+                .as_str()
+                .unwrap_or("")
+                .len()
+                > 0
+        );
     }
 
     #[tokio::test]

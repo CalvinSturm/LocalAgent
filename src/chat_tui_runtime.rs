@@ -490,7 +490,8 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                         let mut search_line_cursor_dummy = 0usize;
                         let mut search_input_cursor_dummy = 0usize;
                         let mut compact_tools_dummy = false;
-                        let visible_tool_count_dummy = ui_state.tool_calls.len().min(tool_row_count);
+                        let visible_tool_count_dummy =
+                            ui_state.tool_calls.len().min(tool_row_count);
                         let _ = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
                             key,
                             learn_overlay,
@@ -1287,13 +1288,13 @@ struct TuiOuterEventDispatchInput<'a> {
     learn_overlay_cursor: &'a mut usize,
 }
 
-fn overlay_field_mut_and_max(
-    overlay: &mut LearnOverlayState,
-) -> (&mut String, usize, bool) {
+fn overlay_field_mut_and_max(overlay: &mut LearnOverlayState) -> (&mut String, usize, bool) {
     match overlay.input_focus {
-        LearnOverlayInputFocus::CaptureSummary => {
-            (&mut overlay.summary, OVERLAY_CAPTURE_SUMMARY_MAX_CHARS, false)
-        }
+        LearnOverlayInputFocus::CaptureSummary => (
+            &mut overlay.summary,
+            OVERLAY_CAPTURE_SUMMARY_MAX_CHARS,
+            false,
+        ),
         LearnOverlayInputFocus::ReviewId => (&mut overlay.review_id, OVERLAY_ID_MAX_CHARS, true),
         LearnOverlayInputFocus::PromoteId => (&mut overlay.promote_id, OVERLAY_ID_MAX_CHARS, false),
         LearnOverlayInputFocus::PromoteSlug => {
@@ -1522,16 +1523,9 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
         None
     };
 
-    let learn_overlay = input
-        .learn_overlay
-        .as_ref()
-        .map(|s| {
-            build_learn_overlay_render_model_with_cursor(
-                s,
-                input.learn_overlay_cursor,
-                input.ui_tick,
-            )
-        });
+    let learn_overlay = input.learn_overlay.as_ref().map(|s| {
+        build_learn_overlay_render_model_with_cursor(s, input.learn_overlay_cursor, input.ui_tick)
+    });
 
     TuiRenderFrameInput {
         mode_label: chat_runtime::chat_mode_label(input.active_run),
@@ -1550,7 +1544,7 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
         cwd_label: input.cwd_label,
         input: input.input,
         input_cursor: input.input_cursor,
-        input_cursor_visible: ((input.ui_tick / 6) % 2) == 0,
+        input_cursor_visible: (input.ui_tick / 6).is_multiple_of(2),
         logs: input.logs,
         think_tick: input.think_tick,
         tui_refresh_ms: input.tui_refresh_ms,
@@ -1567,7 +1561,9 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
 }
 
 #[cfg(test)]
-fn build_learn_overlay_render_model(s: &LearnOverlayState) -> crate::chat_ui::LearnOverlayRenderModel {
+fn build_learn_overlay_render_model(
+    s: &LearnOverlayState,
+) -> crate::chat_ui::LearnOverlayRenderModel {
     build_learn_overlay_render_model_with_cursor(s, 0, 0)
 }
 
@@ -1662,7 +1658,7 @@ fn build_learn_overlay_render_model_with_cursor(
         summary_choice: s.summary_choice,
         selected_summary: s.selected_summary.clone(),
         active_input_cursor,
-        cursor_visible: ((ui_tick / 6) % 2) == 0,
+        cursor_visible: (ui_tick / 6).is_multiple_of(2),
     }
 }
 
@@ -1852,9 +1848,8 @@ fn handle_tui_outer_key_dispatch(
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Char('w') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
-                overlay.inline_message = Some(
-                    "Beginner mode: no arm step needed. Press Enter to run.".to_string(),
-                );
+                overlay.inline_message =
+                    Some("Beginner mode: no arm step needed. Press Enter to run.".to_string());
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Enter => {
@@ -1952,12 +1947,7 @@ fn handle_tui_outer_key_dispatch(
             }
             KeyCode::Char(c) if chat_runtime::is_text_input_mods(input.key.modifiers) => {
                 let (field, max_chars, reset_review_select) = overlay_field_mut_and_max(overlay);
-                insert_text_bounded(
-                    field,
-                    input.learn_overlay_cursor,
-                    &c.to_string(),
-                    max_chars,
-                );
+                insert_text_bounded(field, input.learn_overlay_cursor, &c.to_string(), max_chars);
                 if overlay.input_focus == LearnOverlayInputFocus::CaptureSummary {
                     overlay.assist_summary = None;
                     overlay.summary_choice = crate::chat_ui::LearnOverlaySummaryChoice::Original;
@@ -3887,7 +3877,7 @@ mod tests {
                 learn_overlay: &mut overlay,
                 run_busy: false,
                 input: &mut input_buf,
-            input_cursor: &mut input_cursor,
+                input_cursor: &mut input_cursor,
                 prompt_history: &mut prompt_history,
                 history_idx: &mut history_idx,
                 slash_menu_index: &mut slash_menu_index,
@@ -3897,7 +3887,7 @@ mod tests {
                 search_mode: &mut search_mode,
                 search_query: &mut search_query,
                 search_line_cursor: &mut search_line_cursor,
-            search_input_cursor: &mut search_input_cursor,
+                search_input_cursor: &mut search_input_cursor,
                 transcript: &mut transcript,
                 streaming_assistant: &mut streaming,
                 transcript_scroll: &mut transcript_scroll,
@@ -3912,8 +3902,8 @@ mod tests {
                 tools_focus: &mut tools_focus,
                 approvals_selected: &mut approvals_selected,
                 paths: &paths,
-            logs: &mut logs,
-            learn_overlay_cursor: &mut learn_overlay_cursor,
+                logs: &mut logs,
+                learn_overlay_cursor: &mut learn_overlay_cursor,
             });
             assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
         }
@@ -4411,7 +4401,3 @@ mod tests {
         assert_eq!(ov.summary, "q");
     }
 }
-
-
-
-

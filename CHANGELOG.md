@@ -7,13 +7,44 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
 
 ## Unreleased
 
-- Docs alignment:
-  - Clarified that TUI Learn Promote overlay is intentionally beginner-focused (`target` + `force` + direct publish on Enter).
-  - Clarified that advanced promote flags remain available via typed `/learn promote ...` and CLI.
-- Learn Overlay UX simplification:
-  - Removed write arm step from overlay flow; Capture/Promote now execute directly on `Enter`.
-  - Simplified overlay layout to form-focused view with concise status/log line.
-  - Updated key semantics (`Promote` target switch via `Up/Down`; caret navigation retained in active text fields).
+- None yet.
+
+## v0.3.1 - 2026-02-28
+
+### Added
+
+- Learn documentation set for operator clarity:
+  - `/learn` workflow reference (`docs/reference/LEARN_WORKFLOW_REFERENCE.md`)
+  - `/learn` output contract (`docs/reference/LEARN_OUTPUT_CONTRACT.md`)
+- TUI input ergonomics:
+  - Blinking caret in text fields
+  - Arrow-key cursor navigation in active text inputs
+
+### Changed
+
+- Learn Overlay UX simplified for beginner flow:
+  - Removed write-arm step from overlay flow
+  - `Enter` now executes Capture save and Promote publish directly when required fields are valid
+  - Promote tab remains intentionally focused on `target` + `force`
+- Clarified command boundary:
+  - Advanced promote flags (`--check-run`, `--replay-verify*`) remain typed-only via `/learn promote ...` or CLI
+- Learn overlay render/status messaging streamlined:
+  - More form-focused layout
+  - Concise inline next-step/status text
+
+### Fixed
+
+- TUI learn overlay stability and input handling:
+  - Prevented capture-row index panic
+  - Removed letter shortcuts that blocked normal typing in overlay fields
+  - Improved slash handling while active runs are in progress
+  - Bounded and normalized overlay paste behavior
+  - Improved category guidance and wrapped long overlay text
+
+### Docs
+
+- Reorganized docs tree and archived historical scope docs under `docs/archive/`.
+- Updated README and CLI reference to align with current `/learn` overlay behavior and command semantics.
 
 ## v0.3.0 - 2026-02-27
 
