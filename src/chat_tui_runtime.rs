@@ -96,6 +96,7 @@ struct LearnOverlayState {
     review_rows: Vec<String>,
     review_selected_idx: usize,
     assist_on: bool,
+    #[allow(dead_code)]
     write_armed: bool,
     logs: Vec<String>,
     pending_submit_line: Option<String>,
@@ -169,23 +170,17 @@ fn push_overlay_log_unique(overlay: &mut LearnOverlayState, msg: &str) {
 }
 
 fn set_overlay_next_steps_capture(overlay: &mut LearnOverlayState) {
-    let step_2 = if overlay.write_armed && overlay.assist_on {
-        "Press Enter to run write with Assist ON (calls LLM, uses tokens). Ctrl+A disables Assist."
-    } else if overlay.write_armed {
-        "Press Enter to run write locally (no LLM assist call)."
+    let step_2 = if overlay.assist_on {
+        "Press Enter to save using Assist (calls LLM, uses tokens). Ctrl+A disables Assist."
     } else {
-        "Press Enter for preview only (no write, no token use). Ctrl+W arms write."
+        "Press Enter to save locally (no LLM assist call)."
     };
     let assist = if overlay.assist_on { "ON" } else { "OFF" };
     overlay.inline_message = Some(format!("Assist {assist}. {step_2} Esc closes."));
 }
 
 fn set_overlay_next_steps_promote(overlay: &mut LearnOverlayState) {
-    let step_2 = if overlay.write_armed {
-        "Step 2: Press Enter to run promote."
-    } else {
-        "Step 2: Press Ctrl+W to arm write."
-    };
+    let step_2 = "Step 2: Press Enter to publish.";
     overlay.inline_message = Some(format!(
         "Step 1: Confirm target + required fields. {step_2} Step 3: Press Esc to close."
     ));
@@ -1581,12 +1576,7 @@ fn build_learn_overlay_render_model_with_cursor(
     active_input_cursor: usize,
     ui_tick: u64,
 ) -> crate::chat_ui::LearnOverlayRenderModel {
-    let write_state = if s.write_armed {
-        crate::chat_ui::LearnOverlayWriteState::Armed
-    } else {
-        crate::chat_ui::LearnOverlayWriteState::Preview
-    };
-    let (equivalent_cli, writes_to, target_path) = match s.tab {
+    let (equivalent_cli, target_path) = match s.tab {
         crate::chat_ui::LearnOverlayTab::Capture => {
             let category = match s.category_idx {
                 0 => "workflow_hint",
@@ -1604,15 +1594,7 @@ fn build_learn_overlay_render_model_with_cursor(
             if s.assist_on {
                 cli.push_str(" --assist");
             }
-            let writes = if s.write_armed {
-                vec![
-                    ".localagent/learn/entries/<new_ulid>.json (staged)".to_string(),
-                    ".localagent/learn/events.jsonl (staged)".to_string(),
-                ]
-            } else {
-                Vec::new()
-            };
-            (cli, writes, "N/A".to_string())
+            (cli, "N/A".to_string())
         }
         crate::chat_ui::LearnOverlayTab::Review => {
             let cli = if s.review_id.trim().is_empty() {
@@ -1620,7 +1602,7 @@ fn build_learn_overlay_render_model_with_cursor(
             } else {
                 format!("learn show {}", s.review_id)
             };
-            (cli, Vec::new(), "N/A".to_string())
+            (cli, "N/A".to_string())
         }
         crate::chat_ui::LearnOverlayTab::Promote => {
             let target = match s.promote_target_idx {
@@ -1650,33 +1632,12 @@ fn build_learn_overlay_render_model_with_cursor(
             if s.promote_force {
                 cli.push_str(" --force");
             }
-            let writes = if s.write_armed {
-                match target {
-                    "check" => vec![
-                        ".localagent/checks/<slug>.md (staged)".to_string(),
-                        ".localagent/learn/entries/<id>.json (staged)".to_string(),
-                        ".localagent/learn/events.jsonl (staged)".to_string(),
-                    ],
-                    "pack" => vec![
-                        ".localagent/packs/<pack_id>/PACK.md (staged)".to_string(),
-                        ".localagent/learn/entries/<id>.json (staged)".to_string(),
-                        ".localagent/learn/events.jsonl (staged)".to_string(),
-                    ],
-                    _ => vec![
-                        "AGENTS.md (staged)".to_string(),
-                        ".localagent/learn/entries/<id>.json (staged)".to_string(),
-                        ".localagent/learn/events.jsonl (staged)".to_string(),
-                    ],
-                }
-            } else {
-                Vec::new()
-            };
             let target_path = match target {
                 "check" => ".localagent/checks/<slug>.md",
                 "pack" => ".localagent/packs/<pack_id>/PACK.md",
                 _ => "AGENTS.md",
             };
-            (cli, writes, target_path.to_string())
+            (cli, target_path.to_string())
         }
     };
     crate::chat_ui::LearnOverlayRenderModel {
@@ -1694,14 +1655,8 @@ fn build_learn_overlay_render_model_with_cursor(
         review_rows: s.review_rows.clone(),
         review_selected_idx: s.review_selected_idx,
         assist_on: s.assist_on,
-        write_state,
         equivalent_cli,
-        will_write: s.write_armed,
-        writes_to,
         target_path,
-        sensitivity_paths: false,
-        sensitivity_secrets: false,
-        sensitivity_userdata: false,
         overlay_logs: s.logs.clone(),
         assist_summary: s.assist_summary.clone(),
         summary_choice: s.summary_choice,
@@ -1810,6 +1765,8 @@ fn handle_tui_outer_key_dispatch(
                         overlay.review_id = row.split(" | ").next().unwrap_or("").to_string();
                         *input.learn_overlay_cursor = char_len(&overlay.review_id);
                     }
+                } else if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
+                    overlay.promote_target_idx = overlay.promote_target_idx.saturating_sub(1);
                 }
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
@@ -1825,6 +1782,8 @@ fn handle_tui_outer_key_dispatch(
                         overlay.review_id = row.split(" | ").next().unwrap_or("").to_string();
                         *input.learn_overlay_cursor = char_len(&overlay.review_id);
                     }
+                } else if overlay.tab == crate::chat_ui::LearnOverlayTab::Promote {
+                    overlay.promote_target_idx = (overlay.promote_target_idx + 1).min(2);
                 }
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
@@ -1893,26 +1852,9 @@ fn handle_tui_outer_key_dispatch(
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Char('w') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
-                overlay.write_armed = !overlay.write_armed;
-                if overlay.write_armed {
-                    push_overlay_log_dedup(overlay, "info: Write state armed.");
-                } else {
-                    push_overlay_log_dedup(overlay, "info: Write state returned to preview.");
-                }
-                match overlay.tab {
-                    crate::chat_ui::LearnOverlayTab::Capture => {
-                        set_overlay_next_steps_capture(overlay)
-                    }
-                    crate::chat_ui::LearnOverlayTab::Promote => {
-                        set_overlay_next_steps_promote(overlay)
-                    }
-                    crate::chat_ui::LearnOverlayTab::Review => {
-                        overlay.inline_message = Some(
-                            "Step 1: Enter/select ID. Step 2: Press Enter to preview. Step 3: Esc to close."
-                                .to_string(),
-                        );
-                    }
-                }
+                overlay.inline_message = Some(
+                    "Beginner mode: no arm step needed. Press Enter to run.".to_string(),
+                );
                 return TuiOuterKeyDispatchOutcome::Handled;
             }
             KeyCode::Enter => {
@@ -1929,26 +1871,19 @@ fn handle_tui_outer_key_dispatch(
                             overlay.inline_message = Some("summary: <required>".to_string());
                             return TuiOuterKeyDispatchOutcome::Handled;
                         }
-                        overlay.selected_summary = Some(overlay_effective_summary(overlay));
-                        if overlay.write_armed {
-                            let category = match overlay.category_idx {
-                                0 => "workflow-hint",
-                                1 => "prompt-guidance",
-                                _ => "check-candidate",
-                            };
-                            let assist = if overlay.assist_on { " --assist" } else { "" };
-                            let write = if overlay.assist_on { " --write" } else { "" };
-                            overlay.pending_submit_line = Some(format!(
-                                "/learn capture --category {category} --summary \"{}\"{assist}{write}",
-                                overlay.summary.replace('"', "\\\"")
-                            ));
-                            set_overlay_next_steps_capture(overlay);
-                            return TuiOuterKeyDispatchOutcome::Handled;
-                        }
-                        push_overlay_log_unique(
-                            overlay,
-                            "info: Preflight check complete. Waiting for user action.",
-                        );
+                        let effective_summary = overlay_effective_summary(overlay);
+                        overlay.selected_summary = Some(effective_summary.clone());
+                        let category = match overlay.category_idx {
+                            0 => "workflow-hint",
+                            1 => "prompt-guidance",
+                            _ => "check-candidate",
+                        };
+                        let assist = if overlay.assist_on { " --assist" } else { "" };
+                        let write = if overlay.assist_on { " --write" } else { "" };
+                        overlay.pending_submit_line = Some(format!(
+                            "/learn capture --category {category} --summary \"{}\"{assist}{write}",
+                            effective_summary.replace('"', "\\\"")
+                        ));
                         set_overlay_next_steps_capture(overlay);
                         TuiOuterKeyDispatchOutcome::Handled
                     }
@@ -2000,14 +1935,6 @@ fn handle_tui_outer_key_dispatch(
                         TuiOuterKeyDispatchOutcome::Handled
                     }
                     crate::chat_ui::LearnOverlayTab::Promote => {
-                        if !overlay.write_armed {
-                            push_overlay_log_unique(
-                                overlay,
-                                "info: Preflight check complete. Waiting for user action.",
-                            );
-                            set_overlay_next_steps_promote(overlay);
-                            return TuiOuterKeyDispatchOutcome::Handled;
-                        }
                         match build_overlay_promote_submit_line(overlay) {
                             Ok(line) => {
                                 overlay.pending_submit_line = Some(line);
@@ -3249,9 +3176,8 @@ pub(crate) async fn run_chat_tui(
                                         if !output.is_empty() {
                                             push_overlay_log_dedup(overlay, &output);
                                         }
-                                        overlay.write_armed = false;
                                         overlay.inline_message = Some(
-                                            "Completed. Step 1: Review logs/output. Step 2: edit fields if needed. Step 3: Ctrl+W then Enter to run again."
+                                            "Completed. Step 1: Review logs/output. Step 2: edit fields if needed. Step 3: Press Enter to run again."
                                                 .to_string(),
                                         );
                                     }
@@ -3260,9 +3186,8 @@ pub(crate) async fn run_chat_tui(
                                             overlay,
                                             &format!("learn command failed: {e}"),
                                         );
-                                        overlay.write_armed = false;
                                         overlay.inline_message = Some(
-                                            "Run failed. Step 1: Review error in logs. Step 2: fix inputs/flags. Step 3: Ctrl+W then Enter."
+                                            "Run failed. Step 1: Review error in logs. Step 2: fix inputs/flags. Step 3: Press Enter to retry."
                                                 .to_string(),
                                         );
                                     }
@@ -3362,7 +3287,7 @@ pub(crate) async fn run_chat_tui(
 #[cfg(test)]
 mod tests {
     use super::{build_learn_overlay_render_model, LearnOverlayInputFocus, LearnOverlayState};
-    use crate::chat_ui::{LearnOverlayTab, LearnOverlayWriteState};
+    use crate::chat_ui::LearnOverlayTab;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tempfile::tempdir;
 
@@ -3391,14 +3316,11 @@ mod tests {
             selected_summary: None,
         };
         let model = build_learn_overlay_render_model(&s);
-        assert_eq!(model.write_state, LearnOverlayWriteState::Preview);
-        assert!(!model.will_write);
-        assert!(model.writes_to.is_empty());
         assert!(model.equivalent_cli.contains("<required>"));
     }
 
     #[test]
-    fn learn_overlay_armed_mode_shows_staged_writes() {
+    fn learn_overlay_assist_mode_updates_cli_preview() {
         let s = LearnOverlayState {
             tab: LearnOverlayTab::Capture,
             category_idx: 1,
@@ -3422,9 +3344,6 @@ mod tests {
             selected_summary: None,
         };
         let model = build_learn_overlay_render_model(&s);
-        assert_eq!(model.write_state, LearnOverlayWriteState::Armed);
-        assert!(model.will_write);
-        assert_eq!(model.writes_to.len(), 2);
         assert!(model.equivalent_cli.contains("prompt_guidance"));
         assert!(model.equivalent_cli.contains("--assist"));
     }
@@ -3454,8 +3373,6 @@ mod tests {
             selected_summary: None,
         };
         let model = build_learn_overlay_render_model(&s);
-        assert!(!model.will_write);
-        assert!(model.writes_to.is_empty());
         assert!(model
             .equivalent_cli
             .contains("learn promote 01ABC --to check"));
@@ -3463,7 +3380,7 @@ mod tests {
     }
 
     #[test]
-    fn learn_overlay_promote_armed_pack_shows_pack_writes() {
+    fn learn_overlay_promote_pack_sets_target_path() {
         let s = LearnOverlayState {
             tab: LearnOverlayTab::Promote,
             category_idx: 0,
@@ -3487,8 +3404,6 @@ mod tests {
             selected_summary: None,
         };
         let model = build_learn_overlay_render_model(&s);
-        assert!(model.will_write);
-        assert_eq!(model.writes_to.len(), 3);
         assert_eq!(model.target_path, ".localagent/packs/<pack_id>/PACK.md");
         assert!(model.equivalent_cli.contains("--pack-id core"));
         assert!(model.equivalent_cli.contains("--force"));
@@ -3605,8 +3520,6 @@ mod tests {
         };
         let model = build_learn_overlay_render_model(&s);
         assert_eq!(model.tab, LearnOverlayTab::Review);
-        assert!(!model.will_write);
-        assert!(model.writes_to.is_empty());
         assert_eq!(model.equivalent_cli, "learn list");
     }
 
@@ -3819,7 +3732,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_preview_enter_does_not_set_submit_line() {
+    fn capture_enter_sets_submit_line_without_arm_step() {
         let tmp = tempdir().expect("tempdir");
         let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
         let mut overlay = Some(LearnOverlayState {
@@ -3906,17 +3819,17 @@ mod tests {
         });
         assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
         let ov = overlay.expect("overlay");
-        assert!(ov.pending_submit_line.is_none());
+        assert!(ov.pending_submit_line.is_some());
         assert!(ov
             .inline_message
             .as_deref()
             .unwrap_or("")
-            .contains("Press Enter for preview only"));
+            .contains("Press Enter to save"));
         assert_eq!(transcript, before);
     }
 
     #[test]
-    fn capture_preview_enter_dedups_preflight_log() {
+    fn capture_enter_keeps_preflight_log_absent() {
         let tmp = tempdir().expect("tempdir");
         let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
         let mut overlay = Some(LearnOverlayState {
@@ -4008,7 +3921,7 @@ mod tests {
         let ov = overlay.expect("overlay");
         let preflight = "info: Preflight check complete. Waiting for user action.";
         let count = ov.logs.iter().filter(|l| l.as_str() == preflight).count();
-        assert_eq!(count, 1);
+        assert_eq!(count, 0);
     }
 
     #[test]

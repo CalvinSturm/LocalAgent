@@ -1,9 +1,9 @@
 # /learn Workflow Reference
 
-Version context: LocalAgent `v0.3.0` (2026-02-27)
+Version context: LocalAgent `v0.3.1` (2026-02-28)
 Status: Draft
 Owner: LocalAgent maintainers  
-Last reviewed: 2026-02-27
+Last reviewed: 2026-02-28
 
 ## 1. What `/learn` is for
 
@@ -166,24 +166,24 @@ Typing `/learn` opens modal overlay with tabs:
 
 Current key controls:
 
-- `Esc` or `q`: close overlay
+- `Esc`: close overlay
 - `Ctrl+1 / Ctrl+2 / Ctrl+3`: switch tabs
 - `Tab` / `Shift+Tab`: move focus between fields
-- `Enter`: preview/run depending on state
-- `Ctrl+W`: toggle write state (`PREVIEW` <-> `ARMED`)
+- `Enter`: run the primary action for current tab
 - Capture: `Ctrl+A` toggle assist
 - Promote:
-  - `Left/Right` target switch (`check|pack|agents`)
+  - `Up/Down` target switch (`check|pack|agents`)
   - `Ctrl+F` force
 
 Promote advanced flags:
 
 - `--check-run`, `--replay-verify`, `--replay-verify-run-id`, and `--replay-verify-strict` remain available via typed `/learn promote ...` (or `localagent learn promote ...`), not overlay keybind toggles.
 
-Write semantics:
+Beginner submit semantics:
 
-- `PREVIEW`: no writes
-- `ARMED`: executes through existing learn backend path
+- Capture: `Enter` saves draft directly
+- Review: `Enter` lists/shows entries (read-only)
+- Promote: `Enter` publishes directly when required fields are present
 
 Busy semantics:
 

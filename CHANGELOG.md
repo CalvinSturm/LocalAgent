@@ -8,8 +8,12 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
 ## Unreleased
 
 - Docs alignment:
-  - Clarified that TUI Learn Promote overlay is intentionally beginner-focused (`target` + `force` + arm/run).
+  - Clarified that TUI Learn Promote overlay is intentionally beginner-focused (`target` + `force` + direct publish on Enter).
   - Clarified that advanced promote flags remain available via typed `/learn promote ...` and CLI.
+- Learn Overlay UX simplification:
+  - Removed write arm step from overlay flow; Capture/Promote now execute directly on `Enter`.
+  - Simplified overlay layout to form-focused view with concise status/log line.
+  - Updated key semantics (`Promote` target switch via `Up/Down`; caret navigation retained in active text fields).
 
 ## v0.3.0 - 2026-02-27
 

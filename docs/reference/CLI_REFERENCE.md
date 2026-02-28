@@ -355,7 +355,7 @@ Notes:
 - `learn capture --assist` is preview-only unless `--write` is provided.
 - `learn promote --to check` requires `--slug`.
 - `learn promote --to pack` requires `--pack-id`.
-- TUI Learn Overlay keeps promote controls beginner-focused (`target` + `force` + write arm/run). Advanced promote flags remain available through typed `/learn promote ...` or CLI.
+- TUI Learn Overlay keeps promote controls beginner-focused (`target` + `force` + direct publish on Enter). Advanced promote flags remain available through typed `/learn promote ...` or CLI.
 
 ### `tui`
 
@@ -402,6 +402,8 @@ Chat TUI slash commands:
 - `/exit`
 - `/hide tools|approvals|logs`
 - `/show tools|approvals|logs|all`
+- `/learn` (opens Learn Overlay)
+- `/learn help|list|show|archive|capture|promote` (typed learn commands)
 
 Mode naming note:
 

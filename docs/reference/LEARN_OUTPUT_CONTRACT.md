@@ -1,9 +1,9 @@
 # /learn Output Contract
 
-Version context: LocalAgent `v0.3.0` (2026-02-27)
+Version context: LocalAgent `v0.3.1` (2026-02-28)
 Status: Draft (proposed authoritative contract)
 Owner: LocalAgent maintainers  
-Last reviewed: 2026-02-27
+Last reviewed: 2026-02-28
 
 ## 1. Purpose
 
@@ -136,8 +136,10 @@ Failure guarantee:
 
 ## 7. TUI/overlay contract
 
-- `PREVIEW`: computes and displays intended output; performs zero writes
-- `ARMED`: executes same backend path as CLI
+- `Enter` in Capture saves draft directly (no arm step)
+- `Enter` in Review performs list/show only (read-only)
+- `Enter` in Promote publishes directly when required fields are present
+- advanced promote flags remain typed-only (`/learn promote ... --check-run --replay-verify*`)
 - overlay logs are informational; artifacts are source of truth
 
 ## 8. Canonical file ownership

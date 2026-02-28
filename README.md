@@ -280,6 +280,7 @@ In chat TUI:
 - `/dismiss`: dismiss active timeout notification
 - `/learn help`: show `/learn` command usage
 - `/learn list|show|archive|capture|promote`: learning workflows from TUI logs pane
+- `/learn`: open the Learn Overlay (beginner flow)
 - `?`: show keybind help dropdown
 
 Mode naming note:

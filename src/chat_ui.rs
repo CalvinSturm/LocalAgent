@@ -13,12 +13,6 @@ pub(crate) enum LearnOverlayTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LearnOverlayWriteState {
-    Preview,
-    Armed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LearnOverlaySummaryChoice {
     Original,
     Assist,
@@ -40,14 +34,10 @@ pub(crate) struct LearnOverlayRenderModel {
     pub(crate) review_rows: Vec<String>,
     pub(crate) review_selected_idx: usize,
     pub(crate) assist_on: bool,
-    pub(crate) write_state: LearnOverlayWriteState,
+    #[allow(dead_code)]
     pub(crate) equivalent_cli: String,
-    pub(crate) will_write: bool,
-    pub(crate) writes_to: Vec<String>,
+    #[allow(dead_code)]
     pub(crate) target_path: String,
-    pub(crate) sensitivity_paths: bool,
-    pub(crate) sensitivity_secrets: bool,
-    pub(crate) sensitivity_userdata: bool,
     pub(crate) overlay_logs: Vec<String>,
     pub(crate) assist_summary: Option<String>,
     pub(crate) summary_choice: LearnOverlaySummaryChoice,
@@ -461,9 +451,8 @@ fn draw_learn_overlay(f: &mut ratatui::Frame<'_>, overlay: &LearnOverlayRenderMo
         .constraints([
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Min(12),
+            Constraint::Min(14),
             Constraint::Length(1),
-            Constraint::Length(3),
         ])
         .split(area);
 
@@ -498,57 +487,38 @@ fn draw_learn_overlay(f: &mut ratatui::Frame<'_>, overlay: &LearnOverlayRenderMo
         outer[1],
     );
 
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(outer[2]);
-
     match overlay.tab {
-        LearnOverlayTab::Capture => {
-            draw_learn_capture_form(f, body[0], overlay);
-            draw_learn_cli_review(f, body[1], overlay);
-        }
-        LearnOverlayTab::Review => {
-            draw_learn_review_form(f, body[0], overlay);
-            draw_learn_cli_review(f, body[1], overlay);
-        }
-        LearnOverlayTab::Promote => {
-            draw_learn_promote_form(f, body[0], overlay);
-            draw_learn_cli_review(f, body[1], overlay);
-        }
+        LearnOverlayTab::Capture => draw_learn_capture_form(f, outer[2], overlay),
+        LearnOverlayTab::Review => draw_learn_review_form(f, outer[2], overlay),
+        LearnOverlayTab::Promote => draw_learn_promote_form(f, outer[2], overlay),
     }
 
-    let hints = match overlay.tab {
+    let action_hint = match overlay.tab {
         LearnOverlayTab::Capture => format!(
-            "Capture: Enter Preview/Run | Ctrl+W Arm | Ctrl+A Assist:{} | Tab Focus | Esc/Q Close | Ctrl+1/2/3 Tabs",
+            "Capture: Enter Save | Ctrl+A Assist:{} | Ctrl+G Generate | Ctrl+O/R Pick | Tab Field | Esc Close",
             if overlay.assist_on { "ON" } else { "OFF" },
         ),
         LearnOverlayTab::Review => {
-            "Review: Enter Preview | Up/Down Select | Tab Focus | Esc/Q Close | Ctrl+1/2/3 Tabs"
+            "Review: Enter List/Show | Up/Down Rows | Tab Field | Esc Close"
                 .to_string()
         }
         LearnOverlayTab::Promote => {
-            "Promote: Left/Right Target | Ctrl+W Arm | Enter Run | Ctrl+F Force | Tab Focus | Esc/Q Close | Ctrl+1/2/3 Tabs".to_string()
+            "Promote: Up/Down Target | Enter Publish | Ctrl+F Force | Tab Field | Esc Close"
+                .to_string()
         }
     };
+    let last_log = overlay
+        .overlay_logs
+        .last()
+        .cloned()
+        .unwrap_or_else(|| "learn ready".to_string());
+    let status_line = format!("{action_hint}  |  Last: {last_log}");
+    let status_line_wrapped = soft_break_long_tokens(&status_line, outer[3].width as usize);
     f.render_widget(
-        Paragraph::new(hints)
+        Paragraph::new(status_line_wrapped)
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(Color::Gray)),
         outer[3],
-    );
-
-    let logs = if overlay.overlay_logs.is_empty() {
-        "LOGS: learn".to_string()
-    } else {
-        format!("LOGS: learn  {}", overlay.overlay_logs.join("  "))
-    };
-    let logs_wrapped = soft_break_long_tokens(&logs, outer[4].width.saturating_sub(2) as usize);
-    f.render_widget(
-        Paragraph::new(logs_wrapped)
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(Color::Yellow)),
-        outer[4],
     );
 }
 
@@ -571,12 +541,7 @@ fn draw_learn_capture_form(
             Constraint::Length(5), // receipt
         ])
         .split(inner);
-    let step_lines = [
-        "Step 1: Enter summary.",
-        "Step 2: Preview only; Ctrl+W arms write.",
-        "Step 3: Assist runs if ON",
-    ]
-    .join("\n");
+    let step_lines = ["1) Enter summary", "2) Enter saves draft", "3) Promote publishes"].join("\n");
     let category_section = sections[0];
     let category_inner = Layout::default()
         .direction(Direction::Vertical)
@@ -588,23 +553,27 @@ fn draw_learn_capture_form(
             .wrap(Wrap { trim: false }),
         category_inner[0],
     );
-    let categories = ["workflow_hint", "prompt_guidance", "check_candidate"];
-    let category_tokens = categories
-        .iter()
-        .enumerate()
-        .map(|(idx, c)| {
-            if idx == overlay.selected_category_idx {
-                format!("> {c}")
-            } else {
-                c.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("  ");
+    let categories = [
+        ("workflow_hint", "workflow"),
+        ("prompt_guidance", "guidance"),
+        ("check_candidate", "check"),
+    ];
+    let mut category_spans: Vec<Span<'static>> = Vec::new();
+    for (idx, (_value, label)) in categories.iter().enumerate() {
+        let selected = idx == overlay.selected_category_idx;
+        let token = format!("[ {label} ]");
+        let style = if selected {
+            Style::default().fg(Color::Black).bg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        category_spans.push(Span::styled(token, style));
+        if idx + 1 < categories.len() {
+            category_spans.push(Span::raw("  "));
+        }
+    }
     f.render_widget(
-        Paragraph::new(category_tokens)
-            .style(Style::default().fg(Color::Yellow))
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(Line::from(category_spans)).wrap(Wrap { trim: true }),
         category_inner[1],
     );
     let summary_section = sections[1];
@@ -706,60 +675,6 @@ fn draw_learn_capture_form(
             .wrap(Wrap { trim: false }),
         receipt_section,
     );
-}
-
-fn draw_learn_cli_review(
-    f: &mut ratatui::Frame<'_>,
-    area: ratatui::layout::Rect,
-    overlay: &LearnOverlayRenderModel,
-) {
-    let tab_name = match overlay.tab {
-        LearnOverlayTab::Capture => "capture",
-        LearnOverlayTab::Review => "review",
-        LearnOverlayTab::Promote => "promote",
-    };
-    let block = Block::default()
-        .title(format!(" - CLI REVIEW ({tab_name}) "))
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::DarkGray));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let write_state = match overlay.write_state {
-        LearnOverlayWriteState::Preview => "PREVIEW",
-        LearnOverlayWriteState::Armed => "ARMED",
-    };
-    let writes_to = if overlay.writes_to.is_empty() {
-        "none".to_string()
-    } else {
-        overlay
-            .writes_to
-            .iter()
-            .map(|p| format!("• {p}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let assist_line = if overlay.tab == LearnOverlayTab::Capture {
-        if overlay.assist_on {
-            "Assist: ON (running armed capture calls LLM and uses tokens)"
-        } else {
-            "Assist: OFF (capture run is local; no LLM assist call)"
-        }
-    } else {
-        "Assist: N/A"
-    };
-    let text = format!(
-        "Equivalent CLI:\n{}\n\nWrite State: {write_state}\nWill write: {}\n{}\nWrites to:\n{}\n\nTarget path: {}\n\nSensitivity flags:\n• Paths: {}\n• Secrets: {}\n• Userdata: {}",
-        overlay.equivalent_cli,
-        if overlay.will_write { "YES" } else { "NO" },
-        assist_line,
-        writes_to,
-        overlay.target_path,
-        yes_no(overlay.sensitivity_paths),
-        yes_no(overlay.sensitivity_secrets),
-        yes_no(overlay.sensitivity_userdata)
-    );
-    let wrapped = soft_break_long_tokens(&text, inner.width.saturating_sub(2) as usize);
-    f.render_widget(Paragraph::new(wrapped).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_learn_review_form(
@@ -891,7 +806,7 @@ fn draw_learn_promote_form(
         if overlay.promote_force { "ON" } else { "off" }
     );
     text.push_str(&format!(
-        "\n\nField focus: {}\nTarget switch: [Left/Right]\nField focus cycle: [Tab]/[Shift+Tab]",
+        "\n\nField focus: {}\nTarget switch: [Up/Down]\nField focus cycle: [Tab]/[Shift+Tab]",
         overlay.input_focus
     ));
     if let Some(msg) = overlay.inline_message.as_deref() {
@@ -948,14 +863,6 @@ fn tab_label(num: u8, tab: LearnOverlayTab, _active: LearnOverlayTab) -> String 
         LearnOverlayTab::Promote => "Promote",
     };
     format!("[{num}] {label}")
-}
-
-fn yes_no(v: bool) -> &'static str {
-    if v {
-        "YES"
-    } else {
-        "NO"
-    }
 }
 
 fn centered_rect(
