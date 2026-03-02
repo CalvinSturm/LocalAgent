@@ -23,5 +23,7 @@ jobs:
         run: python3 scripts/ci_release_readiness.py
       - name: clippy
         run: cargo clippy -- -D warnings
+      - name: tool-call-accuracy
+        run: cargo test --test tool_call_accuracy_ci
       - name: test
         run: cargo test
