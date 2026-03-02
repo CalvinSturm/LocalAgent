@@ -27,6 +27,7 @@ fn build_run_cli_config() -> RunCliConfig {
         provider: "ollama".to_string(),
         base_url: "http://localhost:11434".to_string(),
         model: "test-model".to_string(),
+        temperature: None,
         planner_model: None,
         worker_model: None,
         planner_max_steps: None,

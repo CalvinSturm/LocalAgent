@@ -64,6 +64,7 @@ pub(crate) async fn run_planner_phase<P: ModelProvider>(
             model: planner_model.to_string(),
             messages: messages.clone(),
             tools: None,
+            temperature: None,
         };
         let resp = match provider.generate(req).await {
             Ok(resp) => resp,

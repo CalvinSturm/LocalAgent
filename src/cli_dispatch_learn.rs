@@ -366,6 +366,7 @@ async fn call_assist_model(
             },
         ],
         tools: None,
+        temperature: cli_run.temperature,
     };
 
     let resp = match provider_kind {

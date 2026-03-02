@@ -967,6 +967,9 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) prompt: Option<String>,
 
+    #[arg(long)]
+    pub(crate) temperature: Option<f32>,
+
     #[arg(long, default_value_t = 20)]
     pub(crate) max_steps: usize,
 

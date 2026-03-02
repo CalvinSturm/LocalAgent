@@ -229,6 +229,7 @@ pub(crate) struct WorkerStepStatus {
 pub struct Agent<P: ModelProvider> {
     pub provider: P,
     pub model: String,
+    pub temperature: Option<f32>,
     pub tools: Vec<ToolDef>,
     pub max_steps: usize,
     pub tool_rt: ToolRuntime,
@@ -1033,6 +1034,7 @@ Fallback when native tool calls are unavailable:\n\
                 } else {
                     Some(tools_sorted)
                 },
+                temperature: self.temperature,
             };
             let request_context_chars = context_size_chars(&req.messages);
             let resp_result = self.execute_model_request(&run_id, step as u32, req).await;

@@ -53,7 +53,14 @@ struct OllamaRequest {
     messages: Vec<OllamaMessageOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OllamaToolEnvelope>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaOptions>,
     stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaOptions {
+    temperature: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,6 +419,7 @@ fn drain_json_lines(buf: &mut String) -> Vec<String> {
 }
 
 fn to_request(req: GenerateRequest, stream: bool) -> OllamaRequest {
+    let temperature = req.temperature;
     let tools = build_tool_envelopes(req.tools);
     let messages = req
         .messages
@@ -435,6 +443,7 @@ fn to_request(req: GenerateRequest, stream: bool) -> OllamaRequest {
         model: req.model,
         messages,
         tools,
+        options: temperature.map(|temperature| OllamaOptions { temperature }),
         stream,
     }
 }
@@ -510,8 +519,12 @@ fn handle_ollama_stream_json(
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_json_lines, handle_ollama_stream_json, map_ollama_response, OllamaResponse};
+    use super::{
+        drain_json_lines, handle_ollama_stream_json, map_ollama_response, to_request,
+        OllamaResponse,
+    };
     use crate::providers::StreamDelta;
+    use crate::types::GenerateRequest;
 
     #[test]
     fn parses_ollama_stream_json() {
@@ -577,5 +590,38 @@ mod tests {
         assert_eq!(usage.prompt_tokens, Some(11));
         assert_eq!(usage.completion_tokens, Some(7));
         assert_eq!(usage.total_tokens, Some(18));
+    }
+
+    #[test]
+    fn to_request_sets_options_temperature_when_present() {
+        let payload = to_request(
+            GenerateRequest {
+                model: "m".to_string(),
+                messages: Vec::new(),
+                tools: None,
+                temperature: Some(0.33),
+            },
+            false,
+        );
+        let temp = payload
+            .options
+            .as_ref()
+            .map(|o| o.temperature)
+            .expect("temperature set");
+        assert!((temp - 0.33).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn to_request_omits_options_when_temperature_unset() {
+        let payload = to_request(
+            GenerateRequest {
+                model: "m".to_string(),
+                messages: Vec::new(),
+                tools: None,
+                temperature: None,
+            },
+            false,
+        );
+        assert!(payload.options.is_none());
     }
 }

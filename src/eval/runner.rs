@@ -826,6 +826,7 @@ async fn run_single(
     let mut agent = Agent {
         provider,
         model: model.to_string(),
+        temperature: None,
         tools,
         max_steps: config.max_steps,
         tool_rt: ToolRuntime {
@@ -1005,6 +1006,7 @@ fn write_run_artifact_for_eval(
         provider: provider_to_string(config.provider),
         base_url: config.base_url.clone(),
         model: model.to_string(),
+        temperature: None,
         planner_model: config.planner_model.clone(),
         worker_model: config.worker_model.clone(),
         planner_max_steps: None,

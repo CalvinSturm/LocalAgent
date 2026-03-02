@@ -672,6 +672,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     let mut agent = Agent {
         provider,
         model: worker_model.clone(),
+        temperature: args.temperature,
         tools: all_tools,
         max_steps: args.max_steps,
         tool_rt: ToolRuntime {

@@ -702,6 +702,8 @@ fn default_run_args() -> super::RunArgs {
 
         model: None,
 
+        temperature: None,
+
         base_url: None,
 
         api_key: None,

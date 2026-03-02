@@ -6,6 +6,7 @@ use serde_json::json;
 fn req_with_user(content: &str) -> GenerateRequest {
     GenerateRequest {
         model: "mock-model".to_string(),
+        temperature: None,
         messages: vec![Message {
             role: Role::User,
             content: Some(content.to_string()),

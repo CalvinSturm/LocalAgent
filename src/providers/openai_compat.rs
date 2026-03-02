@@ -503,7 +503,7 @@ fn to_request(req: GenerateRequest, stream: bool) -> OpenAiRequest {
         messages: req.messages,
         tools,
         tool_choice: "auto".to_string(),
-        temperature: 0.2,
+        temperature: req.temperature.unwrap_or(0.2),
         stream,
     }
 }
@@ -660,9 +660,10 @@ fn finalize_tool_calls(partials: Vec<PartialToolCall>) -> Vec<ToolCall> {
 mod tests {
     use super::{
         drain_sse_events, finalize_tool_calls, handle_openai_stream_json, map_openai_response,
-        parse_sse_event_payload, OpenAiResponse, PartialToolCall,
+        parse_sse_event_payload, to_request, OpenAiResponse, PartialToolCall,
     };
     use crate::providers::StreamDelta;
+    use crate::types::GenerateRequest;
 
     #[test]
     fn parses_openai_stream_content_and_tool() {
@@ -746,5 +747,33 @@ mod tests {
         assert_eq!(usage.prompt_tokens, Some(12));
         assert_eq!(usage.completion_tokens, Some(5));
         assert_eq!(usage.total_tokens, Some(17));
+    }
+
+    #[test]
+    fn to_request_uses_temperature_override_when_present() {
+        let payload = to_request(
+            GenerateRequest {
+                model: "m".to_string(),
+                messages: Vec::new(),
+                tools: None,
+                temperature: Some(0.55),
+            },
+            false,
+        );
+        assert!((payload.temperature - 0.55).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn to_request_defaults_temperature_to_point_two_when_unset() {
+        let payload = to_request(
+            GenerateRequest {
+                model: "m".to_string(),
+                messages: Vec::new(),
+                tools: None,
+                temperature: None,
+            },
+            false,
+        );
+        assert!((payload.temperature - 0.2).abs() < f32::EPSILON);
     }
 }

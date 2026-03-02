@@ -74,6 +74,7 @@ async fn non_stream_mode_uses_non_stream_generate() {
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: Vec::new(),
         max_steps: 1,
         tool_rt: ToolRuntime {
@@ -163,6 +164,7 @@ async fn task_memory_message_is_injected_into_transcript() {
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: Vec::new(),
         max_steps: 1,
         tool_rt: ToolRuntime {
@@ -266,6 +268,7 @@ async fn build_initial_messages_contains_tool_contract_version_marker() {
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: Vec::new(),
         max_steps: 1,
         tool_rt: ToolRuntime {
@@ -910,6 +913,7 @@ async fn emits_tool_exec_target_before_exec_start() {
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1011,6 +1015,7 @@ async fn plan_tool_enforcement_hard_denies_disallowed_tool() {
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1114,6 +1119,7 @@ async fn operator_interrupt_delivers_post_tool_and_cancels_remaining_turn_work()
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1230,6 +1236,7 @@ async fn operator_next_delivers_at_turn_idle_without_interrupt() {
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: Vec::new(),
         max_steps: 4,
         tool_rt: ToolRuntime {
@@ -1331,6 +1338,7 @@ async fn halting_is_blocked_when_plan_steps_are_pending() {
     let mut agent = Agent {
         provider: NoToolProvider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1423,6 +1431,7 @@ async fn emits_step_lifecycle_events_for_pending_plan_halt() {
     let mut agent = Agent {
         provider: NoToolProvider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1525,6 +1534,7 @@ async fn tool_budget_exceeded_returns_deterministic_exit() {
     let mut agent = Agent {
         provider: DualToolProvider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1621,6 +1631,7 @@ async fn planner_enforced_final_output_uses_user_output_field() {
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1720,6 +1731,7 @@ async fn schema_repair_retry_happens_before_execution() {
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1833,6 +1845,7 @@ async fn repeated_malformed_tool_calls_fail_fast_with_protocol_violation() {
     let mut agent = Agent {
         provider: AlwaysInvalidArgsProvider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -1935,6 +1948,7 @@ async fn repeated_failed_unknown_tool_calls_are_blocked_by_repeat_guard() {
     let mut agent = Agent {
         provider: AlwaysUnknownToolProvider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -2041,6 +2055,7 @@ async fn repeated_invalid_patch_format_fails_fast_with_protocol_violation() {
     let mut agent = Agent {
         provider: AlwaysInvalidPatchProvider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "apply_patch".to_string(),
             description: "d".to_string(),
@@ -2148,6 +2163,7 @@ async fn tool_only_prompt_repairs_once_then_allows_tool_call() {
             calls: calls.clone(),
         },
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "read_file".to_string(),
             description: "d".to_string(),
@@ -2247,6 +2263,7 @@ async fn tool_only_prompt_repeated_prose_fails_fast() {
     let mut agent = Agent {
         provider: ToolOnlyAlwaysProseProvider,
         model: "m".to_string(),
+        temperature: None,
         tools: vec![crate::types::ToolDef {
             name: "list_dir".to_string(),
             description: "d".to_string(),
@@ -2355,6 +2372,7 @@ async fn invalid_done_transition_fails_with_planner_error() {
     let mut agent = Agent {
         provider: StaticContentProvider { content },
         model: "m".to_string(),
+        temperature: None,
         tools: Vec::new(),
         max_steps: 1,
         tool_rt: ToolRuntime {

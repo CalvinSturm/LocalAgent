@@ -111,6 +111,7 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         provider: provider_to_string(provider_kind),
         base_url: base_url.to_string(),
         model: model.to_string(),
+        temperature: args.temperature,
         planner_model,
         worker_model,
         planner_max_steps,

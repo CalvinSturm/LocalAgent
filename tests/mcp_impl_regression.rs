@@ -185,6 +185,7 @@ fn make_agent_with_mcp<P: ModelProvider + 'static>(
     Agent {
         provider,
         model: "mock-model".to_string(),
+        temperature: None,
         tools,
         max_steps: 8,
         tool_rt: ToolRuntime {
@@ -302,6 +303,7 @@ fn minimal_cli_config_for_mcp_test() -> RunCliConfig {
         provider: "mock".to_string(),
         base_url: "http://localhost".to_string(),
         model: "mock-model".to_string(),
+        temperature: None,
         planner_model: None,
         worker_model: None,
         planner_max_steps: None,
