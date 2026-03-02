@@ -9,7 +9,8 @@ use crate::agent_taint_helpers::{compute_taint_spans_for_tool, taint_record_from
 use crate::agent_tool_exec::{
     classify_tool_failure, contains_tool_wrapper_markers, extract_content_tool_calls,
     infer_truncated_flag, is_apply_patch_invalid_format_error, make_invalid_args_tool_message,
-    run_tool_once, schema_repair_instruction_message, tool_result_has_error,
+    run_tool_once, schema_repair_instruction_message, tool_result_error_code,
+    tool_result_has_error,
 };
 use crate::agent_utils::{add_opt_u32, provider_name, sha256_hex};
 use crate::agent_worker_protocol::parse_worker_step_status;
@@ -32,7 +33,7 @@ use crate::providers::{ModelProvider, StreamDelta};
 use crate::taint::{TaintMode, TaintSpan, TaintState, TaintToggle};
 use crate::tools::{
     envelope_to_message, to_tool_result_envelope, tool_side_effects, validate_builtin_tool_args,
-    ToolResultMeta, ToolRuntime,
+    ToolErrorCode, ToolResultMeta, ToolRuntime,
 };
 use crate::trust::policy::{McpAllowSummary, Policy};
 use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
@@ -52,6 +53,25 @@ pub enum AgentExitReason {
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     sanitize_user_visible_output_impl(raw)
+}
+
+const MAX_SCHEMA_REPAIR_ATTEMPTS: u32 = 2;
+const MAX_FAILED_REPEAT_PER_KEY: u32 = 3;
+
+fn is_repairable_error_code(code: ToolErrorCode) -> bool {
+    matches!(
+        code,
+        ToolErrorCode::ToolArgsInvalid
+            | ToolErrorCode::ToolUnknown
+            | ToolErrorCode::ToolArgsMalformedJson
+            | ToolErrorCode::ToolPathDenied
+    )
+}
+
+fn failed_repeat_key(tc: &ToolCall) -> String {
+    let canonical_args = crate::trust::approvals::canonical_json(&tc.arguments)
+        .unwrap_or_else(|_| "null".to_string());
+    sha256_hex(format!("{}|{canonical_args}", tc.name).as_bytes())
 }
 
 impl AgentExitReason {
@@ -643,6 +663,8 @@ impl<P: ModelProvider> Agent<P> {
         let mut step_retry_counts: std::collections::BTreeMap<String, u32> =
             std::collections::BTreeMap::new();
         let mut schema_repair_attempts: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
+        let mut failed_repeat_counts: std::collections::BTreeMap<String, u32> =
             std::collections::BTreeMap::new();
         let mut malformed_tool_call_attempts: u32 = 0;
         let mut invalid_patch_format_attempts: u32 = 0;
@@ -2401,6 +2423,66 @@ impl<P: ModelProvider> Agent<P> {
                     matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
                         || plan_allowed_tools.is_empty()
                         || plan_allowed_tools.iter().any(|t| t == &tc.name);
+                let repeat_key = failed_repeat_key(tc);
+                let failed_repeat_count =
+                    failed_repeat_counts.get(&repeat_key).copied().unwrap_or(0);
+                if failed_repeat_count >= MAX_FAILED_REPEAT_PER_KEY {
+                    let reason = format!(
+                        "TOOL_REPEAT_BLOCKED: repeated failed tool call for '{}' exceeded repeat limit",
+                        tc.name
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "source": "tool_repeat_guard",
+                            "code": "TOOL_REPEAT_BLOCKED",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "repeat_count": failed_repeat_count,
+                            "repeat_limit": MAX_FAILED_REPEAT_PER_KEY,
+                            "repeat_key_sha256": repeat_key
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": reason.clone(),
+                            "source": "tool_repeat_guard",
+                            "tool_call_id": tc.id,
+                            "name": tc.name
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::RunEnd,
+                        serde_json::json!({"exit_reason":"planner_error"}),
+                    );
+                    return self.finalize_run_outcome(
+                        AgentOutcomeBuilderInput {
+                            run_id,
+                            started_at,
+                            exit_reason: AgentExitReason::PlannerError,
+                            final_output: reason.clone(),
+                            error: Some(reason),
+                            messages,
+                            tool_calls: observed_tool_calls,
+                            tool_decisions: observed_tool_decisions,
+                            final_prompt_size_chars: request_context_chars,
+                            compaction_report: last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                        },
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    );
+                }
                 let invalid_args_error = if tc.name.starts_with("mcp.") {
                     self.mcp_registry.as_ref().and_then(|reg| {
                         reg.validate_namespaced_tool_args(tc, self.tool_rt.tool_args_strict)
@@ -2474,7 +2556,7 @@ impl<P: ModelProvider> Agent<P> {
                         .entry(repair_key)
                         .and_modify(|n| *n = n.saturating_add(1))
                         .or_insert(1);
-                    if *attempts <= 1 && plan_tool_allowed {
+                    if *attempts <= MAX_SCHEMA_REPAIR_ATTEMPTS && plan_tool_allowed {
                         self.emit_event(
                             &run_id,
                             step as u32,
@@ -2483,9 +2565,11 @@ impl<P: ModelProvider> Agent<P> {
                                 "tool_call_id": tc.id,
                                 "name": tc.name,
                                 "attempt": *attempts,
-                                "max_retries": 1,
+                                "max_retries": MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS,
                                 "failure_class": "E_SCHEMA",
-                                "action": "repair"
+                                "action": "repair",
+                                "error_code": ToolErrorCode::ToolArgsInvalid.as_str()
                             }),
                         );
                         let tool_msg =
@@ -2501,7 +2585,10 @@ impl<P: ModelProvider> Agent<P> {
                                 "truncated": false,
                                 "retry_count": 0,
                                 "failure_class": "E_SCHEMA",
-                                "source": "schema_repair"
+                                "source": "schema_repair",
+                                "repair_attempted": true,
+                                "repair_succeeded": false,
+                                "error_code": ToolErrorCode::ToolArgsInvalid.as_str()
                             }),
                         );
                         messages.push(tool_msg);
@@ -2517,6 +2604,38 @@ impl<P: ModelProvider> Agent<P> {
                         }
                         messages.push(schema_repair_instruction_message(tc, err));
                         continue 'agent_steps;
+                    } else {
+                        self.emit_event(
+                            &run_id,
+                            step as u32,
+                            EventKind::ToolRetry,
+                            serde_json::json!({
+                                "tool_call_id": tc.id,
+                                "name": tc.name,
+                                "attempt": *attempts,
+                                "max_retries": MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                "failure_class": "E_SCHEMA",
+                                "action": "stop",
+                                "error_code": ToolErrorCode::ToolArgsInvalid.as_str()
+                            }),
+                        );
+                        if *attempts > MAX_SCHEMA_REPAIR_ATTEMPTS {
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::Error,
+                                serde_json::json!({
+                                    "error": "schema repair attempts exhausted",
+                                    "source": "schema_repair",
+                                    "code": "TOOL_SCHEMA_REPAIR_EXHAUSTED",
+                                    "tool_call_id": tc.id,
+                                    "name": tc.name,
+                                    "attempt": *attempts,
+                                    "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS
+                                }),
+                            );
+                        }
                     }
                 }
                 let approval_mode_meta =
@@ -3039,7 +3158,98 @@ impl<P: ModelProvider> Agent<P> {
                                         };
                                     }
                                 }
+                                if let Some(error_code) = tool_result_error_code(&current_content) {
+                                    if is_repairable_error_code(error_code) && plan_tool_allowed {
+                                        let repair_key =
+                                            format!("{}|{}", tc.name, error_code.as_str());
+                                        let attempts = schema_repair_attempts
+                                            .entry(repair_key)
+                                            .and_modify(|n| *n = n.saturating_add(1))
+                                            .or_insert(1);
+                                        if *attempts <= MAX_SCHEMA_REPAIR_ATTEMPTS {
+                                            self.emit_event(
+                                                &run_id,
+                                                step as u32,
+                                                EventKind::ToolRetry,
+                                                serde_json::json!({
+                                                    "tool_call_id": tc.id,
+                                                    "name": tc.name,
+                                                    "attempt": *attempts,
+                                                    "max_retries": MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                                    "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                                    "failure_class": "E_SCHEMA",
+                                                    "action": "repair",
+                                                    "error_code": error_code.as_str()
+                                                }),
+                                            );
+                                            messages.push(tool_msg);
+                                            self.drain_external_operator_queue(
+                                                &run_id,
+                                                step as u32,
+                                            );
+                                            let (_, queue_interrupted) = self
+                                                .deliver_operator_queue_at_boundary(
+                                                    &run_id,
+                                                    step as u32,
+                                                    DeliveryBoundary::PostTool,
+                                                    &mut messages,
+                                                );
+                                            if queue_interrupted {
+                                                continue 'agent_steps;
+                                            }
+                                            let n = failed_repeat_counts
+                                                .entry(repeat_key.clone())
+                                                .or_insert(0);
+                                            *n = n.saturating_add(1);
+                                            let repair_msg = format!(
+                                                "Tool '{}' failed with {}. Re-emit exactly one corrected tool call for '{}' with valid arguments only.",
+                                                tc.name,
+                                                error_code.as_str(),
+                                                tc.name
+                                            );
+                                            messages.push(Message {
+                                                role: Role::Developer,
+                                                content: Some(repair_msg),
+                                                tool_call_id: None,
+                                                tool_name: None,
+                                                tool_calls: None,
+                                            });
+                                            continue 'agent_steps;
+                                        }
+                                        self.emit_event(
+                                            &run_id,
+                                            step as u32,
+                                            EventKind::ToolRetry,
+                                            serde_json::json!({
+                                                "tool_call_id": tc.id,
+                                                "name": tc.name,
+                                                "attempt": *attempts,
+                                                "max_retries": MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                                "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                                "failure_class": "E_SCHEMA",
+                                                "action": "stop",
+                                                "error_code": error_code.as_str()
+                                            }),
+                                        );
+                                        self.emit_event(
+                                            &run_id,
+                                            step as u32,
+                                            EventKind::Error,
+                                            serde_json::json!({
+                                                "error": "schema repair attempts exhausted",
+                                                "source": "schema_repair",
+                                                "code": "TOOL_SCHEMA_REPAIR_EXHAUSTED",
+                                                "tool_call_id": tc.id,
+                                                "name": tc.name,
+                                                "attempt": *attempts,
+                                                "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS
+                                            }),
+                                        );
+                                    }
+                                }
                                 let class = classify_tool_failure(tc, &current_content, false);
+                                let retry_error_code =
+                                    tool_result_error_code(&current_content).map(|c| c.as_str());
                                 let max_retries = class.retry_limit_for(side_effects);
                                 if tool_retry_count >= max_retries {
                                     self.emit_event(
@@ -3052,7 +3262,8 @@ impl<P: ModelProvider> Agent<P> {
                                             "attempt": tool_retry_count,
                                             "max_retries": max_retries,
                                             "failure_class": class.as_str(),
-                                            "action": "stop"
+                                            "action": "stop",
+                                            "error_code": retry_error_code
                                         }),
                                     );
                                     break;
@@ -3067,7 +3278,8 @@ impl<P: ModelProvider> Agent<P> {
                                         "attempt": tool_retry_count + 1,
                                         "max_retries": max_retries,
                                         "failure_class": class.as_str(),
-                                        "action": "retry"
+                                        "action": "retry",
+                                        "error_code": retry_error_code
                                     }),
                                 );
                                 tool_retry_count = tool_retry_count.saturating_add(1);
@@ -3435,6 +3647,8 @@ impl<P: ModelProvider> Agent<P> {
                         }
 
                         let content = tool_msg.content.clone().unwrap_or_default();
+                        let final_ok = !tool_result_has_error(&content);
+                        let final_error_code = tool_result_error_code(&content);
                         let final_failure_class = if tool_result_has_error(&content) {
                             Some(classify_tool_failure(
                                 tc,
@@ -3492,7 +3706,7 @@ impl<P: ModelProvider> Agent<P> {
                             taint_enforced,
                             escalated,
                             escalation_reason: escalation_reason.clone(),
-                            result_ok: !tool_result_has_error(&content),
+                            result_ok: final_ok,
                             result_content: content,
                             result_input_digest: Some(input_digest),
                             result_output_digest: Some(output_digest),
@@ -3511,6 +3725,12 @@ impl<P: ModelProvider> Agent<P> {
                             escalated,
                             escalation_reason: escalation_reason.clone(),
                         });
+                        if final_ok {
+                            failed_repeat_counts.remove(&repeat_key);
+                        } else {
+                            let n = failed_repeat_counts.entry(repeat_key).or_insert(0);
+                            *n = n.saturating_add(1);
+                        }
                         self.emit_event(
                             &run_id,
                             step as u32,
@@ -3518,10 +3738,11 @@ impl<P: ModelProvider> Agent<P> {
                             serde_json::json!({
                                 "tool_call_id": tc.id,
                                 "name": tc.name,
-                                "ok": !tool_result_has_error(&tool_msg.content.clone().unwrap_or_default()),
+                                "ok": final_ok,
                                 "truncated": final_truncated,
                                 "retry_count": tool_retry_count,
-                                "failure_class": final_failure_class.map(|c| c.as_str())
+                                "failure_class": final_failure_class.map(|c| c.as_str()),
+                                "error_code": final_error_code.map(|c| c.as_str())
                             }),
                         );
                         messages.push(tool_msg);

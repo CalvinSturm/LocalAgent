@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::ValueEnum;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::target::{
@@ -73,7 +73,45 @@ pub struct ToolResultEnvelope {
     pub truncate_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_output_ref: Option<ToolResultContentRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ToolErrorDetail>,
     pub meta: ToolResultMeta,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolErrorCode {
+    ToolArgsInvalid,
+    ToolUnknown,
+    ToolPathDenied,
+    ToolDisabled,
+    ToolArgsMalformedJson,
+}
+
+impl ToolErrorCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ToolArgsInvalid => "tool_args_invalid",
+            Self::ToolUnknown => "tool_unknown",
+            Self::ToolPathDenied => "tool_path_denied",
+            Self::ToolDisabled => "tool_disabled",
+            Self::ToolArgsMalformedJson => "tool_args_malformed_json",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolErrorDetail {
+    pub code: ToolErrorCode,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub received_args: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimal_example: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +119,7 @@ struct ToolExecution {
     ok: bool,
     content: String,
     truncated: bool,
+    error: Option<ToolErrorDetail>,
     meta: ToolResultMeta,
 }
 
@@ -164,6 +203,75 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
     tools
 }
 
+fn compact_builtin_schema(tool_name: &str) -> Option<Value> {
+    match tool_name {
+        "list_dir" | "read_file" => Some(json!({
+            "type":"object",
+            "required":["path"],
+            "properties":{"path":{"type":"string"}}
+        })),
+        "shell" => Some(json!({
+            "type":"object",
+            "required":["cmd"],
+            "properties":{
+                "cmd":{"type":"string"},
+                "args":{"type":"array","items":{"type":"string"}},
+                "cwd":{"type":"string"}
+            }
+        })),
+        "write_file" => Some(json!({
+            "type":"object",
+            "required":["path","content"],
+            "properties":{
+                "path":{"type":"string"},
+                "content":{"type":"string"},
+                "create_parents":{"type":"boolean"},
+                "overwrite_existing":{"type":"boolean"}
+            }
+        })),
+        "apply_patch" => Some(json!({
+            "type":"object",
+            "required":["path","patch"],
+            "properties":{"path":{"type":"string"},"patch":{"type":"string"}}
+        })),
+        _ => None,
+    }
+}
+
+fn minimal_builtin_example(tool_name: &str) -> Option<Value> {
+    match tool_name {
+        "list_dir" => Some(json!({"path":"."})),
+        "read_file" => Some(json!({"path":"src/main.rs"})),
+        "shell" => Some(json!({"cmd":"echo","args":["hello"]})),
+        "write_file" => Some(json!({"path":"notes.txt","content":"hello"})),
+        "apply_patch" => Some(json!({"path":"src/main.rs","patch":"@@ -1 +1 @@\n-a\n+b\n"})),
+        _ => None,
+    }
+}
+
+fn sorted_builtin_tool_names() -> Vec<String> {
+    let mut names = vec![
+        "apply_patch".to_string(),
+        "list_dir".to_string(),
+        "read_file".to_string(),
+        "shell".to_string(),
+        "write_file".to_string(),
+    ];
+    names.sort();
+    names
+}
+
+fn invalid_args_detail(tool_name: &str, args: &Value, err: &str) -> ToolErrorDetail {
+    ToolErrorDetail {
+        code: ToolErrorCode::ToolArgsInvalid,
+        message: format!("Invalid arguments: {err}"),
+        expected_schema: compact_builtin_schema(tool_name),
+        received_args: Some(args.clone()),
+        minimal_example: minimal_builtin_example(tool_name),
+        available_tools: None,
+    }
+}
+
 #[cfg(test)]
 pub fn resolve_path(workdir: &std::path::Path, input: &str) -> PathBuf {
     let p = PathBuf::from(input);
@@ -180,6 +288,18 @@ pub fn to_tool_result_envelope(
     ok: bool,
     content: String,
     truncated: bool,
+    meta: ToolResultMeta,
+) -> ToolResultEnvelope {
+    to_tool_result_envelope_with_error(tc, source, ok, content, truncated, None, meta)
+}
+
+pub fn to_tool_result_envelope_with_error(
+    tc: &ToolCall,
+    source: &str,
+    ok: bool,
+    content: String,
+    truncated: bool,
+    error: Option<ToolErrorDetail>,
     mut meta: ToolResultMeta,
 ) -> ToolResultEnvelope {
     meta.source = source.to_string();
@@ -192,6 +312,7 @@ pub fn to_tool_result_envelope(
         truncated,
         truncate_reason: None,
         full_output_ref: None,
+        error,
         meta,
     }
 }
@@ -206,6 +327,32 @@ pub fn envelope_to_message(env: ToolResultEnvelope) -> Message {
         tool_name: Some(env.tool_name.clone()),
         tool_calls: None,
     }
+}
+
+pub fn invalid_args_tool_message(
+    tc: &ToolCall,
+    source: &str,
+    err: &str,
+    execution_target: String,
+) -> Message {
+    envelope_to_message(to_tool_result_envelope_with_error(
+        tc,
+        source,
+        false,
+        format!("invalid tool arguments: {err}"),
+        false,
+        Some(invalid_args_detail(&tc.name, &tc.arguments, err)),
+        ToolResultMeta {
+            side_effects: tool_side_effects(&tc.name),
+            bytes: None,
+            exit_code: None,
+            stderr_truncated: None,
+            stdout_truncated: None,
+            source: source.to_string(),
+            execution_target,
+            docker: None,
+        },
+    ))
 }
 
 pub fn validate_builtin_tool_args(
@@ -359,26 +506,15 @@ fn require_non_empty_string(obj: &serde_json::Map<String, Value>, key: &str) -> 
 pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
     let side_effects = tool_side_effects(&tc.name);
     if let Err(e) = validate_builtin_tool_args(&tc.name, &tc.arguments, rt.tool_args_strict) {
-        return envelope_to_message(to_tool_result_envelope(
+        return invalid_args_tool_message(
             tc,
             "builtin",
-            false,
-            format!("invalid tool arguments: {e}"),
-            false,
-            ToolResultMeta {
-                side_effects,
-                bytes: None,
-                exit_code: None,
-                stderr_truncated: None,
-                stdout_truncated: None,
-                source: "builtin".to_string(),
-                execution_target: match rt.exec_target_kind {
-                    ExecTargetKind::Host => "host".to_string(),
-                    ExecTargetKind::Docker => "docker".to_string(),
-                },
-                docker: None,
+            &e,
+            match rt.exec_target_kind {
+                ExecTargetKind::Host => "host".to_string(),
+                ExecTargetKind::Docker => "docker".to_string(),
             },
-        ));
+        );
     }
     let exec = match tc.name.as_str() {
         "list_dir" => run_list_dir(rt, &tc.arguments).await,
@@ -390,6 +526,14 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
             ok: false,
             content: format!("unknown tool: {}", tc.name),
             truncated: false,
+            error: Some(ToolErrorDetail {
+                code: ToolErrorCode::ToolUnknown,
+                message: format!("Unknown tool '{}'.", tc.name),
+                expected_schema: None,
+                received_args: Some(tc.arguments.clone()),
+                minimal_example: None,
+                available_tools: Some(sorted_builtin_tool_names()),
+            }),
             meta: ToolResultMeta {
                 side_effects,
                 bytes: None,
@@ -405,12 +549,13 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
             },
         },
     };
-    envelope_to_message(to_tool_result_envelope(
+    envelope_to_message(to_tool_result_envelope_with_error(
         tc,
         "builtin",
         exec.ok,
         exec.content,
         exec.truncated,
+        exec.error,
         exec.meta,
     ))
 }
@@ -422,6 +567,14 @@ async fn run_list_dir(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             rt,
             SideEffects::FilesystemRead,
             "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            Some(ToolErrorDetail {
+                code: ToolErrorCode::ToolPathDenied,
+                message: "Path must stay within workdir.".to_string(),
+                expected_schema: None,
+                received_args: Some(args.clone()),
+                minimal_example: minimal_builtin_example("list_dir"),
+                available_tools: None,
+            }),
         );
     }
     let out = rt
@@ -441,6 +594,14 @@ async fn run_read_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             rt,
             SideEffects::FilesystemRead,
             "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            Some(ToolErrorDetail {
+                code: ToolErrorCode::ToolPathDenied,
+                message: "Path must stay within workdir.".to_string(),
+                expected_schema: None,
+                received_args: Some(args.clone()),
+                minimal_example: minimal_builtin_example("read_file"),
+                available_tools: None,
+            }),
         );
     }
     let out = rt
@@ -463,6 +624,14 @@ async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             SideEffects::ShellExec,
             "shell tool is disabled. Re-run with --allow-shell or --allow-shell-in-workdir"
                 .to_string(),
+            Some(ToolErrorDetail {
+                code: ToolErrorCode::ToolDisabled,
+                message: "Shell tool is disabled by runtime flags.".to_string(),
+                expected_schema: None,
+                received_args: Some(args.clone()),
+                minimal_example: minimal_builtin_example("shell"),
+                available_tools: None,
+            }),
         );
     }
     let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or_default();
@@ -533,6 +702,14 @@ async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             rt,
             SideEffects::FilesystemWrite,
             "writes require --allow-write".to_string(),
+            Some(ToolErrorDetail {
+                code: ToolErrorCode::ToolDisabled,
+                message: "Write tools are disabled by runtime flags.".to_string(),
+                expected_schema: None,
+                received_args: Some(args.clone()),
+                minimal_example: minimal_builtin_example("write_file"),
+                available_tools: None,
+            }),
         );
     }
     let path = args
@@ -544,6 +721,14 @@ async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             rt,
             SideEffects::FilesystemWrite,
             "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            Some(ToolErrorDetail {
+                code: ToolErrorCode::ToolPathDenied,
+                message: "Path must stay within workdir.".to_string(),
+                expected_schema: None,
+                received_args: Some(args.clone()),
+                minimal_example: minimal_builtin_example("write_file"),
+                available_tools: None,
+            }),
         );
     }
     let content = args
@@ -572,6 +757,7 @@ async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
                 rt,
                 SideEffects::FilesystemWrite,
                 "write_file blocked for existing file; use apply_patch for in-place edits or set overwrite_existing=true for explicit full rewrite".to_string(),
+                None,
             );
         }
     }
@@ -593,6 +779,14 @@ async fn run_apply_patch(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             rt,
             SideEffects::FilesystemWrite,
             "writes require --allow-write".to_string(),
+            Some(ToolErrorDetail {
+                code: ToolErrorCode::ToolDisabled,
+                message: "Write tools are disabled by runtime flags.".to_string(),
+                expected_schema: None,
+                received_args: Some(args.clone()),
+                minimal_example: minimal_builtin_example("apply_patch"),
+                available_tools: None,
+            }),
         );
     }
     let path = args
@@ -604,6 +798,14 @@ async fn run_apply_patch(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             rt,
             SideEffects::FilesystemWrite,
             "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            Some(ToolErrorDetail {
+                code: ToolErrorCode::ToolPathDenied,
+                message: "Path must stay within workdir.".to_string(),
+                expected_schema: None,
+                received_args: Some(args.clone()),
+                minimal_example: minimal_builtin_example("apply_patch"),
+                available_tools: None,
+            }),
         );
     }
     let patch_text = args
@@ -626,6 +828,7 @@ fn target_to_exec(side_effects: SideEffects, out: crate::target::TargetResult) -
         ok: out.ok,
         content: out.content,
         truncated: out.truncated,
+        error: None,
         meta: ToolResultMeta {
             side_effects,
             bytes: out.bytes,
@@ -658,11 +861,17 @@ fn base_meta(rt: &ToolRuntime, side_effects: SideEffects) -> ToolResultMeta {
     }
 }
 
-fn failed_exec(rt: &ToolRuntime, side_effects: SideEffects, content: String) -> ToolExecution {
+fn failed_exec(
+    rt: &ToolRuntime,
+    side_effects: SideEffects,
+    content: String,
+    error: Option<ToolErrorDetail>,
+) -> ToolExecution {
     ToolExecution {
         ok: false,
         content,
         truncated: false,
+        error,
         meta: base_meta(rt, side_effects),
     }
 }
@@ -755,7 +964,106 @@ mod tests {
         let msg = execute_tool(&rt, &tc).await;
         let content = msg.content.unwrap_or_default();
         assert!(content.contains("invalid tool arguments"));
+        let parsed: Value = serde_json::from_str(&content).expect("json");
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("tool_args_invalid")
+        );
         assert!(!tmp.path().join("x.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn invalid_args_payload_is_structured_and_deterministic() {
+        let rt = ToolRuntime {
+            workdir: PathBuf::from("."),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "bad_read".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let parsed: Value = serde_json::from_str(&msg.content.unwrap_or_default()).expect("json");
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("tool_args_invalid")
+        );
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|e| e.get("expected_schema"))
+                .and_then(|s| s.get("required"))
+                .and_then(|r| r.get(0))
+                .and_then(|v| v.as_str()),
+            Some("path")
+        );
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|e| e.get("minimal_example"))
+                .and_then(|m| m.get("path"))
+                .and_then(|v| v.as_str()),
+            Some("src/main.rs")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_payload_includes_sorted_available_tools() {
+        let rt = ToolRuntime {
+            workdir: PathBuf::from("."),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_unknown".to_string(),
+            name: "grep_search".to_string(),
+            arguments: json!({"path":"."}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let parsed: Value = serde_json::from_str(&msg.content.unwrap_or_default()).expect("json");
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("tool_unknown")
+        );
+        let got = parsed
+            .get("error")
+            .and_then(|e| e.get("available_tools"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let expected = vec![
+            json!("apply_patch"),
+            json!("list_dir"),
+            json!("read_file"),
+            json!("shell"),
+            json!("write_file"),
+        ];
+        assert_eq!(got, expected);
     }
 
     #[tokio::test]
@@ -958,6 +1266,14 @@ mod tests {
         let content = msg.content.expect("content");
         assert!(content.contains("path must stay within workdir"));
         assert!(content.contains("\"ok\":false"));
+        let parsed: Value = serde_json::from_str(&content).expect("json");
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("tool_path_denied")
+        );
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use crate::mcp::registry::McpRegistry;
 use crate::tools::{
-    envelope_to_message, execute_tool, to_tool_result_envelope, tool_side_effects, ToolResultMeta,
-    ToolRuntime,
+    envelope_to_message, execute_tool, invalid_args_tool_message, to_tool_result_envelope,
+    tool_side_effects, ToolErrorCode, ToolResultMeta, ToolRuntime,
 };
 use crate::types::{Message, Role, ToolCall};
 
@@ -199,6 +199,19 @@ pub(crate) fn tool_result_has_error(content: &str) -> bool {
     }
 }
 
+pub(crate) fn tool_result_error_code(content: &str) -> Option<ToolErrorCode> {
+    let v = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    let code = v.get("error")?.get("code")?.as_str()?;
+    match code {
+        "tool_args_invalid" => Some(ToolErrorCode::ToolArgsInvalid),
+        "tool_unknown" => Some(ToolErrorCode::ToolUnknown),
+        "tool_path_denied" => Some(ToolErrorCode::ToolPathDenied),
+        "tool_disabled" => Some(ToolErrorCode::ToolDisabled),
+        "tool_args_malformed_json" => Some(ToolErrorCode::ToolArgsMalformedJson),
+        _ => None,
+    }
+}
+
 pub(crate) fn infer_truncated_flag(content: &str) -> bool {
     match serde_json::from_str::<serde_json::Value>(content) {
         Ok(v) => v
@@ -219,30 +232,15 @@ pub(crate) fn make_invalid_args_tool_message(
     } else {
         "builtin"
     };
-    envelope_to_message(to_tool_result_envelope(
-        tc,
-        source,
-        false,
-        format!("invalid tool arguments: {err}"),
-        false,
-        ToolResultMeta {
-            side_effects: tool_side_effects(&tc.name),
-            bytes: None,
-            exit_code: None,
-            stderr_truncated: None,
-            stdout_truncated: None,
-            source: source.to_string(),
-            execution_target: if source == "mcp" {
-                "host".to_string()
-            } else {
-                match exec_target_kind {
-                    crate::target::ExecTargetKind::Host => "host".to_string(),
-                    crate::target::ExecTargetKind::Docker => "docker".to_string(),
-                }
-            },
-            docker: None,
-        },
-    ))
+    let execution_target = if source == "mcp" {
+        "host".to_string()
+    } else {
+        match exec_target_kind {
+            crate::target::ExecTargetKind::Host => "host".to_string(),
+            crate::target::ExecTargetKind::Docker => "docker".to_string(),
+        }
+    };
+    invalid_args_tool_message(tc, source, err, execution_target)
 }
 
 pub(crate) fn schema_repair_instruction_message(tc: &ToolCall, err: &str) -> Message {
