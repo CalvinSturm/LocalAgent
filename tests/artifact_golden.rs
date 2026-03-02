@@ -241,6 +241,12 @@ fn build_projection(
         "tool_catalog": obj.get("tool_catalog").cloned().expect("tool_catalog"),
         "config_fingerprint_present": obj.get("config_fingerprint").map(|v| !v.is_null()).unwrap_or(false),
         "mcp_pin_snapshot_present": obj.get("mcp_pin_snapshot").map(|v| !v.is_null()).unwrap_or(false),
+        "tool_reliability_present": obj.get("tool_reliability").map(|v| !v.is_null()).unwrap_or(false),
+        "tool_reliability_keys": obj
+            .get("tool_reliability")
+            .and_then(Value::as_object)
+            .map(sorted_object_keys)
+            .unwrap_or_default(),
     })
 }
 

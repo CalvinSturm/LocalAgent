@@ -121,6 +121,7 @@
       "tool_calls",
       "tool_catalog",
       "tool_decisions",
+      "tool_reliability",
       "tool_schema_hash_hex_map",
       "transcript",
       "worker"
@@ -169,5 +170,16 @@
       "tool": "shell",
       "tool_call_id": "tc_approve"
     }
-  ]
+  ],
+  "tool_reliability_keys": [
+    "by_tool",
+    "malformed_tool_call_count",
+    "repeat_block_count",
+    "tool_calls_repair_failed",
+    "tool_calls_repaired",
+    "tool_calls_total",
+    "tool_calls_valid_first_try",
+    "unknown_tool_count"
+  ],
+  "tool_reliability_present": true
 }

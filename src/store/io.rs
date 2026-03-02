@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::agent::AgentOutcome;
@@ -9,8 +10,73 @@ use crate::planner::RunMode;
 
 use super::{
     ConfigFingerprintV1, McpPinSnapshotRecord, PlannerRunRecord, PolicyRecordInfo, RunCliConfig,
-    RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths, StatePaths, WorkerRunRecord,
+    RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths, StatePaths,
+    ToolReliabilityRecord, WorkerRunRecord,
 };
+
+fn summarize_tool_reliability(outcome: &AgentOutcome) -> ToolReliabilityRecord {
+    let mut rec = ToolReliabilityRecord::default();
+    for tc in &outcome.tool_calls {
+        rec.tool_calls_total = rec.tool_calls_total.saturating_add(1);
+        let by_tool = rec.by_tool.entry(tc.name.clone()).or_default();
+        by_tool.calls = by_tool.calls.saturating_add(1);
+    }
+
+    for msg in &outcome.messages {
+        if !matches!(msg.role, crate::types::Role::Tool) {
+            continue;
+        }
+        let Some(content) = msg.content.as_deref() else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(content) else {
+            continue;
+        };
+        let tool_name = v
+            .get("tool_name")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+        if ok {
+            rec.tool_calls_valid_first_try = rec.tool_calls_valid_first_try.saturating_add(1);
+            if let Some(by_tool) = rec.by_tool.get_mut(&tool_name) {
+                by_tool.valid_first_try = by_tool.valid_first_try.saturating_add(1);
+            }
+        }
+        let code = v
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_str())
+            .unwrap_or_default();
+        if code == "tool_unknown" {
+            rec.unknown_tool_count = rec.unknown_tool_count.saturating_add(1);
+            if let Some(by_tool) = rec.by_tool.get_mut(&tool_name) {
+                by_tool.unknown_tool = by_tool.unknown_tool.saturating_add(1);
+            }
+        }
+    }
+
+    if outcome.final_output.contains("TOOL_REPEAT_BLOCKED")
+        || outcome
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("TOOL_REPEAT_BLOCKED")
+    {
+        rec.repeat_block_count = 1;
+    }
+    if outcome
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("repeated malformed tool calls")
+    {
+        rec.malformed_tool_call_count = 1;
+    }
+
+    rec
+}
 
 pub fn ensure_dir(path: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(path)?;
@@ -74,6 +140,7 @@ pub fn write_run_record(
         hook_report: outcome.hook_invocations.clone(),
         tool_catalog,
         mcp_runtime_trace,
+        tool_reliability: summarize_tool_reliability(outcome),
         mcp_pin_snapshot,
         taint: outcome.taint.clone(),
         repro,

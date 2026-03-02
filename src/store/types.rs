@@ -43,6 +43,8 @@ pub struct RunRecord {
     pub tool_catalog: Vec<ToolCatalogEntry>,
     #[serde(default)]
     pub mcp_runtime_trace: Vec<crate::agent::McpRuntimeTraceEntry>,
+    #[serde(default)]
+    pub tool_reliability: ToolReliabilityRecord,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp_pin_snapshot: Option<McpPinSnapshotRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,6 +53,40 @@ pub struct RunRecord {
     pub repro: Option<crate::repro::RunReproRecord>,
     pub final_output: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolReliabilityByTool {
+    #[serde(default)]
+    pub calls: u32,
+    #[serde(default)]
+    pub valid_first_try: u32,
+    #[serde(default)]
+    pub repaired: u32,
+    #[serde(default)]
+    pub repair_failed: u32,
+    #[serde(default)]
+    pub unknown_tool: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolReliabilityRecord {
+    #[serde(default)]
+    pub tool_calls_total: u32,
+    #[serde(default)]
+    pub tool_calls_valid_first_try: u32,
+    #[serde(default)]
+    pub tool_calls_repaired: u32,
+    #[serde(default)]
+    pub tool_calls_repair_failed: u32,
+    #[serde(default)]
+    pub unknown_tool_count: u32,
+    #[serde(default)]
+    pub repeat_block_count: u32,
+    #[serde(default)]
+    pub malformed_tool_call_count: u32,
+    #[serde(default)]
+    pub by_tool: BTreeMap<String, ToolReliabilityByTool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -16,7 +16,7 @@ pub use render::{extract_session_messages, render_replay};
 pub use types::{
     ActivatedPackRecord, ConfigFingerprintV1, McpPinSnapshotRecord, McpToolSnapshotEntry,
     PlannerRunRecord, RunCliConfig, RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths,
-    ToolCatalogEntry, WorkerRunRecord,
+    ToolCatalogEntry, ToolReliabilityRecord, WorkerRunRecord,
 };
 
 #[derive(Debug, Clone)]
@@ -81,7 +81,7 @@ mod tests {
     use super::{
         config_hash_hex, load_run_record, render_replay, resolve_state_dir, sha256_hex,
         write_run_record, ConfigFingerprintV1, PlannerRunRecord, PolicyRecordInfo, RunCliConfig,
-        RunMetadata, RunRecord, RunResolvedPaths, WorkerRunRecord,
+        RunMetadata, RunRecord, RunResolvedPaths, ToolReliabilityRecord, WorkerRunRecord,
     };
     use crate::agent::{AgentExitReason, AgentOutcome};
     use crate::planner::RunMode;
@@ -404,7 +404,7 @@ mod tests {
                 .unwrap_or(""),
             "tainted"
         );
-        let compaction = loaded.compaction.expect("compaction");
+        let compaction = loaded.compaction.as_ref().expect("compaction");
         assert_eq!(compaction.final_prompt_size_chars, 321);
         assert_eq!(
             compaction
@@ -414,6 +414,15 @@ mod tests {
                 .summary_digest_sha256,
             "abc"
         );
+
+        let mut legacy_value = serde_json::to_value(&loaded).expect("serialize");
+        legacy_value
+            .as_object_mut()
+            .expect("object")
+            .remove("tool_reliability");
+        let legacy_loaded: RunRecord = serde_json::from_value(legacy_value).expect("deserialize");
+        assert_eq!(legacy_loaded.tool_reliability.tool_calls_total, 0);
+        assert!(legacy_loaded.tool_reliability.by_tool.is_empty());
     }
 
     #[test]
@@ -578,6 +587,7 @@ mod tests {
             hook_report: Vec::new(),
             tool_catalog: Vec::new(),
             mcp_runtime_trace: Vec::new(),
+            tool_reliability: ToolReliabilityRecord::default(),
             mcp_pin_snapshot: None,
             taint: None,
             repro: None,
