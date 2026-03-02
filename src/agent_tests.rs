@@ -255,6 +255,103 @@ async fn task_memory_message_is_injected_into_transcript() {
         .contains("TASK MEMORY")));
 }
 
+#[tokio::test]
+async fn build_initial_messages_contains_tool_contract_version_marker() {
+    let seen_messages = Arc::new(Mutex::new(Vec::new()));
+    let provider = MockProvider {
+        generate_calls: Arc::new(AtomicUsize::new(0)),
+        stream_calls: Arc::new(AtomicUsize::new(0)),
+        seen_messages: seen_messages.clone(),
+    };
+    let mut agent = Agent {
+        provider,
+        model: "m".to_string(),
+        tools: Vec::new(),
+        max_steps: 1,
+        tool_rt: ToolRuntime {
+            workdir: std::env::current_dir().expect("cwd"),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir: std::env::current_dir().expect("cwd"),
+            allow_shell: false,
+            allow_write: false,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Ollama,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        mcp_registry: None,
+        stream: false,
+        event_sink: None,
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    };
+    let out = agent.run("hello", vec![], Vec::new()).await;
+    let sys = out
+        .messages
+        .iter()
+        .find(|m| matches!(m.role, Role::System))
+        .and_then(|m| m.content.as_deref())
+        .unwrap_or_default()
+        .to_string();
+    assert!(sys.contains("TOOL_CONTRACT_VERSION: v1"));
+    assert!(sys.contains("Emit at most one tool call per assistant step."));
+    assert!(sys.contains("[TOOL_CALL]"));
+    assert!(sys.contains("[END_TOOL_CALL]"));
+}
+
 #[test]
 fn tool_error_detection() {
     assert!(super::tool_result_has_error(

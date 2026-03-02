@@ -289,9 +289,23 @@ impl<P: ModelProvider> Agent<P> {
         let mut messages = vec![Message {
             role: Role::System,
             content: Some(
-                "You are an agent that may call tools to gather information. Use tools when \
-                 needed, then provide a final direct answer when done. If no tools are \
-                 needed, answer immediately."
+                "You are an agent that may call tools to gather information.\n\
+\n\
+TOOL_CONTRACT_VERSION: v1\n\
+\n\
+Tool use contract:\n\
+- Use only tools explicitly provided in this run.\n\
+- Emit at most one tool call per assistant step.\n\
+- Tool arguments must be a valid JSON object matching the tool schema.\n\
+- If a tool returns an error, read the tool error and retry with corrected arguments only when applicable.\n\
+- If no tool is needed, return a direct final answer.\n\
+\n\
+Fallback when native tool calls are unavailable:\n\
+- Emit exactly one wrapper block:\n\
+  [TOOL_CALL]\n\
+  {\"name\":\"<tool>\",\"arguments\":{...}}\n\
+  [END_TOOL_CALL]\n\
+- Emit no extra prose inside the wrapper."
                     .to_string(),
             ),
             tool_call_id: None,
