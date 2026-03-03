@@ -2,7 +2,7 @@
 
 Status: Active  
 Owner: LocalAgent maintainers  
-Last reviewed: 2026-02-27
+Last reviewed: 2026-03-03
 
 This docs tree is organized by document type.
 
@@ -14,6 +14,19 @@ Normative docs (source of truth for users/operators):
 Non-normative docs (contributor context/history only):
 - `docs/research/`
 - `docs/archive/`
+
+## Doc Map
+
+| Path | Status | Owner | Last reviewed | Notes |
+|---|---|---|---|---|
+| `docs/guides/*` | current | LocalAgent maintainers | 2026-02-27 | User/operator how-to docs |
+| `docs/reference/*` | current | LocalAgent maintainers | 2026-02-27 | Runtime and CLI source-of-truth docs |
+| `docs/adr/*` | current | LocalAgent maintainers | 2026-02-27 | Decision records |
+| `docs/research/*` | historical | LocalAgent maintainers | 2026-02-27 | Non-normative research and exploration |
+| `docs/archive/*` | historical | LocalAgent maintainers | 2026-03-03 | Historical planning/audit snapshots |
+| `docs/ARCHITECTURE_AND_OPERATIONS.md` | historical redirect | LocalAgent maintainers | 2026-03-03 | Moved to `docs/archive/ARCHITECTURE_AND_OPERATIONS.md` |
+| `docs/OOTB_AGENT_EFFECTIVENESS_AUDIT.md` | historical redirect | LocalAgent maintainers | 2026-03-03 | Moved to `docs/archive/OOTB_AGENT_EFFECTIVENESS_AUDIT.md` |
+| `docs/TOOL_CALL_ACCURACY_SPEC.md` | historical redirect | LocalAgent maintainers | 2026-03-03 | Moved to `docs/archive/TOOL_CALL_ACCURACY_SPEC.md` |
 
 ## Guides
 
@@ -43,6 +56,9 @@ Non-normative docs (contributor context/history only):
 ## Archive
 
 - Status: Non-normative; historical planning snapshots.
+- [Architecture and Operations Snapshot](archive/ARCHITECTURE_AND_OPERATIONS.md)
+- [OOTB Agent Effectiveness Audit Snapshot](archive/OOTB_AGENT_EFFECTIVENESS_AUDIT.md)
+- [Tool Call Accuracy Umbrella Spec Snapshot](archive/TOOL_CALL_ACCURACY_SPEC.md)
 - [PR3/PR4 Handoff Notes](archive/CODEX_HANDOFF_PR3_PR4_AND_REMAINING_WORK.md)
 - [PR4 Scope](archive/PR4_SCOPE_LEARN_PROMOTE_PACK_AND_AGENTS.md)
 - [PR5 Scope](archive/PR5_SCOPE_ASSISTED_LEARN_CAPTURE.md)
