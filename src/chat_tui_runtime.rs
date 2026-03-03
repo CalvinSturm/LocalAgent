@@ -327,6 +327,32 @@ struct TuiActiveTurnLoopInput<'a> {
     learn_overlay_cursor: &'a mut usize,
 }
 
+fn push_approvals_refresh_error_once(logs: &mut Vec<String>, err: &anyhow::Error) {
+    let msg = format!("approvals refresh failed: {err}");
+    if !logs.iter().any(|l| l == &msg) {
+        logs.push(msg);
+    }
+}
+
+fn refresh_approvals_with_auto_open(
+    ui_state: &mut UiState,
+    approvals_path: &std::path::Path,
+    show_approvals: &mut bool,
+    previous_pending: &mut usize,
+    logs: &mut Vec<String>,
+) {
+    match ui_state.refresh_approvals(approvals_path) {
+        Ok(()) => {
+            let now_pending = ui_state.pending_approval_count();
+            if *previous_pending == 0 && now_pending > 0 {
+                *show_approvals = true;
+            }
+            *previous_pending = now_pending;
+        }
+        Err(e) => push_approvals_refresh_error_once(logs, &e),
+    }
+}
+
 async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow::Result<()> {
     let TuiActiveTurnLoopInput {
         terminal,
@@ -374,11 +400,30 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
 
     let tool_row_count = if compact_tools { 20 } else { 12 };
     let mut active_queue_rows: BTreeMap<String, ActiveQueueRow> = BTreeMap::new();
+    let mut previous_pending_approvals = ui_state.pending_approval_count();
 
     loop {
         ui_state.on_tick(Instant::now());
+        refresh_approvals_with_auto_open(
+            ui_state,
+            &paths.approvals_path,
+            show_approvals,
+            &mut previous_pending_approvals,
+            logs,
+        );
         while let Ok(ev) = rx.try_recv() {
             ui_state.apply_event(&ev);
+            if matches!(ev.kind, EventKind::ToolDecision)
+                && ev.data.get("decision").and_then(|v| v.as_str()) == Some("require_approval")
+            {
+                refresh_approvals_with_auto_open(
+                    ui_state,
+                    &paths.approvals_path,
+                    show_approvals,
+                    &mut previous_pending_approvals,
+                    logs,
+                );
+            }
             match ev.kind {
                 EventKind::QueueSubmitted => {
                     if let Some(queue_id) = ev.data.get("queue_id").and_then(|v| v.as_str()) {
@@ -661,9 +706,13 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                             }
                         }
                         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if let Err(e) = ui_state.refresh_approvals(&paths.approvals_path) {
-                                logs.push(format!("approvals refresh failed: {e}"));
-                            }
+                            refresh_approvals_with_auto_open(
+                                ui_state,
+                                &paths.approvals_path,
+                                show_approvals,
+                                &mut previous_pending_approvals,
+                                logs,
+                            );
                         }
                         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             if let Some(row) = ui_state.pending_approvals.get(*approvals_selected) {
@@ -673,7 +722,13 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                                 } else {
                                     logs.push(format!("approved {}", row.id));
                                 }
-                                let _ = ui_state.refresh_approvals(&paths.approvals_path);
+                                refresh_approvals_with_auto_open(
+                                    ui_state,
+                                    &paths.approvals_path,
+                                    show_approvals,
+                                    &mut previous_pending_approvals,
+                                    logs,
+                                );
                             }
                         }
                         KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -684,7 +739,13 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                                 } else {
                                     logs.push(format!("denied {}", row.id));
                                 }
-                                let _ = ui_state.refresh_approvals(&paths.approvals_path);
+                                refresh_approvals_with_auto_open(
+                                    ui_state,
+                                    &paths.approvals_path,
+                                    show_approvals,
+                                    &mut previous_pending_approvals,
+                                    logs,
+                                );
                             }
                         }
                         KeyCode::Backspace => {
@@ -2211,11 +2272,17 @@ fn handle_tui_outer_key_dispatch(
             TuiOuterKeyDispatchOutcome::Handled
         }
         KeyCode::Char('r') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let before_pending = input.ui_state.pending_approval_count();
             if let Err(e) = input
                 .ui_state
                 .refresh_approvals(&input.paths.approvals_path)
             {
-                input.logs.push(format!("approvals refresh failed: {e}"));
+                push_approvals_refresh_error_once(input.logs, &e);
+            } else {
+                let now_pending = input.ui_state.pending_approval_count();
+                if before_pending == 0 && now_pending > 0 {
+                    *input.show_approvals = true;
+                }
             }
             TuiOuterKeyDispatchOutcome::Handled
         }
@@ -2231,9 +2298,18 @@ fn handle_tui_outer_key_dispatch(
                 } else {
                     input.logs.push(format!("approved {}", row.id));
                 }
-                let _ = input
+                let before_pending = input.ui_state.pending_approval_count();
+                if let Err(e) = input
                     .ui_state
-                    .refresh_approvals(&input.paths.approvals_path);
+                    .refresh_approvals(&input.paths.approvals_path)
+                {
+                    push_approvals_refresh_error_once(input.logs, &e);
+                } else {
+                    let now_pending = input.ui_state.pending_approval_count();
+                    if before_pending == 0 && now_pending > 0 {
+                        *input.show_approvals = true;
+                    }
+                }
             }
             TuiOuterKeyDispatchOutcome::Handled
         }
@@ -2249,9 +2325,18 @@ fn handle_tui_outer_key_dispatch(
                 } else {
                     input.logs.push(format!("denied {}", row.id));
                 }
-                let _ = input
+                let before_pending = input.ui_state.pending_approval_count();
+                if let Err(e) = input
                     .ui_state
-                    .refresh_approvals(&input.paths.approvals_path);
+                    .refresh_approvals(&input.paths.approvals_path)
+                {
+                    push_approvals_refresh_error_once(input.logs, &e);
+                } else {
+                    let now_pending = input.ui_state.pending_approval_count();
+                    if before_pending == 0 && now_pending > 0 {
+                        *input.show_approvals = true;
+                    }
+                }
             }
             TuiOuterKeyDispatchOutcome::Handled
         }
@@ -3039,12 +3124,20 @@ pub(crate) async fn run_chat_tui(
     ui_state.model = model.clone();
     ui_state.caps_source = format!("{:?}", base_run.caps).to_lowercase();
     ui_state.policy_hash = "-".to_string();
+    let mut previous_pending_approvals = ui_state.pending_approval_count();
     let mut streaming_assistant = String::new();
     let mut input_cursor = char_len(&input);
 
     let run_result: anyhow::Result<()> = async {
         loop {
             ui_state.on_tick(Instant::now());
+            refresh_approvals_with_auto_open(
+                &mut ui_state,
+                &paths.approvals_path,
+                &mut show_approvals,
+                &mut previous_pending_approvals,
+                &mut logs,
+            );
             let frame = build_tui_render_frame_input(TuiRenderFrameBuildInput {
                 active_run: &active_run,
                 provider_kind,
@@ -4497,5 +4590,70 @@ mod tests {
 
         let ov = overlay.expect("overlay still open");
         assert_eq!(ov.summary, "q");
+    }
+
+    #[test]
+    fn refresh_approvals_auto_opens_on_first_pending_transition() {
+        let tmp = tempdir().expect("tempdir");
+        let approvals_path = tmp.path().join("approvals.json");
+        let store = super::ApprovalsStore::new(approvals_path.clone());
+        let _id = store
+            .create_pending("shell", &serde_json::json!({"cmd":"echo"}), None, None)
+            .expect("pending");
+
+        let mut ui_state = crate::tui::state::UiState::new(20);
+        let mut show_approvals = false;
+        let mut previous_pending = 0usize;
+        let mut logs = Vec::new();
+
+        super::refresh_approvals_with_auto_open(
+            &mut ui_state,
+            &approvals_path,
+            &mut show_approvals,
+            &mut previous_pending,
+            &mut logs,
+        );
+
+        assert!(show_approvals);
+        assert_eq!(previous_pending, 1);
+        assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn refresh_approvals_failure_logs_once_and_preserves_rows() {
+        let tmp = tempdir().expect("tempdir");
+        let approvals_path = tmp.path().join("approvals.json");
+        std::fs::write(&approvals_path, "{not-json").expect("write broken json");
+
+        let mut ui_state = crate::tui::state::UiState::new(20);
+        ui_state.pending_approvals = vec![crate::tui::state::ApprovalRow {
+            id: "existing".to_string(),
+            tool: "shell".to_string(),
+            status: "pending".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }];
+        let mut show_approvals = false;
+        let mut previous_pending = 1usize;
+        let mut logs = Vec::new();
+
+        super::refresh_approvals_with_auto_open(
+            &mut ui_state,
+            &approvals_path,
+            &mut show_approvals,
+            &mut previous_pending,
+            &mut logs,
+        );
+        super::refresh_approvals_with_auto_open(
+            &mut ui_state,
+            &approvals_path,
+            &mut show_approvals,
+            &mut previous_pending,
+            &mut logs,
+        );
+
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].starts_with("approvals refresh failed:"));
+        assert_eq!(ui_state.pending_approvals.len(), 1);
+        assert_eq!(ui_state.pending_approvals[0].id, "existing");
     }
 }

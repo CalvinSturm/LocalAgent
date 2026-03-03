@@ -868,6 +868,13 @@ impl UiState {
         Ok(())
     }
 
+    pub fn pending_approval_count(&self) -> usize {
+        self.pending_approvals
+            .iter()
+            .filter(|r| r.status == "pending")
+            .count()
+    }
+
     pub fn push_log(&mut self, line: String) {
         self.logs.push(line);
         if self.logs.len() > self.max_log_lines {
@@ -1116,7 +1123,7 @@ mod tests {
     use crate::events::{Event, EventKind};
     use crate::trust::approvals::ApprovalsStore;
 
-    use super::UiState;
+    use super::{ApprovalRow, UiState};
 
     #[test]
     fn apply_event_model_delta_appends() {
@@ -1353,6 +1360,32 @@ mod tests {
             rows2.get(&id2),
             Some(&("pending".to_string(), "write_file".to_string()))
         );
+    }
+
+    #[test]
+    fn pending_approval_count_counts_pending_only() {
+        let mut s = UiState::new(10);
+        s.pending_approvals = vec![
+            ApprovalRow {
+                id: "a1".to_string(),
+                tool: "shell".to_string(),
+                status: "pending".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            ApprovalRow {
+                id: "a2".to_string(),
+                tool: "write_file".to_string(),
+                status: "approved".to_string(),
+                created_at: "2026-01-01T00:00:01Z".to_string(),
+            },
+            ApprovalRow {
+                id: "a3".to_string(),
+                tool: "shell".to_string(),
+                status: "denied".to_string(),
+                created_at: "2026-01-01T00:00:02Z".to_string(),
+            },
+        ];
+        assert_eq!(s.pending_approval_count(), 1);
     }
 
     #[test]

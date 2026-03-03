@@ -25,7 +25,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
         state.mcp_pin_enforcement,
         state.total_tool_execs,
         state.filesystem_write_execs,
-        state.pending_approvals.len(),
+        state.pending_approval_count(),
         state.mcp_status_compact(),
         state.mcp_pin_state,
         if state.schema_repair_seen { "FIX" } else { "OK" },

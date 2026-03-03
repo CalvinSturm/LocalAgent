@@ -411,6 +411,12 @@ Chat TUI slash commands:
 - `/learn` (opens Learn Overlay)
 - `/learn help|list|show|archive|capture|promote` (typed learn commands)
 
+TUI approvals controls:
+- `Ctrl+J/K` select approval row
+- `Ctrl+A` approve selected
+- `Ctrl+X` deny selected
+- `Ctrl+R` refresh approvals list
+
 Mode naming note:
 
 - `/mode coding` is the command token.
