@@ -827,15 +827,18 @@ impl UiState {
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown error");
-        self.push_log(format!("error: {msg}"));
-        if ev
+        let source = ev
             .data
             .get("source")
             .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            == "plan_halt_guard"
-        {
+            .unwrap_or_default();
+        self.push_log(format!("error: {msg}"));
+        if source == "plan_halt_guard" {
             self.next_hint = "blocked(plan)".to_string();
+        }
+        if source == "tool_protocol_guard" {
+            self.close_running_tools("FAIL:protocol", "protocol");
+            self.next_hint = "blocked(protocol)".to_string();
         }
     }
 
@@ -858,6 +861,23 @@ impl UiState {
             "network" => self.network_execs = self.network_execs.saturating_add(1),
             "browser" => self.browser_execs = self.browser_execs.saturating_add(1),
             _ => {}
+        }
+    }
+
+    fn close_running_tools(&mut self, status: &str, reason_token: &str) {
+        for row in &mut self.tool_calls {
+            if row.status == "running" || row.status == "STALL" {
+                row.status = status.to_string();
+                row.reason_token = reason_token.to_string();
+                row.running_since = None;
+                row.running_for_ms = 0;
+                if row.ok.is_none() {
+                    row.ok = Some(false);
+                }
+                if row.short_result.trim().is_empty() {
+                    row.short_result = "closed on protocol error".to_string();
+                }
+            }
         }
     }
 
@@ -1475,6 +1495,28 @@ mod tests {
         assert!(s.tool_calls[0]
             .short_result
             .contains("closed on run_end without tool_exec_end"));
+    }
+
+    #[test]
+    fn tool_protocol_guard_error_closes_running_tool_row() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecStart,
+            serde_json::json!({"tool_call_id":"tc1","name":"apply_patch","side_effects":"filesystem_write"}),
+        ));
+        assert_eq!(s.tool_calls[0].status, "running");
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::Error,
+            serde_json::json!({"source":"tool_protocol_guard","error":"MODEL_TOOL_PROTOCOL_VIOLATION"}),
+        ));
+        assert_eq!(s.tool_calls[0].status, "FAIL:protocol");
+        assert_eq!(s.tool_calls[0].reason_token, "protocol");
+        assert_eq!(s.tool_calls[0].ok, Some(false));
+        assert_eq!(s.next_hint, "blocked(protocol)");
     }
 
     #[test]

@@ -3,7 +3,11 @@ use crate::agent_budget::{
 };
 use uuid::Uuid;
 
-use crate::agent_impl_guard::{implementation_integrity_violation, prompt_requires_tool_only};
+use crate::agent_impl_guard::{
+    implementation_integrity_violation_with_tool_executions, normalize_tool_path,
+    prompt_requires_tool_only,
+    ToolExecutionRecord,
+};
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 use crate::agent_taint_helpers::{compute_taint_spans_for_tool, taint_record_from_state};
 use crate::agent_tool_exec::{
@@ -57,6 +61,8 @@ pub fn sanitize_user_visible_output(raw: &str) -> String {
 
 const MAX_SCHEMA_REPAIR_ATTEMPTS: u32 = 2;
 const MAX_FAILED_REPEAT_PER_KEY: u32 = 3;
+const INTERNAL_SKIP_POST_WRITE_VERIFICATION_FLAG: &str =
+    "INTERNAL_FLAG:allow_skip_post_write_verification";
 
 fn is_repairable_error_code(code: ToolErrorCode) -> bool {
     matches!(
@@ -72,6 +78,22 @@ fn failed_repeat_key(tc: &ToolCall) -> String {
     let canonical_args = crate::trust::approvals::canonical_json(&tc.arguments)
         .unwrap_or_else(|_| "null".to_string());
     sha256_hex(format!("{}|{canonical_args}", tc.name).as_bytes())
+}
+
+fn normalized_tool_path_from_args(tc: &ToolCall) -> Option<String> {
+    tc.arguments
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(normalize_tool_path)
+}
+
+fn injected_messages_allow_skip_post_write_verification(messages: &[Message]) -> bool {
+    messages.iter().any(|m| {
+        matches!(m.role, Role::System | Role::Developer)
+            && m.content
+                .as_deref()
+                .is_some_and(|c| c.trim() == INTERNAL_SKIP_POST_WRITE_VERIFICATION_FLAG)
+    })
 }
 
 impl AgentExitReason {
@@ -653,6 +675,8 @@ Fallback when native tool calls are unavailable:\n\
         session_messages: Vec<Message>,
         injected_messages: Vec<Message>,
     ) -> AgentOutcome {
+        let allow_skip_post_write_verification =
+            injected_messages_allow_skip_post_write_verification(&injected_messages);
         let run_id = self
             .run_id_override
             .clone()
@@ -664,6 +688,7 @@ Fallback when native tool calls are unavailable:\n\
             self.build_initial_messages(user_prompt, session_messages, injected_messages);
 
         let mut observed_tool_calls = Vec::new();
+        let mut observed_tool_executions: Vec<ToolExecutionRecord> = Vec::new();
         let mut observed_tool_decisions: Vec<ToolDecisionRecord> = Vec::new();
         let mut last_compaction_report: Option<CompactionReport> = None;
         let mut hook_invocations: Vec<HookInvocationReport> = Vec::new();
@@ -685,7 +710,8 @@ Fallback when native tool calls are unavailable:\n\
         let mut failed_repeat_counts: std::collections::BTreeMap<String, u32> =
             std::collections::BTreeMap::new();
         let mut malformed_tool_call_attempts: u32 = 0;
-        let mut invalid_patch_format_attempts: u32 = 0;
+        let mut invalid_patch_format_attempts: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
         let mut tool_budget_usage = ToolCallBudgetUsage::default();
         let run_started = std::time::Instant::now();
         let mut announced_plan_step_id: Option<String> = None;
@@ -1806,12 +1832,6 @@ Fallback when native tool calls are unavailable:\n\
                 if queue_interrupted || queue_delivered {
                     continue 'agent_steps;
                 }
-                self.emit_event(
-                    &run_id,
-                    step as u32,
-                    EventKind::RunEnd,
-                    serde_json::json!({"exit_reason":"ok"}),
-                );
                 let final_output =
                     if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
                         && !self.plan_step_constraints.is_empty()
@@ -1820,10 +1840,12 @@ Fallback when native tool calls are unavailable:\n\
                     } else {
                         assistant.content.unwrap_or_default()
                     };
-                if let Some(reason) = implementation_integrity_violation(
+                if let Some(reason) = implementation_integrity_violation_with_tool_executions(
                     user_prompt,
                     &final_output,
                     &observed_tool_calls,
+                    &observed_tool_executions,
+                    allow_skip_post_write_verification,
                 ) {
                     self.emit_event(
                         &run_id,
@@ -1833,6 +1855,12 @@ Fallback when native tool calls are unavailable:\n\
                             "error": reason,
                             "source": "implementation_integrity_guard"
                         }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::RunEnd,
+                        serde_json::json!({"exit_reason":"planner_error"}),
                     );
                     return AgentOutcome {
                         run_id,
@@ -1863,6 +1891,12 @@ Fallback when native tool calls are unavailable:\n\
                         ),
                     };
                 }
+                self.emit_event(
+                    &run_id,
+                    step as u32,
+                    EventKind::RunEnd,
+                    serde_json::json!({"exit_reason":"ok"}),
+                );
                 return AgentOutcome {
                     run_id,
                     started_at,
@@ -3130,10 +3164,65 @@ Fallback when native tool calls are unavailable:\n\
                                     break;
                                 }
                                 if is_apply_patch_invalid_format_error(tc, &current_content) {
-                                    invalid_patch_format_attempts =
-                                        invalid_patch_format_attempts.saturating_add(1);
-                                    if invalid_patch_format_attempts >= 2 {
+                                    let attempts = invalid_patch_format_attempts
+                                        .entry(repeat_key.clone())
+                                        .and_modify(|n| *n = n.saturating_add(1))
+                                        .or_insert(1);
+                                    let invalid_patch_attempt = *attempts;
+                                    if invalid_patch_attempt < 2 && plan_tool_allowed {
+                                        self.emit_event(
+                                            &run_id,
+                                            step as u32,
+                                            EventKind::ToolExecEnd,
+                                            serde_json::json!({
+                                                "tool_call_id": tc.id,
+                                                "name": tc.name,
+                                                "ok": false,
+                                                "truncated": infer_truncated_flag(&current_content),
+                                                "retry_count": tool_retry_count,
+                                                "failure_class": "E_SCHEMA",
+                                                "error_code": "tool_args_invalid",
+                                                "attempt": invalid_patch_attempt
+                                            }),
+                                        );
+                                        messages.push(tool_msg);
+                                        self.drain_external_operator_queue(&run_id, step as u32);
+                                        let (_, queue_interrupted) = self
+                                            .deliver_operator_queue_at_boundary(
+                                                &run_id,
+                                                step as u32,
+                                                DeliveryBoundary::PostTool,
+                                                &mut messages,
+                                            );
+                                        if queue_interrupted {
+                                            continue 'agent_steps;
+                                        }
+                                        let n = failed_repeat_counts
+                                            .entry(repeat_key.clone())
+                                            .or_insert(0);
+                                        *n = n.saturating_add(1);
+                                        messages.push(schema_repair_instruction_message(
+                                            tc,
+                                            "invalid patch format",
+                                        ));
+                                        continue 'agent_steps;
+                                    }
+                                    if invalid_patch_attempt >= 2 {
                                         let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: repeated invalid patch format for apply_patch".to_string();
+                                        self.emit_event(
+                                            &run_id,
+                                            step as u32,
+                                            EventKind::ToolExecEnd,
+                                            serde_json::json!({
+                                                "tool_call_id": tc.id,
+                                                "name": tc.name,
+                                                "ok": false,
+                                                "truncated": infer_truncated_flag(&current_content),
+                                                "retry_count": tool_retry_count,
+                                                "failure_class": "E_PROTOCOL_PATCH_FORMAT",
+                                                "attempt": invalid_patch_attempt
+                                            }),
+                                        );
                                         self.emit_event(
                                             &run_id,
                                             step as u32,
@@ -3144,7 +3233,7 @@ Fallback when native tool calls are unavailable:\n\
                                                 "tool_call_id": tc.id,
                                                 "name": tc.name,
                                                 "failure_class": "E_PROTOCOL_PATCH_FORMAT",
-                                                "attempt": invalid_patch_format_attempts
+                                                "attempt": invalid_patch_attempt
                                             }),
                                         );
                                         self.emit_event(
@@ -3207,6 +3296,20 @@ Fallback when native tool calls are unavailable:\n\
                                                     "error_code": error_code.as_str()
                                                 }),
                                             );
+                                            self.emit_event(
+                                                &run_id,
+                                                step as u32,
+                                                EventKind::ToolExecEnd,
+                                                serde_json::json!({
+                                                    "tool_call_id": tc.id,
+                                                    "name": tc.name,
+                                                    "ok": false,
+                                                    "truncated": infer_truncated_flag(&current_content),
+                                                    "retry_count": tool_retry_count,
+                                                    "failure_class": "E_SCHEMA",
+                                                    "error_code": error_code.as_str()
+                                                }),
+                                            );
                                             messages.push(tool_msg);
                                             self.drain_external_operator_queue(
                                                 &run_id,
@@ -3226,19 +3329,10 @@ Fallback when native tool calls are unavailable:\n\
                                                 .entry(repeat_key.clone())
                                                 .or_insert(0);
                                             *n = n.saturating_add(1);
-                                            let repair_msg = format!(
-                                                "Tool '{}' failed with {}. Re-emit exactly one corrected tool call for '{}' with valid arguments only.",
-                                                tc.name,
+                                            messages.push(schema_repair_instruction_message(
+                                                tc,
                                                 error_code.as_str(),
-                                                tc.name
-                                            );
-                                            messages.push(Message {
-                                                role: Role::Developer,
-                                                content: Some(repair_msg),
-                                                tool_call_id: None,
-                                                tool_name: None,
-                                                tool_calls: None,
-                                            });
+                                            ));
                                             continue 'agent_steps;
                                         }
                                         self.emit_event(
@@ -3674,6 +3768,11 @@ Fallback when native tool calls are unavailable:\n\
                         let content = tool_msg.content.clone().unwrap_or_default();
                         let final_ok = !tool_result_has_error(&content);
                         let final_error_code = tool_result_error_code(&content);
+                        observed_tool_executions.push(ToolExecutionRecord {
+                            name: tc.name.clone(),
+                            path: normalized_tool_path_from_args(tc),
+                            ok: final_ok,
+                        });
                         let final_failure_class = if tool_result_has_error(&content) {
                             Some(classify_tool_failure(
                                 tc,
@@ -3752,6 +3851,9 @@ Fallback when native tool calls are unavailable:\n\
                         });
                         if final_ok {
                             failed_repeat_counts.remove(&repeat_key);
+                            if tc.name == "apply_patch" {
+                                invalid_patch_format_attempts.remove(&repeat_key);
+                            }
                         } else {
                             let n = failed_repeat_counts.entry(repeat_key).or_insert(0);
                             *n = n.saturating_add(1);

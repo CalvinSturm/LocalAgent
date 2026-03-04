@@ -176,9 +176,11 @@ pub(crate) fn is_apply_patch_invalid_format_error(tc: &ToolCall, raw_content: &s
         return false;
     }
     let text = tool_result_text(raw_content).to_ascii_lowercase();
-    text.contains("invalid patch format")
-        || text.contains("invalid patch:")
-        || text.contains("failed to apply patch:")
+    is_apply_patch_parse_error_text(&text)
+}
+
+fn is_apply_patch_parse_error_text(text: &str) -> bool {
+    text.contains("invalid patch format") || text.contains("invalid patch:")
 }
 
 pub(crate) fn tool_result_text(raw: &str) -> String {
@@ -255,11 +257,27 @@ pub(crate) fn make_invalid_args_tool_message(
 }
 
 pub(crate) fn schema_repair_instruction_message(tc: &ToolCall, err: &str) -> Message {
+    let err_lower = err.to_ascii_lowercase();
+    let guidance = if tc.name == "apply_patch" {
+        " Use read_file first, then emit exactly one apply_patch with a minimal unified diff and a valid '@@ -old,+new @@' hunk header. Use a relative path within workdir (example: 'src/main.rs'), never an absolute path."
+    } else if tc.name == "write_file"
+        || err_lower.contains("overwrite_existing")
+        || err_lower.contains("existing file")
+    {
+        " If the target file already exists, do not overwrite it. Read the file first and use apply_patch for in-place edits."
+    } else if err_lower.contains("tool_path_denied")
+        || err_lower.contains("path must stay within workdir")
+        || err_lower.contains("absolute path")
+    {
+        " Use a relative path inside the current workdir only (no absolute paths and no '..' traversal)."
+    } else {
+        ""
+    };
     Message {
         role: Role::Developer,
         content: Some(format!(
-            "Schema repair required for tool '{}': {}. Re-emit exactly one corrected tool call for '{}' with valid arguments only.",
-            tc.name, err, tc.name
+            "Schema repair required for tool '{}': {}. Re-emit exactly one corrected tool call for '{}' with valid arguments only.{}",
+            tc.name, err, tc.name, guidance
         )),
         tool_call_id: None,
         tool_name: None,
@@ -392,4 +410,41 @@ pub(crate) fn find_json_bounds(s: &str) -> Option<(usize, usize)> {
         return None;
     }
     Some((start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_apply_patch_invalid_format_error;
+    use crate::types::ToolCall;
+    use serde_json::json;
+
+    #[test]
+    fn apply_patch_invalid_format_detects_parse_error() {
+        let tc = ToolCall {
+            id: "tc1".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({"path":"main.rs","patch":"bad"}),
+        };
+        let raw = json!({
+            "ok": false,
+            "content": "invalid patch: error parsing patch: Hunk header does not match hunk"
+        })
+        .to_string();
+        assert!(is_apply_patch_invalid_format_error(&tc, &raw));
+    }
+
+    #[test]
+    fn apply_patch_invalid_format_ignores_hunk_apply_error() {
+        let tc = ToolCall {
+            id: "tc1".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({"path":"main.rs","patch":"@@ -1 +1 @@\n-a\n+b\n"}),
+        };
+        let raw = json!({
+            "ok": false,
+            "content": "failed to apply patch: error applying hunk #1"
+        })
+        .to_string();
+        assert!(!is_apply_patch_invalid_format_error(&tc, &raw));
+    }
 }

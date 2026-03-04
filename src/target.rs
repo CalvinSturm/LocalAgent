@@ -198,7 +198,7 @@ impl ExecTarget for HostTarget {
                 TargetResult {
                     ok: true,
                     content: json!({
-                        "path": full.display().to_string(),
+                        "path": req.path,
                         "content": content,
                         "truncated": truncated,
                         "max_read_bytes": req.max_read_bytes,

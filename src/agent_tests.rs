@@ -465,6 +465,172 @@ fn implementation_guard_accepts_post_write_read_back() {
 }
 
 #[test]
+fn implementation_guard_patch_only_marker_allows_missing_post_write_read_back() {
+    let calls = vec![
+        crate::types::ToolCall {
+            id: "tc1".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"main.rs"}),
+        },
+        crate::types::ToolCall {
+            id: "tc2".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({"path":"main.rs","patch":"@@ -1 +1 @@\n-a\n+b\n"}),
+        },
+    ];
+    let executions = vec![
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some("main.rs".to_string()),
+            ok: true,
+        },
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "apply_patch".to_string(),
+            path: Some("main.rs".to_string()),
+            ok: true,
+        },
+    ];
+    let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+        "Edit main.rs using apply_patch and confirm done.",
+        "done",
+        &calls,
+        &executions,
+        true,
+    );
+    assert!(err.is_none(), "expected no guard failure, got: {err:?}");
+}
+
+#[test]
+fn implementation_guard_requires_successful_read_before_apply_patch() {
+    let calls = vec![
+        crate::types::ToolCall {
+            id: "tc1".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"chess.html"}),
+        },
+        crate::types::ToolCall {
+            id: "tc2".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({"path":"chess.html","patch":"@@ -1 +1 @@\n-a\n+b\n"}),
+        },
+    ];
+    let executions = vec![
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some("chess.html".to_string()),
+            ok: false,
+        },
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "apply_patch".to_string(),
+            path: Some("chess.html".to_string()),
+            ok: true,
+        },
+    ];
+    let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+        "improve chess.html file",
+        "done",
+        &calls,
+        &executions,
+        false,
+    )
+    .expect("expected guard failure");
+    assert!(err.contains("apply_patch on 'chess.html' requires prior read_file"));
+}
+
+#[test]
+fn implementation_guard_requires_successful_post_write_read_back() {
+    let calls = vec![
+        crate::types::ToolCall {
+            id: "tc1".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"chess.html"}),
+        },
+        crate::types::ToolCall {
+            id: "tc2".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({"path":"chess.html","patch":"@@ -1 +1 @@\n-a\n+b\n"}),
+        },
+        crate::types::ToolCall {
+            id: "tc3".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"chess.html"}),
+        },
+    ];
+    let executions = vec![
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some("chess.html".to_string()),
+            ok: true,
+        },
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "apply_patch".to_string(),
+            path: Some("chess.html".to_string()),
+            ok: true,
+        },
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some("chess.html".to_string()),
+            ok: false,
+        },
+    ];
+    let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+        "improve chess.html file",
+        "done",
+        &calls,
+        &executions,
+        false,
+    )
+    .expect("expected guard failure");
+    assert!(err.contains("post-write verification missing read_file on 'chess.html'"));
+}
+
+#[test]
+fn implementation_guard_accepts_dot_prefixed_post_write_read_back() {
+    let calls = vec![
+        crate::types::ToolCall {
+            id: "tc1".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"./main.rs"}),
+        },
+        crate::types::ToolCall {
+            id: "tc2".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({"path":"main.rs","patch":"@@ -1 +1 @@\n-a\n+b\n"}),
+        },
+        crate::types::ToolCall {
+            id: "tc3".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"./main.rs"}),
+        },
+    ];
+    let executions = vec![
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some(crate::agent_impl_guard::normalize_tool_path("./main.rs")),
+            ok: true,
+        },
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "apply_patch".to_string(),
+            path: Some(crate::agent_impl_guard::normalize_tool_path("main.rs")),
+            ok: true,
+        },
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some(crate::agent_impl_guard::normalize_tool_path("./main.rs")),
+            ok: true,
+        },
+    ];
+    let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+        "improve main.rs file",
+        "done",
+        &calls,
+        &executions,
+        false,
+    );
+    assert!(err.is_none(), "dot-prefixed read_file should satisfy verification");
+}
+
+#[test]
 fn wrapped_tool_call_content_is_parsed() {
     let raw =
         "[TOOL_CALL]\n{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}\n[END_TOOL_CALL]";
@@ -865,7 +1031,37 @@ impl ModelProvider for AlwaysInvalidPatchProvider {
                 name: "apply_patch".to_string(),
                 arguments: serde_json::json!({
                     "path":"a.txt",
-                    "patch":"@@ -1 +1 @@\n-no-match\n+new\n"
+                    "patch":"@@ -1 +1 @@\n"
+                }),
+            }],
+            usage: None,
+        })
+    }
+}
+
+struct UniqueInvalidPatchProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ModelProvider for UniqueInvalidPatchProvider {
+    async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let path = format!("p{n}.txt");
+        Ok(GenerateResponse {
+            assistant: Message {
+                role: Role::Assistant,
+                content: Some(String::new()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            },
+            tool_calls: vec![crate::types::ToolCall {
+                id: format!("tc_bad_patch_{n}"),
+                name: "apply_patch".to_string(),
+                arguments: serde_json::json!({
+                    "path": path,
+                    "patch":"@@ -1 +1 @@\n"
                 }),
             }],
             usage: None,
@@ -1177,7 +1373,7 @@ async fn operator_interrupt_delivers_post_tool_and_cancels_remaining_turn_work()
             parameters: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
             side_effects: crate::types::SideEffects::FilesystemRead,
         }],
-        max_steps: 4,
+        max_steps: 2,
         tool_rt: ToolRuntime {
             workdir: tmp.path().to_path_buf(),
             allow_shell: false,
@@ -2124,6 +2320,7 @@ async fn repeated_failed_unknown_tool_calls_are_blocked_by_repeat_guard() {
 #[tokio::test]
 async fn repeated_invalid_patch_format_fails_fast_with_protocol_violation() {
     let tmp = tempfile::tempdir().expect("tmp");
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
     tokio::fs::write(tmp.path().join("a.txt"), "hello\n")
         .await
         .expect("write");
@@ -2145,6 +2342,126 @@ async fn repeated_invalid_patch_format_fails_fast_with_protocol_violation() {
             side_effects: crate::types::SideEffects::FilesystemWrite,
         }],
         max_steps: 8,
+        tool_rt: ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_write: true,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Ollama,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        mcp_registry: None,
+        stream: false,
+        event_sink: Some(Box::new(EventCaptureSink {
+            events: events.clone(),
+        })),
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    };
+    let out = agent.run("hi", vec![], Vec::new()).await;
+    assert!(
+        matches!(out.exit_reason, AgentExitReason::PlannerError),
+        "unexpected exit={:?} error={:?}",
+        out.exit_reason,
+        out.error
+    );
+    assert!(out
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("repeated invalid patch format"));
+    let evs = events.lock().expect("lock");
+    let starts = evs
+        .iter()
+        .filter(|e| matches!(e.kind, crate::events::EventKind::ToolExecStart))
+        .count();
+    let ends = evs
+        .iter()
+        .filter(|e| matches!(e.kind, crate::events::EventKind::ToolExecEnd))
+        .count();
+    assert_eq!(starts, ends, "tool exec start/end mismatch");
+}
+
+#[tokio::test]
+async fn invalid_patch_format_attempts_are_scoped_per_tool_key() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut agent = Agent {
+        provider: UniqueInvalidPatchProvider {
+            calls: calls.clone(),
+        },
+        model: "m".to_string(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        tools: vec![crate::types::ToolDef {
+            name: "apply_patch".to_string(),
+            description: "d".to_string(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "properties":{"path":{"type":"string"},"patch":{"type":"string"}},
+                "required":["path","patch"]
+            }),
+            side_effects: crate::types::SideEffects::FilesystemWrite,
+        }],
+        max_steps: 4,
         tool_rt: ToolRuntime {
             workdir: tmp.path().to_path_buf(),
             allow_shell: false,
@@ -2217,16 +2534,18 @@ async fn repeated_invalid_patch_format_fails_fast_with_protocol_violation() {
     };
     let out = agent.run("hi", vec![], Vec::new()).await;
     assert!(
-        matches!(out.exit_reason, AgentExitReason::PlannerError),
-        "unexpected exit={:?} error={:?}",
-        out.exit_reason,
+        !matches!(out.exit_reason, AgentExitReason::PlannerError),
+        "unexpected planner_error={:?}",
         out.error
     );
-    assert!(out
-        .error
-        .as_deref()
-        .unwrap_or_default()
-        .contains("repeated invalid patch format"));
+    assert!(
+        !out.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("repeated invalid patch format"),
+        "unexpected repeated-invalid error: {:?}",
+        out.error
+    );
 }
 
 #[tokio::test]

@@ -1,9 +1,44 @@
 use crate::types::ToolCall;
 
+#[derive(Debug, Clone)]
+pub(crate) struct ToolExecutionRecord {
+    pub name: String,
+    pub path: Option<String>,
+    pub ok: bool,
+}
+
 pub(crate) fn implementation_integrity_violation(
     user_prompt: &str,
     final_output: &str,
     observed_tool_calls: &[ToolCall],
+) -> Option<String> {
+    let tool_executions = observed_tool_calls
+        .iter()
+        .map(|call| ToolExecutionRecord {
+            name: call.name.clone(),
+            path: call
+                .arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(normalize_tool_path),
+            ok: true,
+        })
+        .collect::<Vec<_>>();
+    implementation_integrity_violation_with_tool_executions(
+        user_prompt,
+        final_output,
+        observed_tool_calls,
+        &tool_executions,
+        false,
+    )
+}
+
+pub(crate) fn implementation_integrity_violation_with_tool_executions(
+    user_prompt: &str,
+    final_output: &str,
+    observed_tool_calls: &[ToolCall],
+    tool_executions: &[ToolExecutionRecord],
+    allow_skip_post_write_verification: bool,
 ) -> Option<String> {
     if !is_implementation_task_prompt(user_prompt) {
         return None;
@@ -18,65 +53,72 @@ pub(crate) fn implementation_integrity_violation(
             "implementation guard: final answer contains placeholder artifacts instead of concrete implementation".to_string(),
         );
     }
-    let mut read_paths = std::collections::BTreeSet::<String>::new();
+    let mut successful_read_paths = std::collections::BTreeSet::<String>::new();
     let mut pending_post_write_verification = std::collections::BTreeSet::<String>::new();
     let allow_new_file_without_read = prompt_allows_new_file_without_read(user_prompt);
-    for call in observed_tool_calls {
-        match call.name.as_str() {
+    for execution in tool_executions {
+        if !execution.ok {
+            continue;
+        }
+        match execution.name.as_str() {
             "read_file" => {
-                if let Some(path) = call
-                    .arguments
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(normalize_tool_path)
-                {
-                    read_paths.insert(path.clone());
-                    pending_post_write_verification.remove(&path);
+                if let Some(path) = &execution.path {
+                    successful_read_paths.insert(path.clone());
+                    pending_post_write_verification.remove(path);
                 }
             }
             "apply_patch" => {
-                if let Some(path) = call
-                    .arguments
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(normalize_tool_path)
-                {
-                    if !read_paths.contains(&path) {
+                if let Some(path) = &execution.path {
+                    if !successful_read_paths.contains(path) {
                         return Some(format!(
                             "implementation guard: apply_patch on '{path}' requires prior read_file on the same path"
                         ));
                     }
-                    pending_post_write_verification.insert(path);
+                    pending_post_write_verification.insert(path.clone());
                 }
             }
             "write_file" => {
-                if let Some(path) = call
-                    .arguments
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(normalize_tool_path)
-                {
-                    if !allow_new_file_without_read && !read_paths.contains(&path) {
+                if let Some(path) = &execution.path {
+                    if !allow_new_file_without_read && !successful_read_paths.contains(path) {
                         return Some(format!(
                             "implementation guard: write_file on '{path}' requires prior read_file on the same path"
                         ));
                     }
-                    pending_post_write_verification.insert(path);
+                    pending_post_write_verification.insert(path.clone());
                 }
             }
             _ => {}
         }
     }
-    if let Some(path) = pending_post_write_verification.iter().next() {
-        return Some(format!(
-            "implementation guard: post-write verification missing read_file on '{path}'"
-        ));
+    if !allow_skip_post_write_verification {
+        if let Some(path) = pending_post_write_verification.iter().next() {
+            return Some(format!(
+                "implementation guard: post-write verification missing read_file on '{path}'"
+            ));
+        }
     }
     None
 }
 
-fn normalize_tool_path(path: &str) -> String {
-    path.replace('\\', "/").to_ascii_lowercase()
+pub(crate) fn normalize_tool_path(path: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for part in path.split(['/', '\\']) {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            if !out.is_empty() {
+                out.pop();
+            }
+            continue;
+        }
+        out.push(part);
+    }
+    if out.is_empty() {
+        ".".to_string()
+    } else {
+        out.join("/").to_ascii_lowercase()
+    }
 }
 
 fn is_implementation_task_prompt(prompt: &str) -> bool {
