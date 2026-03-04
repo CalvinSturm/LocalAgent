@@ -214,6 +214,11 @@ pub(crate) fn tool_result_error_code(content: &str) -> Option<ToolErrorCode> {
         "tool_path_denied" => Some(ToolErrorCode::ToolPathDenied),
         "tool_disabled" => Some(ToolErrorCode::ToolDisabled),
         "tool_args_malformed_json" => Some(ToolErrorCode::ToolArgsMalformedJson),
+        "shell_gate_deny" => Some(ToolErrorCode::ShellGateDeny),
+        "shell_tool_unavailable" => Some(ToolErrorCode::ShellToolUnavailable),
+        "shell_exec_not_found" => Some(ToolErrorCode::ShellExecNotFound),
+        "shell_exec_os_error" => Some(ToolErrorCode::ShellExecOsError),
+        "shell_exec_non_zero_exit" => Some(ToolErrorCode::ShellExecNonZeroExit),
         _ => None,
     }
 }

@@ -107,6 +107,11 @@ pub enum ToolErrorCode {
     ToolArgsMalformedJson,
     InvalidPattern,
     IoError,
+    ShellGateDeny,
+    ShellToolUnavailable,
+    ShellExecNotFound,
+    ShellExecOsError,
+    ShellExecNonZeroExit,
 }
 
 impl ToolErrorCode {
@@ -120,6 +125,11 @@ impl ToolErrorCode {
             Self::ToolArgsMalformedJson => "tool_args_malformed_json",
             Self::InvalidPattern => "invalid_pattern",
             Self::IoError => "io_error",
+            Self::ShellGateDeny => "shell_gate_deny",
+            Self::ShellToolUnavailable => "shell_tool_unavailable",
+            Self::ShellExecNotFound => "shell_exec_not_found",
+            Self::ShellExecOsError => "shell_exec_os_error",
+            Self::ShellExecNonZeroExit => "shell_exec_non_zero_exit",
         }
     }
 }
@@ -620,8 +630,9 @@ fn require_non_empty_string(obj: &serde_json::Map<String, Value>, key: &str) -> 
 }
 
 pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
+    let normalized_args = normalize_builtin_tool_args(&tc.name, &tc.arguments);
     let side_effects = tool_side_effects(&tc.name);
-    if let Err(e) = validate_builtin_tool_args(&tc.name, &tc.arguments, rt.tool_args_strict) {
+    if let Err(e) = validate_builtin_tool_args(&tc.name, &normalized_args, rt.tool_args_strict) {
         return invalid_args_tool_message(
             tc,
             "builtin",
@@ -633,13 +644,13 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
         );
     }
     let exec = match tc.name.as_str() {
-        "list_dir" => run_list_dir(rt, &tc.arguments).await,
-        "read_file" => run_read_file(rt, &tc.arguments).await,
-        "glob" => run_glob(rt, &tc.arguments).await,
-        "grep" => run_grep(rt, &tc.arguments).await,
-        "shell" => run_shell(rt, &tc.arguments).await,
-        "write_file" => run_write_file(rt, &tc.arguments).await,
-        "apply_patch" => run_apply_patch(rt, &tc.arguments).await,
+        "list_dir" => run_list_dir(rt, &normalized_args).await,
+        "read_file" => run_read_file(rt, &normalized_args).await,
+        "glob" => run_glob(rt, &normalized_args).await,
+        "grep" => run_grep(rt, &normalized_args).await,
+        "shell" => run_shell(rt, &normalized_args).await,
+        "write_file" => run_write_file(rt, &normalized_args).await,
+        "apply_patch" => run_apply_patch(rt, &normalized_args).await,
         _ => ToolExecution {
             ok: false,
             content: format!("unknown tool: {}", tc.name),
@@ -679,6 +690,34 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
         exec.error,
         exec.meta,
     ))
+}
+
+fn normalize_builtin_tool_args(tool_name: &str, args: &Value) -> Value {
+    if tool_name != "shell" {
+        return args.clone();
+    }
+    let Some(obj) = args.as_object() else {
+        return args.clone();
+    };
+    if obj.contains_key("cmd") {
+        return args.clone();
+    }
+    let Some(command) = obj.get("command").and_then(|v| v.as_str()) else {
+        return args.clone();
+    };
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        return args.clone();
+    }
+    let mut normalized = obj.clone();
+    normalized.insert("cmd".to_string(), Value::String(parts[0].to_string()));
+    let arg_list = parts[1..]
+        .iter()
+        .map(|s| Value::String((*s).to_string()))
+        .collect::<Vec<_>>();
+    normalized.insert("args".to_string(), Value::Array(arg_list));
+    normalized.remove("command");
+    Value::Object(normalized)
 }
 
 async fn run_list_dir(rt: &ToolRuntime, args: &Value) -> ToolExecution {
@@ -1152,7 +1191,7 @@ async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             "shell tool is disabled. Re-run with --allow-shell or --allow-shell-in-workdir"
                 .to_string(),
             Some(ToolErrorDetail {
-                code: ToolErrorCode::ToolDisabled,
+                code: ToolErrorCode::ShellGateDeny,
                 message: "Shell tool is disabled by runtime flags.".to_string(),
                 expected_schema: None,
                 received_args: Some(args.clone()),
@@ -1351,11 +1390,16 @@ async fn run_apply_patch(rt: &ToolRuntime, args: &Value) -> ToolExecution {
 }
 
 fn target_to_exec(side_effects: SideEffects, out: crate::target::TargetResult) -> ToolExecution {
+    let shell_error = if matches!(side_effects, SideEffects::ShellExec) && !out.ok {
+        Some(classify_shell_target_error(&out.content, out.exit_code))
+    } else {
+        None
+    };
     ToolExecution {
         ok: out.ok,
         content: out.content,
         truncated: out.truncated,
-        error: None,
+        error: shell_error,
         meta: ToolResultMeta {
             side_effects,
             bytes: out.bytes,
@@ -1373,6 +1417,50 @@ fn target_to_exec(side_effects: SideEffects, out: crate::target::TargetResult) -
             docker: out.docker,
         },
     }
+}
+
+fn classify_shell_target_error(content: &str, exit_code: Option<i32>) -> ToolErrorDetail {
+    let lower = content.to_ascii_lowercase();
+    let spawn_failed = lower.contains("shell execution failed:");
+    let not_found = lower.contains("program not found")
+        || lower.contains("no such file or directory")
+        || lower.contains("cannot find the path specified")
+        || lower.contains("cannot find the file specified")
+        || lower.contains("(os error 2)")
+        || lower.contains("(os error 3)");
+    let (code, message) = if spawn_failed && not_found {
+        (
+            ToolErrorCode::ShellExecNotFound,
+            "Shell command executable was not found on the execution target.".to_string(),
+        )
+    } else if spawn_failed {
+        (
+            ToolErrorCode::ShellExecOsError,
+            "Shell execution failed before process start (OS/runtime error).".to_string(),
+        )
+    } else {
+        let status = shell_status_code_from_content(content).or(exit_code);
+        (
+            ToolErrorCode::ShellExecNonZeroExit,
+            match status {
+                Some(code) => format!("Shell command exited with non-zero status: {code}."),
+                None => "Shell command exited with non-zero status.".to_string(),
+            },
+        )
+    };
+    ToolErrorDetail {
+        code,
+        message,
+        expected_schema: None,
+        received_args: None,
+        minimal_example: minimal_builtin_example("shell"),
+        available_tools: None,
+    }
+}
+
+fn shell_status_code_from_content(content: &str) -> Option<i32> {
+    let parsed = serde_json::from_str::<Value>(content).ok()?;
+    parsed.get("status").and_then(|v| v.as_i64()).map(|n| n as i32)
 }
 
 fn base_meta(rt: &ToolRuntime, side_effects: SideEffects) -> ToolResultMeta {
@@ -1417,7 +1505,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        builtin_tools_enabled, execute_tool, resolve_path, tool_side_effects,
+        builtin_tools_enabled, execute_tool, normalize_builtin_tool_args, resolve_path,
+        tool_side_effects,
         validate_builtin_tool_args, validate_schema_args, ToolArgsStrict, ToolRuntime,
     };
     use crate::target::{ExecTargetKind, HostTarget};
@@ -1960,6 +2049,83 @@ mod tests {
         let content = msg.content.expect("content");
         assert!(content.contains("--allow-shell-in-workdir"));
         assert!(content.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn shell_command_alias_normalizes_to_cmd_and_args() {
+        let normalized = normalize_builtin_tool_args(
+            "shell",
+            &json!({"command":"cmd /c echo should-be-blocked"}),
+        );
+        assert_eq!(
+            normalized,
+            json!({"cmd":"cmd","args":["/c","echo","should-be-blocked"]})
+        );
+    }
+
+    #[tokio::test]
+    async fn shell_disabled_uses_shell_gate_deny_code() {
+        let tmp = tempdir().expect("tempdir");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_shell_disabled".to_string(),
+            name: "shell".to_string(),
+            arguments: json!({"command":"cmd /c echo hi"}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let content = msg.content.expect("content");
+        let parsed: Value = serde_json::from_str(&content).expect("json");
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("shell_gate_deny")
+        );
+    }
+
+    #[tokio::test]
+    async fn shell_spawn_not_found_sets_not_found_error_code() {
+        let tmp = tempdir().expect("tempdir");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: true,
+            allow_shell_in_workdir_only: false,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_shell_missing".to_string(),
+            name: "shell".to_string(),
+            arguments: json!({"cmd":"definitely_missing_localagent_cmd_12345"}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let content = msg.content.expect("content");
+        let parsed: Value = serde_json::from_str(&content).expect("json");
+        assert_eq!(parsed.get("ok").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("shell_exec_not_found")
+        );
     }
 
     #[tokio::test]

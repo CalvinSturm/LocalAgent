@@ -379,6 +379,13 @@ fn tool_error_detection() {
         .map(|c| c.as_str()),
         Some("tool_unknown")
     );
+    assert_eq!(
+        crate::agent_tool_exec::tool_result_error_code(
+            &json!({"ok":false,"error":{"code":"shell_gate_deny"}}).to_string()
+        )
+        .map(|c| c.as_str()),
+        Some("shell_gate_deny")
+    );
 }
 
 #[test]
