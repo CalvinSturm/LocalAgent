@@ -2,12 +2,12 @@
 
 > **Status:** Historical umbrella spec for tranche planning.
 > **Implementation status:** PR1-PR7 are completed. For authoritative per-PR behavior, use:
-> - `docs/TOOL_CALL_ACCURACY_PR2_SPEC.md`
-> - `docs/TOOL_CALL_ACCURACY_PR3_SPEC.md`
-> - `docs/TOOL_CALL_ACCURACY_PR4_SPEC.md`
-> - `docs/TOOL_CALL_ACCURACY_PR5_SPEC.md`
-> - `docs/TOOL_CALL_ACCURACY_PR6_SPEC.md`
-> - `docs/TOOL_CALL_ACCURACY_PR7_SPEC.md`
+> - `docs/archive/TOOL_CALL_ACCURACY_PR2_SPEC.md`
+> - `docs/archive/TOOL_CALL_ACCURACY_PR3_SPEC.md`
+> - `docs/archive/TOOL_CALL_ACCURACY_PR4_SPEC.md`
+> - `docs/archive/TOOL_CALL_ACCURACY_PR5_SPEC.md`
+> - `docs/archive/TOOL_CALL_ACCURACY_PR6_SPEC.md`
+> - `docs/archive/TOOL_CALL_ACCURACY_PR7_SPEC.md`
 
 ## Goal
 Improve LocalAgent tool-call accuracy and OOTB effectiveness for local models with deterministic, auditable behavior.
@@ -165,3 +165,4 @@ cargo test
 cargo fmt -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
