@@ -1210,20 +1210,170 @@ async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let out = rt
-        .exec_target
-        .exec_shell(ShellReq {
-            workdir: rt.workdir.clone(),
-            cmd: cmd.to_string(),
-            args: arg_list,
-            cwd: args
-                .get("cwd")
-                .and_then(|v| v.as_str())
-                .map(ToString::to_string),
-            max_tool_output_bytes: rt.max_tool_output_bytes,
-        })
-        .await;
+    let cwd = args
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let req = ShellReq {
+        workdir: rt.workdir.clone(),
+        cmd: cmd.to_string(),
+        args: arg_list.clone(),
+        cwd: cwd.clone(),
+        max_tool_output_bytes: rt.max_tool_output_bytes,
+    };
+    let mut out = rt.exec_target.exec_shell(req).await;
+    if !out.ok && shell_spawn_not_found(&out.content) {
+        if let Some((repair_cmd, repair_args, repair_strategy)) =
+            repair_shell_invocation(rt, cmd, &arg_list)
+        {
+            let repaired = rt
+                .exec_target
+                .exec_shell(ShellReq {
+                    workdir: rt.workdir.clone(),
+                    cmd: repair_cmd,
+                    args: repair_args,
+                    cwd,
+                    max_tool_output_bytes: rt.max_tool_output_bytes,
+                })
+                .await;
+            out = annotate_shell_repair(repaired, repair_strategy);
+        }
+    }
     target_to_exec(SideEffects::ShellExec, out)
+}
+
+fn shell_spawn_not_found(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    lower.contains("shell execution failed:")
+        && (lower.contains("program not found")
+            || lower.contains("no such file or directory")
+            || lower.contains("cannot find the path specified")
+            || lower.contains("cannot find the file specified")
+            || lower.contains("(os error 2)")
+            || lower.contains("(os error 3)")
+            || lower.contains("not recognized as an internal or external command"))
+}
+
+fn is_windows_exec_target(rt: &ToolRuntime) -> bool {
+    match rt.exec_target_kind {
+        ExecTargetKind::Docker => false,
+        ExecTargetKind::Host => cfg!(windows),
+    }
+}
+
+fn repair_shell_invocation(
+    rt: &ToolRuntime,
+    cmd: &str,
+    args: &[String],
+) -> Option<(String, Vec<String>, &'static str)> {
+    let cmd_trimmed = cmd.trim();
+    if cmd_trimmed.is_empty() {
+        return None;
+    }
+    let split_tokens = cmd_trimmed
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let has_embedded_whitespace = split_tokens.len() > 1;
+    let windows_target = is_windows_exec_target(rt);
+    let mut logical_tokens = if has_embedded_whitespace && args.is_empty() {
+        split_tokens.clone()
+    } else {
+        let mut v = Vec::with_capacity(args.len() + 1);
+        v.push(cmd_trimmed.to_string());
+        v.extend_from_slice(args);
+        v
+    };
+    if windows_target {
+        let first = logical_tokens
+            .first()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if is_windows_shell_builtin(&first) {
+            let mut wrapped_args = Vec::with_capacity(logical_tokens.len() + 1);
+            wrapped_args.push("/c".to_string());
+            wrapped_args.append(&mut logical_tokens);
+            return Some(("cmd".to_string(), wrapped_args, "windows_cmd_c"));
+        }
+    }
+    if has_embedded_whitespace {
+        if !windows_target {
+            return Some((
+                "sh".to_string(),
+                vec!["-lc".to_string(), cmd_trimmed.to_string()],
+                "unix_sh_lc",
+            ));
+        }
+        return Some((
+            split_tokens[0].clone(),
+            split_tokens[1..].to_vec(),
+            "split_cmd",
+        ));
+    }
+    None
+}
+
+fn is_windows_shell_builtin(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "assoc"
+            | "break"
+            | "call"
+            | "cd"
+            | "chdir"
+            | "cls"
+            | "color"
+            | "copy"
+            | "date"
+            | "del"
+            | "dir"
+            | "echo"
+            | "endlocal"
+            | "erase"
+            | "exit"
+            | "for"
+            | "ftype"
+            | "goto"
+            | "if"
+            | "md"
+            | "mkdir"
+            | "mklink"
+            | "move"
+            | "path"
+            | "pause"
+            | "popd"
+            | "prompt"
+            | "pushd"
+            | "rd"
+            | "rem"
+            | "ren"
+            | "rename"
+            | "rmdir"
+            | "set"
+            | "setlocal"
+            | "shift"
+            | "start"
+            | "time"
+            | "title"
+            | "type"
+            | "ver"
+            | "verify"
+            | "vol"
+    )
+}
+
+fn annotate_shell_repair(mut out: crate::target::TargetResult, strategy: &str) -> crate::target::TargetResult {
+    if let Ok(mut v) = serde_json::from_str::<Value>(&out.content) {
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("repair_attempted".to_string(), Value::Bool(true));
+            obj.insert(
+                "repair_strategy".to_string(),
+                Value::String(strategy.to_string()),
+            );
+            out.content = v.to_string();
+        }
+    }
+    out
 }
 
 fn shell_cwd_is_workdir_scoped(args: &Value) -> bool {
@@ -2125,6 +2275,94 @@ mod tests {
                 .and_then(|e| e.get("code"))
                 .and_then(|v| v.as_str()),
             Some("shell_exec_not_found")
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn shell_auto_repair_wraps_windows_builtin() {
+        let tmp = tempdir().expect("tempdir");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: true,
+            allow_shell_in_workdir_only: false,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_shell_auto_repair_win".to_string(),
+            name: "shell".to_string(),
+            arguments: json!({"cmd":"echo","args":["hi-manual-test"]}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let envelope: Value = serde_json::from_str(&msg.content.expect("content")).expect("json");
+        assert_eq!(envelope.get("ok").and_then(|v| v.as_bool()), Some(true));
+        let inner = envelope
+            .get("content")
+            .and_then(|v| v.as_str())
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .expect("inner shell json");
+        let stdout = inner
+            .get("stdout")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(stdout.contains("hi-manual-test"));
+        assert_eq!(
+            inner.get("repair_attempted").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            inner.get("repair_strategy").and_then(|v| v.as_str()),
+            Some("windows_cmd_c")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn shell_auto_repair_uses_sh_lc_for_embedded_command() {
+        let tmp = tempdir().expect("tempdir");
+        let rt = ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: true,
+            allow_shell_in_workdir_only: false,
+            allow_write: false,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        };
+        let tc = ToolCall {
+            id: "tc_shell_auto_repair_unix".to_string(),
+            name: "shell".to_string(),
+            arguments: json!({"cmd":"echo hi-manual-test"}),
+        };
+        let msg = execute_tool(&rt, &tc).await;
+        let envelope: Value = serde_json::from_str(&msg.content.expect("content")).expect("json");
+        assert_eq!(envelope.get("ok").and_then(|v| v.as_bool()), Some(true));
+        let inner = envelope
+            .get("content")
+            .and_then(|v| v.as_str())
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .expect("inner shell json");
+        let stdout = inner
+            .get("stdout")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(stdout.contains("hi-manual-test"));
+        assert_eq!(
+            inner.get("repair_attempted").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            inner.get("repair_strategy").and_then(|v| v.as_str()),
+            Some("unix_sh_lc")
         );
     }
 
