@@ -3155,7 +3155,7 @@ pub(crate) async fn run_chat_tui(
     let mut transcript: Vec<(String, String)> = vec![];
     let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
         std::collections::BTreeMap::new();
-    let mut show_thinking_panel = chat_runtime::chat_mode_label(&active_run) == "Code";
+    let mut show_thinking_panel = false;
     let show_banner = !chat.no_banner;
     let mut logs: Vec<String> = Vec::new();
     let max_logs = base_run.tui_max_log_lines;
