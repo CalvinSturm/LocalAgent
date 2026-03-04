@@ -65,6 +65,10 @@ Non-normative docs (contributor context/history only):
 - [PR6 Scope](archive/PR6_SCOPE_TUI_LEARN_COMMANDS.md)
 - [PR7 Scope Archive Summary](archive/PR7_SCOPE_ARCHIVE_SUMMARY.md)
 
+## Manual Testing
+
+- [Manual TUI Coding Test Pack](../manual-tui-testing/README.md)
+
 ## Releases
 
 - [Release Notes Index](release-notes/README.md)

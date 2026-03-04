@@ -399,6 +399,17 @@ TUI chat:
 localagent --provider lmstudio --model <model> chat --tui
 ```
 
+Avoid cross-run contamination (recommended for manual testing):
+
+```bash
+localagent --provider lmstudio --model <model> --workdir .tmp/manual-tui-testing/workdir --state-dir .tmp/manual-tui-testing/state --no-session chat --tui
+```
+
+Notes:
+- `--no-session` disables session carryover.
+- Isolated `--state-dir` prevents reuse of prior `.localagent` state.
+- Isolated `--workdir` keeps artifacts and context scoped to test fixtures.
+
 Chat TUI slash commands:
 
 - `/help`
