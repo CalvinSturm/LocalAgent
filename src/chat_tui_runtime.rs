@@ -252,7 +252,7 @@ struct TuiEnterSubmitInput<'a> {
     prompt_history: &'a mut Vec<String>,
     transcript: &'a mut Vec<(String, String)>,
     transcript_thinking: &'a mut std::collections::BTreeMap<usize, String>,
-    show_thinking: &'a mut bool,
+    show_thinking_panel: &'a mut bool,
     streaming_assistant: &'a mut String,
     status: &'a mut String,
     status_detail: &'a mut String,
@@ -302,7 +302,7 @@ struct TuiActiveTurnLoopInput<'a> {
     logs: &'a mut Vec<String>,
     transcript: &'a mut Vec<(String, String)>,
     transcript_thinking: &'a mut std::collections::BTreeMap<usize, String>,
-    show_thinking: &'a mut bool,
+    show_thinking_panel: &'a mut bool,
     streaming_assistant: &'a mut String,
     status: &'a mut String,
     status_detail: &'a mut String,
@@ -375,7 +375,7 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
         logs,
         transcript,
         transcript_thinking,
-        show_thinking,
+        show_thinking_panel,
         streaming_assistant,
         status,
         status_detail,
@@ -569,7 +569,7 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                             search_input_cursor: &mut search_input_cursor_dummy,
                             transcript,
                             transcript_thinking,
-                            show_thinking,
+                            show_thinking_panel,
                             streaming_assistant,
                             transcript_scroll,
                             follow_output,
@@ -904,7 +904,7 @@ async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow
                 status_detail,
                 transcript,
                 transcript_thinking,
-                *show_thinking,
+                *show_thinking_panel,
                 streaming_assistant,
                 ui_state,
                 *tools_selected,
@@ -1096,6 +1096,7 @@ struct TuiNormalSubmitPrepInput<'a> {
     line: &'a str,
     prompt_history: &'a mut Vec<String>,
     transcript: &'a mut Vec<(String, String)>,
+    show_thinking_panel: &'a mut bool,
     show_logs: &'a mut bool,
     follow_output: &'a mut bool,
     transcript_scroll: &'a mut usize,
@@ -1163,7 +1164,7 @@ struct TuiOuterKeyDispatchInput<'a> {
     search_input_cursor: &'a mut usize,
     transcript: &'a mut Vec<(String, String)>,
     transcript_thinking: &'a mut std::collections::BTreeMap<usize, String>,
-    show_thinking: &'a mut bool,
+    show_thinking_panel: &'a mut bool,
     streaming_assistant: &'a mut String,
     transcript_scroll: &'a mut usize,
     follow_output: &'a mut bool,
@@ -1368,7 +1369,7 @@ struct TuiOuterEventDispatchInput<'a> {
     prompt_history: &'a mut Vec<String>,
     transcript: &'a mut Vec<(String, String)>,
     transcript_thinking: &'a mut std::collections::BTreeMap<usize, String>,
-    show_thinking: &'a mut bool,
+    show_thinking_panel: &'a mut bool,
     streaming_assistant: &'a mut String,
     transcript_scroll: &'a mut usize,
     follow_output: &'a mut bool,
@@ -1490,7 +1491,7 @@ fn handle_tui_outer_event_dispatch(
                 search_input_cursor: input.search_input_cursor,
                 transcript: input.transcript,
                 transcript_thinking: input.transcript_thinking,
-                show_thinking: input.show_thinking,
+                show_thinking_panel: input.show_thinking_panel,
                 streaming_assistant: input.streaming_assistant,
                 transcript_scroll: input.transcript_scroll,
                 follow_output: input.follow_output,
@@ -1530,7 +1531,7 @@ struct TuiRenderFrameInput<'a> {
     status_detail: &'a str,
     transcript: &'a Vec<(String, String)>,
     transcript_thinking: &'a std::collections::BTreeMap<usize, String>,
-    show_thinking: bool,
+    show_thinking_panel: bool,
     streaming_assistant: &'a str,
     ui_state: &'a UiState,
     tools_selected: usize,
@@ -1564,7 +1565,7 @@ struct TuiRenderFrameBuildInput<'a> {
     status_detail: &'a str,
     transcript: &'a Vec<(String, String)>,
     transcript_thinking: &'a std::collections::BTreeMap<usize, String>,
-    show_thinking: bool,
+    show_thinking_panel: bool,
     streaming_assistant: &'a str,
     ui_state: &'a UiState,
     tools_selected: &'a mut usize,
@@ -1652,7 +1653,7 @@ fn build_tui_render_frame_input(input: TuiRenderFrameBuildInput<'_>) -> TuiRende
         status_detail: input.status_detail,
         transcript: input.transcript,
         transcript_thinking: input.transcript_thinking,
-        show_thinking: input.show_thinking,
+        show_thinking_panel: input.show_thinking_panel,
         streaming_assistant: input.streaming_assistant,
         ui_state: input.ui_state,
         tools_selected: *input.tools_selected,
@@ -1831,6 +1832,14 @@ fn build_overlay_promote_submit_line(overlay: &LearnOverlayState) -> Result<Stri
 fn handle_tui_outer_key_dispatch(
     input: TuiOuterKeyDispatchInput<'_>,
 ) -> TuiOuterKeyDispatchOutcome {
+    if (matches!(input.key.code, KeyCode::Char('4'))
+        && input.key.modifiers.contains(KeyModifiers::CONTROL))
+        || matches!(input.key.code, KeyCode::Char('\u{1c}'))
+    {
+        *input.show_thinking_panel = !*input.show_thinking_panel;
+        return TuiOuterKeyDispatchOutcome::Handled;
+    }
+
     if let Some(overlay) = input.learn_overlay.as_mut() {
         match input.key.code {
             KeyCode::Esc => {
@@ -2285,10 +2294,6 @@ fn handle_tui_outer_key_dispatch(
             *input.show_logs = !*input.show_logs;
             TuiOuterKeyDispatchOutcome::Handled
         }
-        KeyCode::Char('o') if input.key.modifiers.contains(KeyModifiers::CONTROL) => {
-            *input.show_thinking = !*input.show_thinking;
-            TuiOuterKeyDispatchOutcome::Handled
-        }
         KeyCode::Tab => {
             if *input.show_tools && (*input.show_approvals) {
                 *input.tools_focus = !*input.tools_focus;
@@ -2424,6 +2429,7 @@ fn handle_tui_outer_key_dispatch(
 fn prepare_tui_normal_submit_state(
     input: TuiNormalSubmitPrepInput<'_>,
 ) -> TuiNormalSubmitPrepOutcome {
+    let first_prompt = input.transcript.is_empty();
     input.prompt_history.push(input.line.to_string());
     *input.follow_output = true;
     *input.transcript_scroll = usize::MAX;
@@ -2438,6 +2444,9 @@ fn prepare_tui_normal_submit_state(
     input.status_detail.clear();
     input.streaming_assistant.clear();
     *input.think_tick = 0;
+    if first_prompt {
+        *input.show_thinking_panel = true;
+    }
     TuiNormalSubmitPrepOutcome::ContinueToRun
 }
 
@@ -2602,7 +2611,7 @@ async fn handle_tui_enter_submit(
         prompt_history,
         transcript,
         transcript_thinking,
-        show_thinking,
+        show_thinking_panel,
         streaming_assistant,
         status,
         status_detail,
@@ -2718,6 +2727,7 @@ async fn handle_tui_enter_submit(
         line: &line,
         prompt_history,
         transcript,
+        show_thinking_panel,
         show_logs,
         follow_output,
         transcript_scroll,
@@ -2741,7 +2751,7 @@ async fn handle_tui_enter_submit(
             status_detail,
             transcript,
             transcript_thinking,
-            *show_thinking,
+            *show_thinking_panel,
             streaming_assistant,
             ui_state,
             *tools_selected,
@@ -2824,7 +2834,7 @@ async fn handle_tui_enter_submit(
         logs,
         transcript,
         transcript_thinking,
-        show_thinking,
+        show_thinking_panel,
         streaming_assistant,
         status,
         status_detail,
@@ -3145,7 +3155,7 @@ pub(crate) async fn run_chat_tui(
     let mut transcript: Vec<(String, String)> = vec![];
     let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
         std::collections::BTreeMap::new();
-    let mut show_thinking = false;
+    let mut show_thinking_panel = chat_runtime::chat_mode_label(&active_run) == "Code";
     let show_banner = !chat.no_banner;
     let mut logs: Vec<String> = Vec::new();
     let max_logs = base_run.tui_max_log_lines;
@@ -3213,7 +3223,7 @@ pub(crate) async fn run_chat_tui(
                 status_detail: &status_detail,
                 transcript: &transcript,
                 transcript_thinking: &transcript_thinking,
-                show_thinking,
+                show_thinking_panel,
                 streaming_assistant: &streaming_assistant,
                 ui_state: &ui_state,
                 tools_selected: &mut tools_selected,
@@ -3261,7 +3271,7 @@ pub(crate) async fn run_chat_tui(
                     frame.status_detail,
                     frame.transcript,
                     frame.transcript_thinking,
-                    frame.show_thinking,
+                    frame.show_thinking_panel,
                     frame.streaming_assistant,
                     frame.ui_state,
                     frame.tools_selected,
@@ -3294,7 +3304,7 @@ pub(crate) async fn run_chat_tui(
                     prompt_history: &mut prompt_history,
                     transcript: &mut transcript,
                     transcript_thinking: &mut transcript_thinking,
-                    show_thinking: &mut show_thinking,
+                    show_thinking_panel: &mut show_thinking_panel,
                     streaming_assistant: &mut streaming_assistant,
                     transcript_scroll: &mut transcript_scroll,
                     follow_output: &mut follow_output,
@@ -3357,7 +3367,7 @@ pub(crate) async fn run_chat_tui(
                                             status_detail: &status_detail,
                                             transcript: &transcript,
                                             transcript_thinking: &transcript_thinking,
-                                            show_thinking,
+                                            show_thinking_panel,
                                             streaming_assistant: &streaming_assistant,
                                             ui_state: &ui_state,
                                             tools_selected: &mut tools_selected,
@@ -3398,7 +3408,7 @@ pub(crate) async fn run_chat_tui(
                                                 frame.status_detail,
                                                 frame.transcript,
                                                 frame.transcript_thinking,
-                                                frame.show_thinking,
+                                                frame.show_thinking_panel,
                                                 frame.streaming_assistant,
                                                 frame.ui_state,
                                                 frame.tools_selected,
@@ -3486,7 +3496,7 @@ pub(crate) async fn run_chat_tui(
                             prompt_history: &mut prompt_history,
                             transcript: &mut transcript,
                             transcript_thinking: &mut transcript_thinking,
-                            show_thinking: &mut show_thinking,
+                            show_thinking_panel: &mut show_thinking_panel,
                             streaming_assistant: &mut streaming_assistant,
                             status: &mut status,
                             status_detail: &mut status_detail,
@@ -3852,7 +3862,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = Vec::new();
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
         let mut follow_output = true;
@@ -3883,7 +3893,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -3947,7 +3957,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = Vec::new();
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
         let mut follow_output = true;
@@ -3978,7 +3988,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4042,7 +4052,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = vec![("user".to_string(), "hi".to_string())];
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let before = transcript.clone();
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
@@ -4074,7 +4084,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4144,7 +4154,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = vec![("user".to_string(), "hi".to_string())];
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
         let mut follow_output = true;
@@ -4177,7 +4187,7 @@ mod tests {
                 search_input_cursor: &mut search_input_cursor,
                 transcript: &mut transcript,
                 transcript_thinking: &mut transcript_thinking,
-                show_thinking: &mut show_thinking,
+                show_thinking_panel: &mut show_thinking_panel,
                 streaming_assistant: &mut streaming,
                 transcript_scroll: &mut transcript_scroll,
                 follow_output: &mut follow_output,
@@ -4245,7 +4255,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = vec![];
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
         let mut follow_output = true;
@@ -4276,7 +4286,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4339,7 +4349,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = vec![];
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
         let mut follow_output = true;
@@ -4371,7 +4381,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4414,7 +4424,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4529,7 +4539,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = vec![];
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
         let mut follow_output = true;
@@ -4561,7 +4571,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4596,7 +4606,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4660,7 +4670,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = vec![];
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
         let mut follow_output = true;
@@ -4692,7 +4702,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4715,7 +4725,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_o_toggles_thinking_visibility_in_chat_mode() {
+    fn ctrl_4_toggles_thinking_visibility_in_chat_mode() {
         let tmp = tempdir().expect("tempdir");
         let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
         let mut overlay = None;
@@ -4735,7 +4745,7 @@ mod tests {
         let mut transcript: Vec<(String, String)> = vec![];
         let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
             std::collections::BTreeMap::new();
-        let mut show_thinking = false;
+        let mut show_thinking_panel = false;
         let mut streaming = String::new();
         let mut transcript_scroll = 0usize;
         let mut follow_output = true;
@@ -4749,7 +4759,7 @@ mod tests {
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
         let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
-            key: KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            key: KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL),
             learn_overlay: &mut overlay,
             run_busy: false,
             input: &mut input_buf,
@@ -4766,7 +4776,7 @@ mod tests {
             search_input_cursor: &mut search_input_cursor,
             transcript: &mut transcript,
             transcript_thinking: &mut transcript_thinking,
-            show_thinking: &mut show_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
             streaming_assistant: &mut streaming,
             transcript_scroll: &mut transcript_scroll,
             follow_output: &mut follow_output,
@@ -4784,7 +4794,154 @@ mod tests {
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
         assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
-        assert!(show_thinking);
+        assert!(show_thinking_panel);
+    }
+
+    #[test]
+    fn ctrl_4_toggles_thinking_panel_even_when_overlay_open() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
+        let mut overlay = Some(LearnOverlayState::default());
+        let mut input_buf = String::new();
+        let mut input_cursor = 0usize;
+        let mut prompt_history = Vec::new();
+        let mut history_idx = None;
+        let mut slash_menu_index = 0usize;
+        let mut palette_open = false;
+        let palette_items = ["a"];
+        let mut palette_selected = 0usize;
+        let mut search_mode = false;
+        let mut search_query = String::new();
+        let mut search_line_cursor = 0usize;
+        let mut search_input_cursor = 0usize;
+        let mut learn_overlay_cursor = 0usize;
+        let mut transcript: Vec<(String, String)> = vec![];
+        let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
+            std::collections::BTreeMap::new();
+        let mut show_thinking_panel = false;
+        let mut streaming = String::new();
+        let mut transcript_scroll = 0usize;
+        let mut follow_output = true;
+        let mut ui_state = crate::tui::state::UiState::new(100);
+        let mut show_tools = false;
+        let mut show_approvals = false;
+        let mut show_logs = false;
+        let mut compact_tools = true;
+        let mut tools_selected = 0usize;
+        let mut tools_focus = true;
+        let mut approvals_selected = 0usize;
+        let mut logs = Vec::new();
+        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+            key: KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL),
+            learn_overlay: &mut overlay,
+            run_busy: false,
+            input: &mut input_buf,
+            input_cursor: &mut input_cursor,
+            prompt_history: &mut prompt_history,
+            history_idx: &mut history_idx,
+            slash_menu_index: &mut slash_menu_index,
+            palette_open: &mut palette_open,
+            palette_items: &palette_items,
+            palette_selected: &mut palette_selected,
+            search_mode: &mut search_mode,
+            search_query: &mut search_query,
+            search_line_cursor: &mut search_line_cursor,
+            search_input_cursor: &mut search_input_cursor,
+            transcript: &mut transcript,
+            transcript_thinking: &mut transcript_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
+            streaming_assistant: &mut streaming,
+            transcript_scroll: &mut transcript_scroll,
+            follow_output: &mut follow_output,
+            ui_state: &mut ui_state,
+            visible_tool_count: 0,
+            show_tools: &mut show_tools,
+            show_approvals: &mut show_approvals,
+            show_logs: &mut show_logs,
+            compact_tools: &mut compact_tools,
+            tools_selected: &mut tools_selected,
+            tools_focus: &mut tools_focus,
+            approvals_selected: &mut approvals_selected,
+            paths: &paths,
+            logs: &mut logs,
+            learn_overlay_cursor: &mut learn_overlay_cursor,
+        });
+        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(show_thinking_panel);
+        assert!(overlay.is_some());
+    }
+
+    #[test]
+    fn ctrl_4_control_char_toggles_thinking_visibility_in_chat_mode() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
+        let mut overlay = None;
+        let mut input_buf = String::new();
+        let mut input_cursor = 0usize;
+        let mut prompt_history = Vec::new();
+        let mut history_idx = None;
+        let mut slash_menu_index = 0usize;
+        let mut palette_open = false;
+        let palette_items = ["a"];
+        let mut palette_selected = 0usize;
+        let mut search_mode = false;
+        let mut search_query = String::new();
+        let mut search_line_cursor = 0usize;
+        let mut search_input_cursor = 0usize;
+        let mut learn_overlay_cursor = 0usize;
+        let mut transcript: Vec<(String, String)> = vec![];
+        let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
+            std::collections::BTreeMap::new();
+        let mut show_thinking_panel = false;
+        let mut streaming = String::new();
+        let mut transcript_scroll = 0usize;
+        let mut follow_output = true;
+        let mut ui_state = crate::tui::state::UiState::new(100);
+        let mut show_tools = false;
+        let mut show_approvals = false;
+        let mut show_logs = false;
+        let mut compact_tools = true;
+        let mut tools_selected = 0usize;
+        let mut tools_focus = true;
+        let mut approvals_selected = 0usize;
+        let mut logs = Vec::new();
+        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+            key: KeyEvent::new(KeyCode::Char('\u{1c}'), KeyModifiers::empty()),
+            learn_overlay: &mut overlay,
+            run_busy: false,
+            input: &mut input_buf,
+            input_cursor: &mut input_cursor,
+            prompt_history: &mut prompt_history,
+            history_idx: &mut history_idx,
+            slash_menu_index: &mut slash_menu_index,
+            palette_open: &mut palette_open,
+            palette_items: &palette_items,
+            palette_selected: &mut palette_selected,
+            search_mode: &mut search_mode,
+            search_query: &mut search_query,
+            search_line_cursor: &mut search_line_cursor,
+            search_input_cursor: &mut search_input_cursor,
+            transcript: &mut transcript,
+            transcript_thinking: &mut transcript_thinking,
+            show_thinking_panel: &mut show_thinking_panel,
+            streaming_assistant: &mut streaming,
+            transcript_scroll: &mut transcript_scroll,
+            follow_output: &mut follow_output,
+            ui_state: &mut ui_state,
+            visible_tool_count: 0,
+            show_tools: &mut show_tools,
+            show_approvals: &mut show_approvals,
+            show_logs: &mut show_logs,
+            compact_tools: &mut compact_tools,
+            tools_selected: &mut tools_selected,
+            tools_focus: &mut tools_focus,
+            approvals_selected: &mut approvals_selected,
+            paths: &paths,
+            logs: &mut logs,
+            learn_overlay_cursor: &mut learn_overlay_cursor,
+        });
+        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(show_thinking_panel);
     }
 
     #[test]
@@ -4852,3 +5009,4 @@ mod tests {
         assert_eq!(ui_state.pending_approvals[0].id, "existing");
     }
 }
+

@@ -38,6 +38,24 @@ fn split_user_visible_and_thinking_extracts_think_blocks() {
     assert_eq!(thinking.as_deref(), Some("first idea\n\nsecond idea"));
 }
 
+#[test]
+fn split_streaming_extracts_unclosed_think_block() {
+    let s = "<think>working plan step 1\nstep 2";
+    let (visible, thinking) =
+        crate::agent_output_sanitize::split_user_visible_and_thinking_streaming(s);
+    assert_eq!(visible, "");
+    assert_eq!(thinking.as_deref(), Some("working plan step 1\nstep 2"));
+}
+
+#[test]
+fn split_streaming_shows_only_post_think_visible_text() {
+    let s = "<think>internal plan</think>\nFinal answer";
+    let (visible, thinking) =
+        crate::agent_output_sanitize::split_user_visible_and_thinking_streaming(s);
+    assert_eq!(visible, "Final answer");
+    assert_eq!(thinking.as_deref(), Some("internal plan"));
+}
+
 #[async_trait]
 impl ModelProvider for MockProvider {
     async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {

@@ -3,7 +3,20 @@ pub(crate) fn sanitize_user_visible_output(raw: &str) -> String {
 }
 
 pub(crate) fn split_user_visible_and_thinking(raw: &str) -> (String, Option<String>) {
-    let (without_think, think_blocks) = strip_tag_block_with_capture(raw, "think");
+    let (without_think, think_blocks) = strip_tag_block_with_capture(raw, "think", false);
+    split_visible_and_thinking_from_parts(&without_think, think_blocks)
+}
+
+#[allow(dead_code)]
+pub(crate) fn split_user_visible_and_thinking_streaming(raw: &str) -> (String, Option<String>) {
+    let (without_think, think_blocks) = strip_tag_block_with_capture(raw, "think", true);
+    split_visible_and_thinking_from_parts(&without_think, think_blocks)
+}
+
+fn split_visible_and_thinking_from_parts(
+    without_think: &str,
+    think_blocks: Vec<String>,
+) -> (String, Option<String>) {
     let trimmed = without_think.trim();
     let upper = trimmed.to_uppercase();
     if let Some(thought_idx) = upper.find("THOUGHT:") {
@@ -26,7 +39,7 @@ pub(crate) fn split_user_visible_and_thinking(raw: &str) -> (String, Option<Stri
     (trimmed.to_string(), thinking)
 }
 
-fn strip_tag_block_with_capture(input: &str, tag: &str) -> (String, Vec<String>) {
+fn strip_tag_block_with_capture(input: &str, tag: &str, capture_unclosed: bool) -> (String, Vec<String>) {
     let mut out = String::with_capacity(input.len());
     let mut captured = Vec::new();
     let open = format!("<{tag}>");
@@ -44,6 +57,12 @@ fn strip_tag_block_with_capture(input: &str, tag: &str) -> (String, Vec<String>)
                 }
                 i += end_rel + close.len();
                 continue;
+            }
+            if capture_unclosed {
+                let inner = rest[open.len()..].trim();
+                if !inner.is_empty() {
+                    captured.push(inner.to_string());
+                }
             }
             break;
         }

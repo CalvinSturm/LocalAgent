@@ -58,7 +58,7 @@ pub(crate) fn draw_chat_frame(
     status_detail: &str,
     transcript: &[(String, String)],
     transcript_thinking: &BTreeMap<usize, String>,
-    show_thinking: bool,
+    show_thinking_panel: bool,
     streaming_assistant: &str,
     ui_state: &UiState,
     tools_selected: usize,
@@ -92,6 +92,28 @@ pub(crate) fn draw_chat_frame(
     let input_visible_lines = input_total_lines.min(max_input_lines).max(1);
     let input_scroll = input_total_lines.saturating_sub(input_visible_lines);
     let input_section_height = (input_visible_lines as u16).saturating_add(2);
+    let (streaming_visible, streaming_thinking) =
+        crate::agent_output_sanitize::split_user_visible_and_thinking_streaming(streaming_assistant);
+    let has_streaming_thinking = streaming_thinking
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let latest_transcript_thinking = transcript
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(idx, (role, _))| {
+            if role == "assistant" {
+                transcript_thinking.get(&idx).cloned()
+            } else {
+                None
+            }
+        });
+    let panel_thinking = if has_streaming_thinking {
+        streaming_thinking.clone()
+    } else {
+        latest_transcript_thinking
+    };
 
     let bottom_overlay_height = if overlay_hint.is_some() {
         9
@@ -144,7 +166,7 @@ pub(crate) fn draw_chat_frame(
         outer[1],
     );
 
-    let has_side = show_tools || show_approvals;
+    let has_side = show_tools || show_approvals || show_thinking_panel;
     let (chat_area, separator_area, side_area) = if has_side {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -159,7 +181,7 @@ pub(crate) fn draw_chat_frame(
         (outer[2], None, None)
     };
 
-    let show_hero_banner = show_banner && transcript.is_empty() && streaming_assistant.is_empty();
+    let show_hero_banner = show_banner && transcript.is_empty() && streaming_visible.is_empty();
     let mut chat_text = String::new();
     if show_hero_banner {
         chat_text.push_str(&crate::chat_view_utils::centered_multiline(
@@ -176,24 +198,7 @@ pub(crate) fn draw_chat_frame(
     }
     let transcript_text = transcript
         .iter()
-        .enumerate()
-        .map(|(idx, (role, text))| {
-            let mut block = format!("{}: {}", role.to_uppercase(), text);
-            if role == "assistant" {
-                if let Some(thinking) = transcript_thinking.get(&idx) {
-                    if show_thinking {
-                        block.push_str("\nTHINK> [expanded with Ctrl+O]");
-                        for line in thinking.lines() {
-                            block.push_str("\nTHINK> ");
-                            block.push_str(line);
-                        }
-                    } else {
-                        block.push_str("\nTHINK> [hidden; Ctrl+O to expand]");
-                    }
-                }
-            }
-            block
-        })
+        .map(|(role, text)| format!("{}: {}", role.to_uppercase(), text))
         .collect::<Vec<_>>()
         .join("\n\n");
     if !transcript_text.is_empty() {
@@ -202,11 +207,11 @@ pub(crate) fn draw_chat_frame(
         }
         chat_text.push_str(&transcript_text);
     }
-    if !streaming_assistant.is_empty() {
+    if !streaming_visible.is_empty() {
         if !chat_text.is_empty() {
             chat_text.push_str("\n\n");
         }
-        chat_text.push_str(&format!("ASSISTANT: {}", streaming_assistant));
+        chat_text.push_str(&format!("ASSISTANT: {}", streaming_visible));
     }
     let chat_style = if show_hero_banner {
         Style::default().fg(Color::Yellow)
@@ -240,34 +245,53 @@ pub(crate) fn draw_chat_frame(
     }
 
     if let Some(side) = side_area {
-        match (show_tools, show_approvals) {
-            (true, true) => {
-                let right = Layout::default()
+        #[derive(Clone, Copy)]
+        enum SidePane {
+            Tools,
+            Approvals,
+            Reasoning,
+        }
+        let mut panes = Vec::new();
+        if show_tools {
+            panes.push(SidePane::Tools);
+        }
+        if show_approvals {
+            panes.push(SidePane::Approvals);
+        }
+        if show_thinking_panel {
+            panes.push(SidePane::Reasoning);
+        }
+        if !panes.is_empty() {
+            let splits = if panes.len() == 1 {
+                vec![side]
+            } else {
+                let constraints = vec![Constraint::Ratio(1, panes.len() as u32); panes.len()];
+                Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-                    .split(side);
-                draw_tools_pane(
-                    f,
-                    right[0],
-                    ui_state,
-                    compact_tools,
-                    tools_selected,
-                    tools_focus,
-                    show_tool_details,
-                );
-                draw_approvals_pane(f, right[1], ui_state, approvals_selected, !tools_focus);
+                    .constraints(constraints)
+                    .split(side)
+                    .to_vec()
+            };
+            for (idx, pane) in panes.iter().enumerate() {
+                let area = splits[idx];
+                match pane {
+                    SidePane::Tools => draw_tools_pane(
+                        f,
+                        area,
+                        ui_state,
+                        compact_tools,
+                        tools_selected,
+                        tools_focus,
+                        show_tool_details,
+                    ),
+                    SidePane::Approvals => {
+                        draw_approvals_pane(f, area, ui_state, approvals_selected, !tools_focus)
+                    }
+                    SidePane::Reasoning => {
+                        draw_reasoning_pane(f, area, panel_thinking.as_deref(), status == "running")
+                    }
+                }
             }
-            (true, false) => draw_tools_pane(
-                f,
-                side,
-                ui_state,
-                compact_tools,
-                tools_selected,
-                true,
-                show_tool_details,
-            ),
-            (false, true) => draw_approvals_pane(f, side, ui_state, approvals_selected, true),
-            (false, false) => {}
         }
     }
 
@@ -1135,6 +1159,36 @@ fn draw_approvals_pane(
     );
 }
 
+fn draw_reasoning_pane(
+    f: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    panel_thinking: Option<&str>,
+    is_running: bool,
+) {
+    let title = if is_running {
+        "Reasoning [Live] (Ctrl+4 hide)"
+    } else {
+        "Reasoning [Last Run] (Ctrl+4 hide)"
+    };
+    let body = panel_thinking
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("(no reasoning captured yet)");
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+    f.render_widget(
+        Paragraph::new(title).style(Style::default().fg(Color::DarkGray)),
+        layout[0],
+    );
+    f.render_widget(
+        Paragraph::new(body)
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: false }),
+        layout[1],
+    );
+}
+
 fn truncate_cell(s: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -1167,3 +1221,4 @@ fn is_protocol_badge_row(t: &ToolRow) -> bool {
         || sr.contains("repeated invalid patch format")
         || sr.contains("tool-only phase")
 }
+
