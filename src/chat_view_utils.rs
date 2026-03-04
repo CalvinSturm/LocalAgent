@@ -55,7 +55,9 @@ pub(crate) fn styled_chat_text(chat_text: &str, base_style: Style) -> (Text<'sta
     let treat_as_diff = has_unified_diff_context(chat_text);
 
     for raw in chat_text.lines() {
-        let (content, style) = if treat_as_diff && is_diff_addition_line(raw) {
+        let (content, style) = if raw.starts_with("THINK> ") {
+            (raw.to_string(), Style::default().fg(Color::DarkGray))
+        } else if treat_as_diff && is_diff_addition_line(raw) {
             let numbered = format!("{:>4} | {raw}", change_line_no);
             change_line_no = change_line_no.saturating_add(1);
             (numbered, Style::default().fg(Color::Green))

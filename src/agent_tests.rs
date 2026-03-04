@@ -30,6 +30,14 @@ fn sanitize_hides_thought_and_think_sections() {
     assert_eq!(sanitize_user_visible_output(s), "visible");
 }
 
+#[test]
+fn split_user_visible_and_thinking_extracts_think_blocks() {
+    let s = "<think>first idea</think>\nVisible answer\n<think>second idea</think>";
+    let (visible, thinking) = crate::agent_output_sanitize::split_user_visible_and_thinking(s);
+    assert_eq!(visible, "Visible answer");
+    assert_eq!(thinking.as_deref(), Some("first idea\n\nsecond idea"));
+}
+
 #[async_trait]
 impl ModelProvider for MockProvider {
     async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {

@@ -2,6 +2,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap};
+use std::collections::BTreeMap;
 
 use crate::tui::state::{ToolRow, UiState};
 
@@ -56,6 +57,8 @@ pub(crate) fn draw_chat_frame(
     status: &str,
     status_detail: &str,
     transcript: &[(String, String)],
+    transcript_thinking: &BTreeMap<usize, String>,
+    show_thinking: bool,
     streaming_assistant: &str,
     ui_state: &UiState,
     tools_selected: usize,
@@ -173,7 +176,24 @@ pub(crate) fn draw_chat_frame(
     }
     let transcript_text = transcript
         .iter()
-        .map(|(role, text)| format!("{}: {}", role.to_uppercase(), text))
+        .enumerate()
+        .map(|(idx, (role, text))| {
+            let mut block = format!("{}: {}", role.to_uppercase(), text);
+            if role == "assistant" {
+                if let Some(thinking) = transcript_thinking.get(&idx) {
+                    if show_thinking {
+                        block.push_str("\nTHINK> [expanded with Ctrl+O]");
+                        for line in thinking.lines() {
+                            block.push_str("\nTHINK> ");
+                            block.push_str(line);
+                        }
+                    } else {
+                        block.push_str("\nTHINK> [hidden; Ctrl+O to expand]");
+                    }
+                }
+            }
+            block
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
     if !transcript_text.is_empty() {

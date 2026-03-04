@@ -135,6 +135,7 @@ pub(crate) fn keybinds_overlay_text() -> Option<String> {
         ("Ctrl+J / Ctrl+K", "approvals selection"),
         ("Ctrl+A / Ctrl+X", "approve / deny selected approval"),
         ("Ctrl+R", "refresh approvals"),
+        ("Ctrl+O", "toggle assistant thinking blocks"),
         ("Tab", "switch tools/approvals focus"),
         ("Ctrl+P", "command palette"),
         ("Ctrl+F", "search transcript"),
