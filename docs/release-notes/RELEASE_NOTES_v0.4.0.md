@@ -7,7 +7,7 @@ Release date: 2026-03-03
 - Completed Tool Call Accuracy delivery through PR12 with stricter runtime/tool contracts and deterministic behaviors.
 - Added native `glob` and `grep` builtins for safe, non-shell file discovery/search workflows.
 - Improved shell-call robustness with better compatibility handling and one-shot auto-repair for common `program not found` failures.
-- Upgraded TUI runtime flow with improved approvals behavior and collapsible model-thinking blocks (`Ctrl+O`).
+- Upgraded TUI runtime flow with improved approvals behavior and a dedicated Reasoning side pane (`Ctrl+4`).
 - Added a dedicated manual TUI testing pack and archived historical planning/spec docs for cleaner ongoing documentation.
 
 ## Included Changes
@@ -35,7 +35,9 @@ Release date: 2026-03-03
 
 ### TUI UX
 
-- Added collapsible model-thinking blocks with `Ctrl+O` toggle for denser and cleaner output review.
+- Added a dedicated right-side Reasoning pane for live/last-run model reasoning visibility.
+- Added global `Ctrl+4` pane toggle handling (including terminal control-character fallback).
+- Reasoning pane is hidden on banner and auto-shows after first prompt submission.
 
 ### Documentation and Testing Assets
 

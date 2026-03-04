@@ -274,7 +274,7 @@ In chat TUI:
 - `Ctrl+A`: approve selected request
 - `Ctrl+X`: deny selected request
 - `Ctrl+R`: refresh approvals
-- `Ctrl+O`: toggle assistant thinking blocks
+- `Ctrl+4`: toggle reasoning pane
 - `/`: open slash-command dropdown
 - `/mode <safe|coding|web|custom>`: switch chat runtime mode
 - `/timeout [seconds|+N|-N|off]`: show and adjust request/stream idle timeout for slow generations
