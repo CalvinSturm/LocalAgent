@@ -157,6 +157,11 @@ struct ToolExecution {
     meta: ToolResultMeta,
 }
 
+type SearchFileEntry = (String, PathBuf);
+type SearchFileList = Vec<SearchFileEntry>;
+type SearchWarnings = Vec<ToolWarningDetail>;
+type CollectSearchFilesResult = Result<(SearchFileList, SearchWarnings), Box<ToolExecution>>;
+
 pub fn tool_side_effects(tool_name: &str) -> SideEffects {
     match tool_name {
         "list_dir" | "read_file" | "glob" | "grep" => SideEffects::FilesystemRead,
@@ -828,9 +833,9 @@ fn attach_warnings(meta: &mut ToolResultMeta, mut warnings: Vec<ToolWarningDetai
 fn collect_search_files(
     rt: &ToolRuntime,
     search_path: &str,
-) -> Result<(Vec<(String, PathBuf)>, Vec<ToolWarningDetail>), ToolExecution> {
+) -> CollectSearchFilesResult {
     if !path_is_workdir_scoped(search_path) && !rt.unsafe_bypass_allow_flags {
-        return Err(failed_exec(
+        return Err(Box::new(failed_exec(
             rt,
             SideEffects::FilesystemRead,
             "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
@@ -842,12 +847,12 @@ fn collect_search_files(
                 minimal_example: Some(json!({"path":"."})),
                 available_tools: None,
             }),
-        ));
+        )));
     }
 
     let base = rt.workdir.join(search_path);
     if !base.exists() {
-        return Err(failed_exec(
+        return Err(Box::new(failed_exec(
             rt,
             SideEffects::FilesystemRead,
             format!("io error: path does not exist: {}", base.display()),
@@ -859,7 +864,7 @@ fn collect_search_files(
                 minimal_example: Some(json!({"path":"."})),
                 available_tools: None,
             }),
-        ));
+        )));
     }
 
     let canonical_workdir = std::fs::canonicalize(&rt.workdir).unwrap_or(rt.workdir.clone());
@@ -872,7 +877,7 @@ fn collect_search_files(
         let metadata = match std::fs::symlink_metadata(&current) {
             Ok(m) => m,
             Err(e) => {
-                return Err(failed_exec(
+                return Err(Box::new(failed_exec(
                     rt,
                     SideEffects::FilesystemRead,
                     format!("io error: failed to stat {}: {e}", current.display()),
@@ -884,7 +889,7 @@ fn collect_search_files(
                         minimal_example: Some(json!({"path":"."})),
                         available_tools: None,
                     }),
-                ));
+                )));
             }
         };
 
@@ -918,7 +923,7 @@ fn collect_search_files(
             let rd = match std::fs::read_dir(&current) {
                 Ok(v) => v,
                 Err(e) => {
-                    return Err(failed_exec(
+                    return Err(Box::new(failed_exec(
                         rt,
                         SideEffects::FilesystemRead,
                         format!(
@@ -933,7 +938,7 @@ fn collect_search_files(
                             minimal_example: Some(json!({"path":"."})),
                             available_tools: None,
                         }),
-                    ));
+                    )));
                 }
             };
             let mut children = Vec::new();
@@ -1006,7 +1011,7 @@ async fn run_glob(rt: &ToolRuntime, args: &Value) -> ToolExecution {
 
     let (files, warnings) = match collect_search_files(rt, search_path_from_args(args)) {
         Ok(v) => v,
-        Err(exec) => return exec,
+        Err(exec) => return *exec,
     };
     let mut matches = files
         .into_iter()
@@ -1096,7 +1101,7 @@ async fn run_grep(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     };
     let (files, warnings) = match collect_search_files(rt, search_path_from_args(args)) {
         Ok(v) => v,
-        Err(exec) => return exec,
+        Err(exec) => return *exec,
     };
 
     let mut skipped_non_text = 0usize;
