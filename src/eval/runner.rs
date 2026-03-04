@@ -918,6 +918,13 @@ async fn run_single(
     };
     let session_messages = Vec::new();
     let mut injected_messages = Vec::new();
+    injected_messages.push(Message {
+        role: Role::System,
+        content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+        tool_call_id: None,
+        tool_name: None,
+        tool_calls: None,
+    });
     if is_c2 {
         injected_messages.push(Message {
             role: Role::System,

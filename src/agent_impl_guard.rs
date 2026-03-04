@@ -29,6 +29,7 @@ pub(crate) fn implementation_integrity_violation(
         final_output,
         observed_tool_calls,
         &tool_executions,
+        true,
         false,
     )
 }
@@ -38,9 +39,10 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
     final_output: &str,
     observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
+    enforce_implementation_integrity_guard: bool,
     allow_skip_post_write_verification: bool,
 ) -> Option<String> {
-    if !is_implementation_task_prompt(user_prompt) {
+    if !enforce_implementation_integrity_guard {
         return None;
     }
     if observed_tool_calls.is_empty() {
@@ -144,45 +146,6 @@ pub(crate) fn normalize_tool_path(path: &str) -> String {
     } else {
         out.join("/").to_ascii_lowercase()
     }
-}
-
-fn is_implementation_task_prompt(prompt: &str) -> bool {
-    let p = prompt.to_ascii_lowercase();
-    let action = [
-        "improve",
-        "fix",
-        "implement",
-        "update",
-        "rewrite",
-        "refactor",
-        "patch",
-        "edit",
-        "modify",
-        "build",
-    ]
-    .iter()
-    .any(|kw| p.contains(kw));
-    let artifact = [
-        "file",
-        "files",
-        "directory",
-        "dir",
-        ".rs",
-        ".py",
-        ".js",
-        ".ts",
-        ".tsx",
-        ".jsx",
-        ".html",
-        ".css",
-        ".md",
-        ".json",
-        ".yaml",
-        ".yml",
-    ]
-    .iter()
-    .any(|kw| p.contains(kw));
-    action && artifact
 }
 
 fn prompt_allows_new_file_without_read(prompt: &str) -> bool {

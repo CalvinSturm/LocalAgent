@@ -134,6 +134,24 @@ struct ReplanResumeRunInput<'a, P: ModelProvider> {
     cancel_rx: &'a mut watch::Receiver<bool>,
 }
 
+fn task_kind_enforces_implementation_guard(
+    task_kind: Option<&str>,
+    selected_task_profile: Option<&str>,
+) -> bool {
+    let is_coding_like = |s: &str| {
+        let t = s.to_ascii_lowercase();
+        t.contains("coding")
+            || t.contains("code")
+            || t.contains("implement")
+            || t.contains("fix")
+            || t.contains("refactor")
+            || t.contains("patch")
+            || t.contains("edit")
+            || t.contains("bugfix")
+    };
+    task_kind.is_some_and(is_coding_like) || selected_task_profile.is_some_and(is_coding_like)
+}
+
 struct ReproSnapshotBuildInput<'a> {
     args: &'a RunArgs,
     provider_kind: ProviderKind,
@@ -746,7 +764,19 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         operator_queue_rx: external_operator_queue_rx,
     };
 
-    let base_instruction_messages = instruction_resolution.messages.clone();
+    let mut base_instruction_messages = instruction_resolution.messages.clone();
+    if task_kind_enforces_implementation_guard(
+        args.task_kind.as_deref(),
+        instruction_resolution.selected_task_profile.as_deref(),
+    ) {
+        base_instruction_messages.push(Message {
+            role: Role::System,
+            content: Some(agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        });
+    }
     let project_guidance_message = project_guidance_resolution
         .as_ref()
         .and_then(project_guidance::project_guidance_message);

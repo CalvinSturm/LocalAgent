@@ -514,6 +514,7 @@ fn implementation_guard_patch_only_marker_allows_missing_post_write_read_back() 
         &calls,
         &executions,
         true,
+        true,
     );
     assert!(err.is_none(), "expected no guard failure, got: {err:?}");
 }
@@ -549,6 +550,7 @@ fn implementation_guard_requires_successful_read_before_apply_patch() {
         "done",
         &calls,
         &executions,
+        true,
         false,
     )
     .expect("expected guard failure");
@@ -596,6 +598,7 @@ fn implementation_guard_requires_successful_post_write_read_back() {
         "done",
         &calls,
         &executions,
+        true,
         false,
     )
     .expect("expected guard failure");
@@ -643,9 +646,33 @@ fn implementation_guard_accepts_dot_prefixed_post_write_read_back() {
         "done",
         &calls,
         &executions,
+        true,
         false,
     );
     assert!(err.is_none(), "dot-prefixed read_file should satisfy verification");
+}
+
+#[test]
+fn implementation_guard_requires_explicit_enforcement_signal() {
+    let calls = vec![crate::types::ToolCall {
+        id: "tc1".to_string(),
+        name: "apply_patch".to_string(),
+        arguments: json!({"path":"main.rs","patch":"@@ -1 +1 @@\n-a\n+b\n"}),
+    }];
+    let executions = vec![crate::agent_impl_guard::ToolExecutionRecord {
+        name: "apply_patch".to_string(),
+        path: Some("main.rs".to_string()),
+        ok: true,
+    }];
+    let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+        "improve main.rs",
+        "done",
+        &calls,
+        &executions,
+        false,
+        false,
+    );
+    assert!(err.is_none(), "guard must be off without explicit enforcement");
 }
 
 #[test]

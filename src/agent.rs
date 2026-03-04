@@ -69,6 +69,8 @@ pub fn sanitize_user_visible_output(raw: &str) -> String {
 
 const MAX_SCHEMA_REPAIR_ATTEMPTS: u32 = 2;
 const MAX_FAILED_REPEAT_PER_KEY: u32 = 3;
+pub(crate) const INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG: &str =
+    "INTERNAL_FLAG:enforce_implementation_integrity_guard";
 const INTERNAL_SKIP_POST_WRITE_VERIFICATION_FLAG: &str =
     "INTERNAL_FLAG:allow_skip_post_write_verification";
 
@@ -101,6 +103,15 @@ fn injected_messages_allow_skip_post_write_verification(messages: &[Message]) ->
             && m.content
                 .as_deref()
                 .is_some_and(|c| c.trim() == INTERNAL_SKIP_POST_WRITE_VERIFICATION_FLAG)
+    })
+}
+
+fn injected_messages_enforce_implementation_integrity_guard(messages: &[Message]) -> bool {
+    messages.iter().any(|m| {
+        matches!(m.role, Role::System | Role::Developer)
+            && m.content
+                .as_deref()
+                .is_some_and(|c| c.trim() == INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG)
     })
 }
 
@@ -720,6 +731,8 @@ Fallback when native tool calls are unavailable:\n\
         session_messages: Vec<Message>,
         injected_messages: Vec<Message>,
     ) -> AgentOutcome {
+        let enforce_implementation_integrity_guard =
+            injected_messages_enforce_implementation_integrity_guard(&injected_messages);
         let allow_skip_post_write_verification =
             injected_messages_allow_skip_post_write_verification(&injected_messages);
         let run_id = self
@@ -1911,7 +1924,9 @@ Fallback when native tool calls are unavailable:\n\
                         } else {
                             assistant.content.unwrap_or_default()
                         };
-                    if !allow_skip_post_write_verification {
+                    if enforce_implementation_integrity_guard
+                        && !allow_skip_post_write_verification
+                    {
                         let pending_post_write_paths =
                             pending_post_write_verification_paths(&observed_tool_executions);
                         for path in pending_post_write_paths {
@@ -1985,6 +2000,7 @@ Fallback when native tool calls are unavailable:\n\
                         &final_output,
                         &observed_tool_calls,
                         &observed_tool_executions,
+                        enforce_implementation_integrity_guard,
                         allow_skip_post_write_verification,
                     ) {
                         self.emit_event(
