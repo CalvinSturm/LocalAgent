@@ -9,6 +9,38 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
 
 - None yet.
 
+## v0.4.0 - 2026-03-03
+
+### Added
+
+- Tool call accuracy expansion through PR12, including stricter runtime/tool protocol handling and deterministic behavior improvements.
+- Native read-only builtins:
+  - `glob` for scoped file discovery
+  - `grep` for bounded regex search over text files
+- Manual TUI testing pack and PR8-PR12 planning/spec docs (archived under `docs/archive/`).
+
+### Changed
+
+- TUI reasoning UX:
+  - moved from inline/collapsible thinking text to a dedicated right-side Reasoning pane
+  - global `Ctrl+4` toggle for pane visibility (with terminal control-character fallback)
+  - pane is hidden on banner and auto-shows after first prompt submission
+- Shell execution flow:
+  - improved shell error classification and compatibility handling
+  - one-shot auto-repair for common command-not-found cases
+- Approval workflow UX:
+  - improved auto-refresh behavior, pending indicators, and pane auto-open behavior
+
+### Docs
+
+- Archived historical Tool Call Accuracy specs (`PR2`-`PR12`) under `docs/archive/`.
+- Aligned README, docs index, and release notes with current `Ctrl+4` reasoning-pane UX.
+
+### Schema Notes
+
+- No intentional breaking schema ID changes.
+- Run artifact and event payload updates in this release remain additive; consumers should continue ignoring unknown fields for forward compatibility.
+
 ## v0.3.1 - 2026-02-28
 
 ### Added
