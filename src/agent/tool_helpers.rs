@@ -263,4 +263,83 @@ impl<P: ModelProvider> Agent<P> {
             }),
         );
     }
+
+    pub(super) async fn verify_post_write_path(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        path: &str,
+        post_write_verify_timeout_ms: u64,
+    ) -> Result<crate::agent_impl_guard::ToolExecutionRecord, String> {
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::PostWriteVerifyStart,
+            serde_json::json!({
+                "name": "read_file",
+                "path": path,
+                "source": "runtime_post_write_verify",
+                "timeout_ms": post_write_verify_timeout_ms
+            }),
+        );
+        let verify_started = std::time::Instant::now();
+        let verify = match tokio::time::timeout(
+            std::time::Duration::from_millis(post_write_verify_timeout_ms),
+            self.tool_rt.exec_target.read_file(crate::target::ReadReq {
+                workdir: self.tool_rt.workdir.clone(),
+                path: path.to_string(),
+                max_read_bytes: self.tool_rt.max_read_bytes,
+            }),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::PostWriteVerifyEnd,
+                    serde_json::json!({
+                        "name": "read_file",
+                        "path": path,
+                        "ok": false,
+                        "status": "timeout",
+                        "source": "runtime_post_write_verify",
+                        "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
+                        "elapsed_ms": verify_started.elapsed().as_millis() as u64,
+                        "timeout_ms": post_write_verify_timeout_ms
+                    }),
+                );
+                return Err(format!(
+                    "implementation guard: runtime post-write verification timed out on read_file for '{path}' after {}ms",
+                    post_write_verify_timeout_ms
+                ));
+            }
+        };
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::PostWriteVerifyEnd,
+            serde_json::json!({
+                "name": "read_file",
+                "path": path,
+                "ok": verify.ok,
+                "status": if verify.ok { "ok" } else { "failed" },
+                "source": "runtime_post_write_verify",
+                "failure_class": if verify.ok { serde_json::Value::Null } else { serde_json::Value::String("E_RUNTIME_POST_WRITE_VERIFY_FAILED".to_string()) },
+                "elapsed_ms": verify_started.elapsed().as_millis() as u64
+            }),
+        );
+        if !verify.ok {
+            return Err(format!(
+                "implementation guard: runtime post-write verification failed read_file on '{path}': {}",
+                verify.content
+            ));
+        }
+        Ok(crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some(path.to_string()),
+            ok: true,
+        })
+    }
 }
