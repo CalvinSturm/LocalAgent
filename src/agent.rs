@@ -122,6 +122,23 @@ fn decide_step_completion(
     StepCompletionDecision::Finalize
 }
 
+fn runtime_requests_finalize(
+    has_tool_calls: bool,
+    plan_tool_enforcement: PlanToolEnforcementMode,
+    active_plan_step_idx: usize,
+    plan_step_constraints_len: usize,
+) -> bool {
+    matches!(
+        decide_step_completion(
+            has_tool_calls,
+            plan_tool_enforcement,
+            active_plan_step_idx,
+            plan_step_constraints_len,
+        ),
+        StepCompletionDecision::Finalize
+    )
+}
+
 impl AgentExitReason {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -1146,58 +1163,56 @@ Fallback when native tool calls are unavailable:\n\
                     );
                 }
             };
-            if resp.tool_calls.is_empty() {
-                let assistant_content = resp.assistant.content.clone().unwrap_or_default();
-                let normalized_calls = extract_content_tool_calls(
-                    &assistant_content,
-                    step as u32,
-                    &allowed_tool_names,
-                );
-                if !normalized_calls.is_empty() {
-                    resp.tool_calls = normalized_calls;
-                    resp.assistant.content = None;
-                } else if contains_tool_wrapper_markers(&assistant_content) {
-                    malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
-                    if malformed_tool_call_attempts >= 2 {
-                        let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: empty or malformed [TOOL_CALL] envelope".to_string();
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::Error,
-                            serde_json::json!({
-                                "error": reason,
-                                "source": "tool_protocol_guard",
-                                "failure_class": "E_PROTOCOL_TOOL_WRAPPER",
-                                "attempt": malformed_tool_call_attempts
-                            }),
-                        );
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::RunEnd,
-                            serde_json::json!({"exit_reason":"planner_error"}),
-                        );
-                        return self.finalize_run_outcome(
-                            AgentOutcomeBuilderInput {
-                                run_id,
-                                started_at,
-                                exit_reason: AgentExitReason::PlannerError,
-                                final_output: reason.clone(),
-                                error: Some(reason),
-                                messages,
-                                tool_calls: observed_tool_calls,
-                                tool_decisions: observed_tool_decisions,
-                                final_prompt_size_chars: request_context_chars,
-                                compaction_report: last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                            },
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
+            let assistant_content = resp.assistant.content.clone().unwrap_or_default();
+            let normalized_calls =
+                extract_content_tool_calls(&assistant_content, step as u32, &allowed_tool_names);
+            if resp.tool_calls.is_empty() && !normalized_calls.is_empty() {
+                resp.tool_calls = normalized_calls;
+                resp.assistant.content = None;
+            } else if resp.tool_calls.is_empty()
+                && normalized_calls.is_empty()
+                && contains_tool_wrapper_markers(&assistant_content)
+            {
+                malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
+                if malformed_tool_call_attempts >= 2 {
+                    let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: empty or malformed [TOOL_CALL] envelope".to_string();
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "tool_protocol_guard",
+                            "failure_class": "E_PROTOCOL_TOOL_WRAPPER",
+                            "attempt": malformed_tool_call_attempts
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::RunEnd,
+                        serde_json::json!({"exit_reason":"planner_error"}),
+                    );
+                    return self.finalize_run_outcome(
+                        AgentOutcomeBuilderInput {
+                            run_id,
+                            started_at,
+                            exit_reason: AgentExitReason::PlannerError,
+                            final_output: reason.clone(),
+                            error: Some(reason),
+                            messages,
+                            tool_calls: observed_tool_calls,
+                            tool_decisions: observed_tool_decisions,
+                            final_prompt_size_chars: request_context_chars,
+                            compaction_report: last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                        },
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    );
                 }
             }
             if let Some(usage) = &resp.usage {
@@ -1258,8 +1273,15 @@ Fallback when native tool calls are unavailable:\n\
                     &taint_state,
                 );
             }
+            let has_actionable_tool_calls = !resp.tool_calls.is_empty();
+            let runtime_attempts_finalize = runtime_requests_finalize(
+                has_actionable_tool_calls,
+                self.plan_tool_enforcement,
+                active_plan_step_idx,
+                self.plan_step_constraints.len(),
+            );
             if tool_only_phase_active
-                && resp.tool_calls.is_empty()
+                && runtime_attempts_finalize
                 && !resp
                     .assistant
                     .content
@@ -1330,7 +1352,7 @@ Fallback when native tool calls are unavailable:\n\
                 });
                 continue;
             }
-            if !resp.tool_calls.is_empty() {
+            if has_actionable_tool_calls {
                 tool_only_phase_active = false;
             }
             let mut assistant = resp.assistant.clone();
@@ -1352,7 +1374,7 @@ Fallback when native tool calls are unavailable:\n\
             if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
                 && !self.plan_step_constraints.is_empty()
                 && worker_step_status.is_none()
-                && resp.tool_calls.is_empty()
+                && runtime_attempts_finalize
             {
                 blocked_control_envelope_count = blocked_control_envelope_count.saturating_add(1);
                 self.emit_event(
@@ -1706,7 +1728,7 @@ Fallback when native tool calls are unavailable:\n\
             }
 
             match decide_step_completion(
-                !resp.tool_calls.is_empty(),
+                has_actionable_tool_calls,
                 self.plan_tool_enforcement,
                 active_plan_step_idx,
                 self.plan_step_constraints.len(),

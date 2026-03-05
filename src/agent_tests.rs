@@ -74,6 +74,36 @@ fn step_completion_decision_finalizes_when_no_tools_and_no_pending_plan() {
     assert!(matches!(d, super::StepCompletionDecision::Finalize));
 }
 
+#[test]
+fn runtime_requests_finalize_when_no_tools_and_no_pending_plan() {
+    assert!(super::runtime_requests_finalize(
+        false,
+        PlanToolEnforcementMode::Off,
+        0,
+        0
+    ));
+}
+
+#[test]
+fn runtime_requests_finalize_is_false_when_tools_present() {
+    assert!(!super::runtime_requests_finalize(
+        true,
+        PlanToolEnforcementMode::Off,
+        0,
+        0
+    ));
+}
+
+#[test]
+fn runtime_requests_finalize_is_false_when_plan_step_pending() {
+    assert!(!super::runtime_requests_finalize(
+        false,
+        PlanToolEnforcementMode::Hard,
+        0,
+        1
+    ));
+}
+
 #[async_trait]
 impl ModelProvider for MockProvider {
     async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
