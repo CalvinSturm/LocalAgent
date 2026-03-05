@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use tokio::sync::watch;
 
 use crate::agent::{
@@ -178,6 +178,29 @@ fn maybe_append_implementation_guard_message(
     }
 }
 
+fn validate_runtime_owned_http_timeouts(
+    args: &RunArgs,
+    planner_strict_effective: bool,
+    selected_task_profile: Option<&str>,
+) -> anyhow::Result<()> {
+    let runtime_owned_mode =
+        planner_strict_effective || should_enable_implementation_guard(args, selected_task_profile);
+    if !runtime_owned_mode {
+        return Ok(());
+    }
+    if args.http_timeout_ms == 0 {
+        return Err(anyhow!(
+            "invalid timeout config for strict/runtime-owned mode: --http-timeout-ms must be > 0"
+        ));
+    }
+    if args.http_stream_idle_timeout_ms == 0 {
+        return Err(anyhow!(
+            "invalid timeout config for strict/runtime-owned mode: --http-stream-idle-timeout-ms must be > 0"
+        ));
+    }
+    Ok(())
+}
+
 struct ReproSnapshotBuildInput<'a> {
     args: &'a RunArgs,
     provider_kind: ProviderKind,
@@ -350,6 +373,11 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         repo_map_resolution,
         activated_packs,
     } = build_context_augmentations(args, paths, &worker_model)?;
+    validate_runtime_owned_http_timeouts(
+        args,
+        planner_strict_effective,
+        instruction_resolution.selected_task_profile.as_deref(),
+    )?;
 
     let (mcp_config_path, mcp_registry) =
         resolve_mcp_runtime_registry(args, paths, shared_mcp_registry).await?;
@@ -1431,6 +1459,48 @@ mod tests {
                 .as_deref()
                 .is_some_and(|c| c == crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG)
         }));
+    }
+
+    #[test]
+    fn runtime_owned_mode_rejects_zero_http_timeouts() {
+        let args = crate::RunArgs::parse_from(["localagent", "--agent-mode", "build"]);
+        let err =
+            super::validate_runtime_owned_http_timeouts(&args, false, None).expect_err("must fail");
+        assert!(err.to_string().contains("--http-timeout-ms must be > 0"));
+    }
+
+    #[test]
+    fn runtime_owned_mode_accepts_nonzero_http_timeouts() {
+        let args = crate::RunArgs::parse_from([
+            "localagent",
+            "--agent-mode",
+            "build",
+            "--http-timeout-ms",
+            "60000",
+            "--http-stream-idle-timeout-ms",
+            "15000",
+        ]);
+        super::validate_runtime_owned_http_timeouts(&args, false, None).expect("valid timeouts");
+    }
+
+    #[test]
+    fn explicit_opt_out_allows_zero_http_timeouts() {
+        let args = crate::RunArgs::parse_from([
+            "localagent",
+            "--agent-mode",
+            "build",
+            "--disable-implementation-guard",
+        ]);
+        super::validate_runtime_owned_http_timeouts(&args, false, None)
+            .expect("opt-out allows non-strict zero timeout");
+    }
+
+    #[test]
+    fn planner_strict_mode_rejects_zero_http_timeouts() {
+        let args = crate::RunArgs::parse_from(["localagent", "--agent-mode", "plan"]);
+        let err =
+            super::validate_runtime_owned_http_timeouts(&args, true, None).expect_err("must fail");
+        assert!(err.to_string().contains("--http-timeout-ms must be > 0"));
     }
 }
 
