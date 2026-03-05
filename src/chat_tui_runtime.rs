@@ -19,18 +19,10 @@ use crate::chat_tui::approvals::refresh_approvals_with_auto_open;
 use crate::chat_tui::event_dispatch::{
     handle_tui_outer_event_dispatch, TuiOuterEventDispatchInput, TuiOuterEventDispatchOutcome,
 };
-#[cfg(test)]
-use crate::chat_tui::event_dispatch::TuiOuterKeyDispatchOutcome;
 use crate::chat_tui::key_dispatch::handle_tui_outer_key_dispatch;
 use crate::chat_tui::overlay::{
     overlay_pending_message_for_submit, push_overlay_log_dedup, LearnOverlayState,
 };
-#[cfg(test)]
-use crate::chat_tui::overlay::LearnOverlayInputFocus;
-#[cfg(test)]
-use crate::chat_tui::overlay_input::OVERLAY_CAPTURE_SUMMARY_MAX_CHARS;
-#[cfg(test)]
-use crate::chat_tui::overlay_input::{handle_tui_outer_paste_event, TuiOuterPasteInput};
 use crate::chat_tui::render_model::{build_tui_render_frame_input, TuiRenderFrameBuildInput};
 use crate::chat_tui::submit::{
     handle_tui_enter_submit, TuiEnterSubmitInput, TuiEnterSubmitOutcome,
@@ -45,13 +37,6 @@ use crate::provider_runtime;
 use crate::store;
 use crate::tui::state::UiState;
 use crate::{ChatArgs, RunArgs};
-
-#[cfg(test)]
-fn build_learn_overlay_render_model(
-    s: &LearnOverlayState,
-) -> crate::chat_ui::LearnOverlayRenderModel {
-    crate::chat_tui::render_model::build_learn_overlay_render_model(s)
-}
 
 pub(crate) async fn run_chat_tui(
     chat: &ChatArgs,

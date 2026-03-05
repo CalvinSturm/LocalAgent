@@ -1,4 +1,15 @@
-    use super::{build_learn_overlay_render_model, LearnOverlayInputFocus, LearnOverlayState};
+    use crate::chat_tui::approvals::refresh_approvals_with_auto_open;
+    use crate::chat_tui::event_dispatch::{TuiOuterKeyDispatchInput, TuiOuterKeyDispatchOutcome};
+    use crate::chat_tui::key_dispatch::handle_tui_outer_key_dispatch;
+    use crate::chat_tui::overlay::{
+        build_overlay_promote_submit_line, cycle_overlay_focus, LearnOverlayInputFocus,
+        LearnOverlayState,
+    };
+    use crate::chat_tui::overlay_input::{
+        handle_tui_outer_paste_event, TuiOuterPasteInput, OVERLAY_CAPTURE_SUMMARY_MAX_CHARS,
+    };
+    use crate::chat_tui::render_model::build_learn_overlay_render_model;
+    use crate::trust::approvals::ApprovalsStore;
     use crate::chat_ui::LearnOverlayTab;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tempfile::tempdir;
@@ -145,7 +156,7 @@
             summary_choice: crate::chat_ui::LearnOverlaySummaryChoice::Original,
             selected_summary: None,
         };
-        let err = super::build_overlay_promote_submit_line(&s).expect_err("slug required");
+        let err = build_overlay_promote_submit_line(&s).expect_err("slug required");
         assert!(err.contains("slug"));
     }
 
@@ -173,7 +184,7 @@
             summary_choice: crate::chat_ui::LearnOverlaySummaryChoice::Original,
             selected_summary: None,
         };
-        let line = super::build_overlay_promote_submit_line(&s).expect("line");
+        let line = build_overlay_promote_submit_line(&s).expect("line");
         assert!(line.contains("/learn promote 01ABC --to agents"));
         assert!(line.contains("--force"));
     }
@@ -202,7 +213,7 @@
             summary_choice: crate::chat_ui::LearnOverlaySummaryChoice::Original,
             selected_summary: None,
         };
-        let err = super::build_overlay_promote_submit_line(&s).expect_err("pack_id required");
+        let err = build_overlay_promote_submit_line(&s).expect_err("pack_id required");
         assert!(err.contains("pack_id"));
     }
 
@@ -259,7 +270,7 @@
             summary_choice: crate::chat_ui::LearnOverlaySummaryChoice::Original,
             selected_summary: None,
         };
-        super::cycle_overlay_focus(&mut s, false);
+        cycle_overlay_focus(&mut s, false);
         assert_eq!(s.input_focus, LearnOverlayInputFocus::PromoteId);
     }
 
@@ -318,7 +329,7 @@
         let mut tools_focus = true;
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
-        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             learn_overlay: &mut overlay,
             run_busy: true,
@@ -353,7 +364,7 @@
             logs: &mut logs,
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
-        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
         let ov = overlay.expect("overlay");
         assert!(ov.logs.iter().any(|l| l.contains("ERR_TUI_BUSY_TRY_AGAIN")));
     }
@@ -413,7 +424,7 @@
         let mut tools_focus = true;
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
-        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             learn_overlay: &mut overlay,
             run_busy: true,
@@ -448,7 +459,7 @@
             logs: &mut logs,
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
-        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
         let ov = overlay.expect("overlay");
         assert!(ov.logs.iter().any(|l| l.contains("ERR_TUI_BUSY_TRY_AGAIN")));
     }
@@ -509,7 +520,7 @@
         let mut tools_focus = true;
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
-        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -544,7 +555,7 @@
             logs: &mut logs,
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
-        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
         let ov = overlay.expect("overlay");
         assert!(ov.pending_submit_line.is_some());
         assert!(ov
@@ -612,7 +623,7 @@
         let mut logs = Vec::new();
 
         for _ in 0..3 {
-            let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+            let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
                 key: KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 learn_overlay: &mut overlay,
                 run_busy: false,
@@ -647,7 +658,7 @@
                 logs: &mut logs,
                 learn_overlay_cursor: &mut learn_overlay_cursor,
             });
-            assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+            assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
         }
 
         let ov = overlay.expect("overlay");
@@ -711,7 +722,7 @@
         let mut tools_focus = true;
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
-        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
             learn_overlay: &mut overlay,
             run_busy: true,
@@ -746,7 +757,7 @@
             logs: &mut logs,
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
-        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
         assert!(overlay.is_none());
     }
 
@@ -806,7 +817,7 @@
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
 
-        let out_plain = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out_plain = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -843,13 +854,13 @@
         });
         assert!(matches!(
             out_plain,
-            super::TuiOuterKeyDispatchOutcome::Handled
+            TuiOuterKeyDispatchOutcome::Handled
         ));
         let ov_plain = overlay.as_ref().expect("overlay");
         assert_eq!(ov_plain.tab, LearnOverlayTab::Promote);
         assert_eq!(ov_plain.promote_id, "abc1");
 
-        let out_ctrl = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out_ctrl = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Char('1'), KeyModifiers::CONTROL),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -886,7 +897,7 @@
         });
         assert!(matches!(
             out_ctrl,
-            super::TuiOuterKeyDispatchOutcome::Handled
+            TuiOuterKeyDispatchOutcome::Handled
         ));
         let ov_ctrl = overlay.as_ref().expect("overlay");
         assert_eq!(ov_ctrl.tab, LearnOverlayTab::Capture);
@@ -924,7 +935,7 @@
         let spam = "'FastVideoProcessor' object has no attribute '_artifact_manager'";
 
         for _ in 0..10 {
-            super::handle_tui_outer_paste_event(super::TuiOuterPasteInput {
+            handle_tui_outer_paste_event(TuiOuterPasteInput {
                 pasted: spam,
                 input: &mut input,
                 input_cursor: &mut input_cursor,
@@ -936,7 +947,7 @@
         }
 
         let ov = overlay.expect("overlay");
-        assert!(ov.summary.len() <= super::OVERLAY_CAPTURE_SUMMARY_MAX_CHARS);
+        assert!(ov.summary.len() <= OVERLAY_CAPTURE_SUMMARY_MAX_CHARS);
         assert!(ov.summary.contains("_artifact_manager"));
     }
 
@@ -996,7 +1007,7 @@
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
 
-        let _ = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let _ = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -1031,7 +1042,7 @@
             logs: &mut logs,
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
-        let _ = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let _ = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -1127,7 +1138,7 @@
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
 
-        let _ = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let _ = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -1201,7 +1212,7 @@
         let mut tools_focus = true;
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
-        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -1236,7 +1247,7 @@
             logs: &mut logs,
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
-        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
         assert!(show_thinking_panel);
     }
 
@@ -1274,7 +1285,7 @@
         let mut tools_focus = true;
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
-        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -1309,7 +1320,7 @@
             logs: &mut logs,
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
-        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
         assert!(show_thinking_panel);
         assert!(overlay.is_some());
     }
@@ -1348,7 +1359,7 @@
         let mut tools_focus = true;
         let mut approvals_selected = 0usize;
         let mut logs = Vec::new();
-        let out = super::handle_tui_outer_key_dispatch(super::TuiOuterKeyDispatchInput {
+        let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
             key: KeyEvent::new(KeyCode::Char('\u{1c}'), KeyModifiers::empty()),
             learn_overlay: &mut overlay,
             run_busy: false,
@@ -1383,7 +1394,7 @@
             logs: &mut logs,
             learn_overlay_cursor: &mut learn_overlay_cursor,
         });
-        assert!(matches!(out, super::TuiOuterKeyDispatchOutcome::Handled));
+        assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
         assert!(show_thinking_panel);
     }
 
@@ -1391,7 +1402,7 @@
     fn refresh_approvals_auto_opens_on_first_pending_transition() {
         let tmp = tempdir().expect("tempdir");
         let approvals_path = tmp.path().join("approvals.json");
-        let store = super::ApprovalsStore::new(approvals_path.clone());
+        let store = ApprovalsStore::new(approvals_path.clone());
         let _id = store
             .create_pending("shell", &serde_json::json!({"cmd":"echo"}), None, None)
             .expect("pending");
@@ -1401,7 +1412,7 @@
         let mut previous_pending = 0usize;
         let mut logs = Vec::new();
 
-        super::refresh_approvals_with_auto_open(
+        refresh_approvals_with_auto_open(
             &mut ui_state,
             &approvals_path,
             &mut show_approvals,
@@ -1431,14 +1442,14 @@
         let mut previous_pending = 1usize;
         let mut logs = Vec::new();
 
-        super::refresh_approvals_with_auto_open(
+        refresh_approvals_with_auto_open(
             &mut ui_state,
             &approvals_path,
             &mut show_approvals,
             &mut previous_pending,
             &mut logs,
         );
-        super::refresh_approvals_with_auto_open(
+        refresh_approvals_with_auto_open(
             &mut ui_state,
             &approvals_path,
             &mut show_approvals,
@@ -1451,3 +1462,4 @@
         assert_eq!(ui_state.pending_approvals.len(), 1);
         assert_eq!(ui_state.pending_approvals[0].id, "existing");
     }
+
