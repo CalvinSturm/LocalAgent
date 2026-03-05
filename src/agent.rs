@@ -2391,27 +2391,11 @@ impl<P: ModelProvider> Agent<P> {
                             && tc.name == "write_file"
                             && content.contains("write_file blocked for existing file")
                         {
-                            let blocked_path = normalized_tool_path_from_args(tc)
-                                .unwrap_or_else(|| "<unknown>".to_string());
-                            let reason = format!(
-                                "implementation guard: write_file on '{blocked_path}' requires prior read_file on the same path"
-                            );
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::Error,
-                                serde_json::json!({
-                                    "error": reason,
-                                    "source": "implementation_integrity_guard",
-                                    "failure_class": "E_RUNTIME_WRITEFILE_EXISTING_BLOCKED",
-                                    "path": blocked_path
-                                }),
-                            );
-                            return self.finalize_planner_error_with_end(
-                                step as u32,
+                            return self.finalize_existing_write_file_guard_with_end(
                                 run_id,
+                                step as u32,
+                                tc,
                                 started_at,
-                                reason,
                                 messages,
                                 observed_tool_calls,
                                 observed_tool_decisions,

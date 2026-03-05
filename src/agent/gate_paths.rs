@@ -5,9 +5,64 @@ use crate::tools::tool_side_effects;
 use crate::types::{Message, ToolCall, TokenUsage};
 
 use super::agent_types::ToolDecisionRecord;
+use super::tool_helpers::normalized_tool_path_from_args;
 use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn finalize_existing_write_file_guard_with_end(
+        &mut self,
+        run_id: String,
+        step: u32,
+        tc: &ToolCall,
+        started_at: String,
+        messages: Vec<Message>,
+        observed_tool_calls: Vec<ToolCall>,
+        observed_tool_decisions: Vec<ToolDecisionRecord>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+    ) -> super::agent_types::AgentOutcome {
+        let blocked_path =
+            normalized_tool_path_from_args(tc).unwrap_or_else(|| "<unknown>".to_string());
+        let reason = format!(
+            "implementation guard: write_file on '{blocked_path}' requires prior read_file on the same path"
+        );
+        self.emit_event(
+            &run_id,
+            step,
+            crate::events::EventKind::Error,
+            serde_json::json!({
+                "error": reason,
+                "source": "implementation_integrity_guard",
+                "failure_class": "E_RUNTIME_WRITEFILE_EXISTING_BLOCKED",
+                "path": blocked_path
+            }),
+        );
+        self.finalize_planner_error_with_end(
+            step,
+            run_id,
+            started_at,
+            reason,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            request_context_chars,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_allowed_tool_result(
         &mut self,
