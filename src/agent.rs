@@ -14,16 +14,14 @@ use crate::agent_tool_exec::{
     make_invalid_args_tool_message, schema_repair_instruction_message, tool_result_error_code,
     tool_result_has_error,
 };
-use crate::agent_utils::{provider_name, sha256_hex};
+use crate::agent_utils::provider_name;
 use crate::compaction::{
     context_size_chars, maybe_compact, CompactionReport, CompactionSettings,
 };
 use crate::events::{EventKind, EventSink};
 use crate::gate::{GateContext, GateDecision, GateEvent, ToolGate};
-use crate::hooks::protocol::{
-    HookInvocationReport, PreModelCompactionPayload, PreModelPayload, ToolResultPayload,
-};
-use crate::hooks::runner::{make_pre_model_input, make_tool_result_input, HookManager};
+use crate::hooks::protocol::{HookInvocationReport, PreModelCompactionPayload, PreModelPayload};
+use crate::hooks::runner::{make_pre_model_input, HookManager};
 use crate::mcp::registry::McpRegistry;
 use crate::operator_queue::{
     PendingMessageQueue, QueueLimits, QueueSubmitRequest,
@@ -2289,151 +2287,44 @@ impl<P: ModelProvider> Agent<P> {
                                     .await;
                             }
                         }
-                        let original_content = tool_msg.content.clone().unwrap_or_default();
-                        let mut input_digest = sha256_hex(original_content.as_bytes());
-                        let mut output_digest = input_digest.clone();
-                        let mut input_len = original_content.chars().count();
-                        let mut output_len = input_len;
-                        let mut final_truncated = infer_truncated_flag(&original_content);
-
-                        if self.hooks.enabled() {
-                            let payload = ToolResultPayload {
-                                tool_call_id: tc.id.clone(),
-                                tool_name: tc.name.clone(),
-                                ok: !tool_result_has_error(&original_content),
-                                content: original_content.clone(),
-                                truncated: final_truncated,
-                            };
-                            let hook_input = make_tool_result_input(
+                        let hook_state = match self
+                            .apply_tool_result_hooks(
                                 &run_id,
                                 step as u32,
-                                provider_name(self.gate_ctx.provider),
-                                &self.model,
-                                &self.gate_ctx.workdir,
-                                match serde_json::to_value(payload) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::HookError,
-                                            serde_json::json!({"stage":"tool_result","error": e.to_string()}),
-                                        );
-                                        return self.finalize_hook_aborted_with_end(
-                                            step as u32,
-                                            run_id,
-                                            started_at,
-                                            String::new(),
-                                            format!(
-                                                "failed to encode tool_result hook payload: {e}"
-                                            ),
-                                            messages,
-                                            observed_tool_calls,
-                                            observed_tool_decisions,
-                                            request_context_chars,
-                                            last_compaction_report,
-                                            hook_invocations,
-                                            provider_retry_count,
-                                            provider_error_count,
-                                            saw_token_usage,
-                                            &total_token_usage,
-                                            &taint_state,
-                                        );
-                                    }
-                                },
-                            );
-                            match self
-                                .hooks
-                                .run_tool_result_hooks(
-                                    hook_input,
-                                    &tc.name,
-                                    &original_content,
-                                    final_truncated,
-                                )
-                                .await
-                            {
-                                Ok(hook_out) => {
-                                    for inv in &hook_out.invocations {
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::HookStart,
-                                            serde_json::json!({
-                                                "hook_name": inv.hook_name,
-                                                "stage": inv.stage
-                                            }),
-                                        );
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::HookEnd,
-                                            serde_json::json!({
-                                                "hook_name": inv.hook_name,
-                                                "stage": inv.stage,
-                                                "action": inv.action,
-                                                "modified": inv.modified,
-                                                "duration_ms": inv.duration_ms,
-                                                "input_digest": inv.input_digest,
-                                                "output_digest": inv.output_digest
-                                            }),
-                                        );
-                                    }
-                                    hook_invocations.extend(hook_out.invocations);
-                                    if let Some(reason) = hook_out.abort_reason {
-                                        return self.finalize_hook_aborted_with_end(
-                                            step as u32,
-                                            run_id,
-                                            started_at,
-                                            String::new(),
-                                            reason,
-                                            messages,
-                                            observed_tool_calls,
-                                            observed_tool_decisions,
-                                            request_context_chars,
-                                            last_compaction_report,
-                                            hook_invocations,
-                                            provider_retry_count,
-                                            provider_error_count,
-                                            saw_token_usage,
-                                            &total_token_usage,
-                                            &taint_state,
-                                        );
-                                    }
-                                    tool_msg.content = Some(hook_out.content.clone());
-                                    final_truncated = hook_out.truncated;
-                                    input_digest = hook_out.input_digest;
-                                    output_digest = hook_out.output_digest;
-                                    input_len = hook_out.input_len;
-                                    output_len = hook_out.output_len;
-                                }
-                                Err(e) => {
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::HookError,
-                                        serde_json::json!({"stage":"tool_result","error": e.message}),
-                                    );
-                                    return self.finalize_hook_aborted_with_end(
-                                        step as u32,
-                                        run_id,
-                                        started_at,
-                                        String::new(),
-                                        e.message,
-                                        messages,
-                                        observed_tool_calls,
-                                        observed_tool_decisions,
-                                        request_context_chars,
-                                        last_compaction_report,
-                                        hook_invocations,
-                                        provider_retry_count,
-                                        provider_error_count,
-                                        saw_token_usage,
-                                        &total_token_usage,
-                                        &taint_state,
-                                    );
-                                }
+                                tc,
+                                tool_msg,
+                                &mut hook_invocations,
+                            )
+                            .await
+                        {
+                            Ok(state) => state,
+                            Err(reason) => {
+                                return self.finalize_hook_aborted_with_end(
+                                    step as u32,
+                                    run_id,
+                                    started_at,
+                                    String::new(),
+                                    reason,
+                                    messages,
+                                    observed_tool_calls,
+                                    observed_tool_decisions,
+                                    request_context_chars,
+                                    last_compaction_report,
+                                    hook_invocations,
+                                    provider_retry_count,
+                                    provider_error_count,
+                                    saw_token_usage,
+                                    &total_token_usage,
+                                    &taint_state,
+                                );
                             }
-                        }
+                        };
+                        let tool_msg = hook_state.tool_msg;
+                        let input_digest = hook_state.input_digest;
+                        let output_digest = hook_state.output_digest;
+                        let input_len = hook_state.input_len;
+                        let output_len = hook_state.output_len;
+                        let final_truncated = hook_state.final_truncated;
 
                         let content = tool_msg.content.clone().unwrap_or_default();
                         let final_ok = !tool_result_has_error(&content);
