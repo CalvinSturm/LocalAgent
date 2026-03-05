@@ -11,10 +11,9 @@ use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_
 use crate::agent_taint_helpers::compute_taint_spans_for_tool;
 use crate::agent_tool_exec::ToolRunOutcome;
 use crate::agent_tool_exec::{
-    classify_tool_failure, contains_tool_wrapper_markers, extract_content_tool_calls,
-    infer_truncated_flag, is_apply_patch_invalid_format_error, make_invalid_args_tool_message,
-    run_tool_once, schema_repair_instruction_message, tool_result_error_code,
-    tool_result_has_error,
+    classify_tool_failure, infer_truncated_flag, is_apply_patch_invalid_format_error,
+    make_invalid_args_tool_message, run_tool_once, schema_repair_instruction_message,
+    tool_result_error_code, tool_result_has_error,
 };
 use crate::agent_utils::{provider_name, sha256_hex};
 use crate::compaction::{
@@ -43,6 +42,7 @@ use std::time::{Duration, Instant};
 mod agent_types;
 mod model_io;
 mod operator_queue;
+mod response_normalization;
 mod runtime_completion;
 mod run_control;
 mod run_events;
@@ -63,6 +63,7 @@ use runtime_completion::{
     runtime_completion_decision, RuntimeCompletionDecision, RuntimeCompletionInputs,
 };
 use run_events::apply_usage_totals;
+use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
 use tool_helpers::{
     failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
     is_repairable_error_code, normalized_tool_path_from_args,
@@ -70,6 +71,11 @@ use tool_helpers::{
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     sanitize_user_visible_output_impl(raw)
+}
+
+#[cfg(test)]
+fn contains_tool_wrapper_markers(text: &str) -> bool {
+    crate::agent_tool_exec::contains_tool_wrapper_markers(text)
 }
 
 const MAX_SCHEMA_REPAIR_ATTEMPTS: u32 = 2;
@@ -205,13 +211,8 @@ impl<P: ModelProvider> Agent<P> {
             ) {
                 Ok(c) => c,
                 Err(err_text) => {
-                    self.emit_event(
-                        &run_id,
+                    return self.finalize_run_outcome_with_end(
                         step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"provider_error"}),
-                    );
-                    return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
                             started_at,
@@ -323,14 +324,9 @@ impl<P: ModelProvider> Agent<P> {
                         }
                         hook_invocations.extend(result.invocations);
                         if let Some(reason) = result.abort_reason {
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"hook_aborted"}),
-                            );
                             let prompt_chars = context_size_chars(&messages);
-                            return self.finalize_run_outcome(
+                            return self.finalize_run_outcome_with_end(
+                                step as u32,
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -489,13 +485,8 @@ impl<P: ModelProvider> Agent<P> {
                         EventKind::Error,
                         serde_json::json!({"error": e.to_string()}),
                     );
-                    self.emit_event(
-                        &run_id,
+                    return self.finalize_run_outcome_with_end(
                         step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"provider_error"}),
-                    );
-                    return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
                             started_at,
@@ -517,59 +508,52 @@ impl<P: ModelProvider> Agent<P> {
                     );
                 }
             };
-            let assistant_content = resp.assistant.content.clone().unwrap_or_default();
-            let normalized_calls =
-                extract_content_tool_calls(&assistant_content, step as u32, &allowed_tool_names);
-            if resp.tool_calls.is_empty() && !normalized_calls.is_empty() {
-                resp.tool_calls = normalized_calls;
-                resp.assistant.content = None;
-            } else if resp.tool_calls.is_empty()
-                && normalized_calls.is_empty()
-                && contains_tool_wrapper_markers(&assistant_content)
-            {
-                malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
-                if malformed_tool_call_attempts >= 2 {
-                    let reason =
-                        "MODEL_TOOL_PROTOCOL_VIOLATION: empty or malformed [TOOL_CALL] envelope"
-                            .to_string();
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::Error,
-                        serde_json::json!({
-                            "error": reason,
-                            "source": "tool_protocol_guard",
-                            "failure_class": "E_PROTOCOL_TOOL_WRAPPER",
-                            "attempt": malformed_tool_call_attempts
-                        }),
-                    );
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"planner_error"}),
-                    );
-                    return self.finalize_run_outcome(
-                        AgentOutcomeBuilderInput {
-                            run_id,
-                            started_at,
-                            exit_reason: AgentExitReason::PlannerError,
-                            final_output: reason.clone(),
-                            error: Some(reason),
-                            messages,
-                            tool_calls: observed_tool_calls,
-                            tool_decisions: observed_tool_decisions,
-                            final_prompt_size_chars: request_context_chars,
-                            compaction_report: last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                        },
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    );
+            match normalize_tool_calls_from_assistant(&resp, step as u32, &allowed_tool_names) {
+                ToolWrapperParseState::Normalized(normalized_calls) => {
+                    resp.tool_calls = normalized_calls;
+                    resp.assistant.content = None;
                 }
+                ToolWrapperParseState::MalformedWrapper => {
+                    malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
+                    if malformed_tool_call_attempts >= 2 {
+                        let reason =
+                            "MODEL_TOOL_PROTOCOL_VIOLATION: empty or malformed [TOOL_CALL] envelope"
+                                .to_string();
+                        self.emit_event(
+                            &run_id,
+                            step as u32,
+                            EventKind::Error,
+                            serde_json::json!({
+                                "error": reason,
+                                "source": "tool_protocol_guard",
+                                "failure_class": "E_PROTOCOL_TOOL_WRAPPER",
+                                "attempt": malformed_tool_call_attempts
+                            }),
+                        );
+                        return self.finalize_run_outcome_with_end(
+                            step as u32,
+                            AgentOutcomeBuilderInput {
+                                run_id,
+                                started_at,
+                                exit_reason: AgentExitReason::PlannerError,
+                                final_output: reason.clone(),
+                                error: Some(reason),
+                                messages,
+                                tool_calls: observed_tool_calls,
+                                tool_decisions: observed_tool_decisions,
+                                final_prompt_size_chars: request_context_chars,
+                                compaction_report: last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                            },
+                            saw_token_usage,
+                            &total_token_usage,
+                            &taint_state,
+                        );
+                    }
+                }
+                ToolWrapperParseState::Unchanged => {}
             }
             if let Some(usage) = &resp.usage {
                 apply_usage_totals(usage, &mut saw_token_usage, &mut total_token_usage);
@@ -596,13 +580,8 @@ impl<P: ModelProvider> Agent<P> {
                         "tool_calls": resp.tool_calls.len()
                     }),
                 );
-                self.emit_event(
-                    &run_id,
+                return self.finalize_run_outcome_with_end(
                     step as u32,
-                    EventKind::RunEnd,
-                    serde_json::json!({"exit_reason":"planner_error"}),
-                );
-                return self.finalize_run_outcome(
                     AgentOutcomeBuilderInput {
                         run_id,
                         started_at,
@@ -657,13 +636,8 @@ impl<P: ModelProvider> Agent<P> {
                             "failure_class": "E_PROTOCOL_TOOL_ONLY"
                         }),
                     );
-                    self.emit_event(
-                        &run_id,
+                    return self.finalize_run_outcome_with_end(
                         step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"planner_error"}),
-                    );
-                    return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
                             started_at,
@@ -719,13 +693,8 @@ impl<P: ModelProvider> Agent<P> {
                     }),
                 );
                 if blocked_control_envelope_count >= 2 {
-                    self.emit_event(
-                        &run_id,
+                    return self.finalize_run_outcome_with_end(
                         step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"planner_error"}),
-                    );
-                    return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
                             started_at,
@@ -779,13 +748,8 @@ impl<P: ModelProvider> Agent<P> {
                                     "reason": "invalid_done_transition"
                                 }),
                             );
-                            self.emit_event(
-                                &run_id,
+                            return self.finalize_run_outcome_with_end(
                                 step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"planner_error"}),
-                            );
-                            return self.finalize_run_outcome(
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -841,13 +805,8 @@ impl<P: ModelProvider> Agent<P> {
                                         "reason": "invalid_next_step_id"
                                     }),
                                 );
-                                self.emit_event(
-                                    &run_id,
+                                return self.finalize_run_outcome_with_end(
                                     step as u32,
-                                    EventKind::RunEnd,
-                                    serde_json::json!({"exit_reason":"planner_error"}),
-                                );
-                                return self.finalize_run_outcome(
                                     AgentOutcomeBuilderInput {
                                         run_id,
                                         started_at,
@@ -887,13 +846,8 @@ impl<P: ModelProvider> Agent<P> {
                                     "reason": "invalid_retry_transition"
                                 }),
                             );
-                            self.emit_event(
-                                &run_id,
+                            return self.finalize_run_outcome_with_end(
                                 step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"planner_error"}),
-                            );
-                            return self.finalize_run_outcome(
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -932,13 +886,8 @@ impl<P: ModelProvider> Agent<P> {
                                     "retry_count": *entry
                                 }),
                             );
-                            self.emit_event(
-                                &run_id,
+                            return self.finalize_run_outcome_with_end(
                                 step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"planner_error"}),
-                            );
-                            return self.finalize_run_outcome(
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -973,13 +922,8 @@ impl<P: ModelProvider> Agent<P> {
                                 "status": step_status.status
                             }),
                         );
-                        self.emit_event(
-                            &run_id,
+                        return self.finalize_run_outcome_with_end(
                             step as u32,
-                            EventKind::RunEnd,
-                            serde_json::json!({"exit_reason":"planner_error"}),
-                        );
-                        return self.finalize_run_outcome(
                             AgentOutcomeBuilderInput {
                                 run_id,
                                 started_at,
@@ -1013,13 +957,8 @@ impl<P: ModelProvider> Agent<P> {
                                 "reason": "worker_fail_transition"
                             }),
                         );
-                        self.emit_event(
-                            &run_id,
+                        return self.finalize_run_outcome_with_end(
                             step as u32,
-                            EventKind::RunEnd,
-                            serde_json::json!({"exit_reason":"planner_error"}),
-                        );
-                        return self.finalize_run_outcome(
                             AgentOutcomeBuilderInput {
                                 run_id,
                                 started_at,
