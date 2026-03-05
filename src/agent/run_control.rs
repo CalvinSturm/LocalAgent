@@ -2,11 +2,42 @@ use crate::compaction::{maybe_compact, CompactionOutcome};
 use crate::events::EventKind;
 use crate::providers::http::{message_short, ProviderError};
 use crate::providers::ModelProvider;
+use crate::taint::TaintState;
 use crate::types::Message;
 
 use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
+    pub(super) fn approval_required_output_message(
+        &self,
+        approval_id: &str,
+        reason: &str,
+        source: Option<&str>,
+        escalated: bool,
+        taint_state: &TaintState,
+    ) -> String {
+        if escalated {
+            let src = if taint_state.last_sources.is_empty() {
+                "other".to_string()
+            } else {
+                taint_state.last_sources.join("/")
+            };
+            return format!(
+                "Approval required due to tainted content (source: {}). Run: localagent approve {} (or deny) then re-run.",
+                src, approval_id
+            );
+        }
+        format!(
+            "Approval required: {} ({}){}. Run: localagent approve {} (or deny) then re-run.",
+            approval_id,
+            reason,
+            source
+                .map(|s| format!(" [source: {}]", s))
+                .unwrap_or_default(),
+            approval_id
+        )
+    }
+
     pub(super) fn check_wall_time_budget_exceeded(
         &mut self,
         run_id: &str,

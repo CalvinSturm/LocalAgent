@@ -3065,28 +3065,13 @@ impl<P: ModelProvider> Agent<P> {
                             step as u32,
                             run_id,
                             started_at,
-                            if escalated {
-                                let src = if taint_state.last_sources.is_empty() {
-                                    "other".to_string()
-                                } else {
-                                    taint_state.last_sources.join("/")
-                                };
-                                format!(
-                                    "Approval required due to tainted content (source: {}). Run: localagent approve {} (or deny) then re-run.",
-                                    src, approval_id
-                                )
-                            } else {
-                                format!(
-                                    "Approval required: {} ({}){}. Run: localagent approve {} (or deny) then re-run.",
-                                    approval_id,
-                                    reason,
-                                    source
-                                        .as_ref()
-                                        .map(|s| format!(" [source: {}]", s))
-                                        .unwrap_or_default(),
-                                    approval_id
-                                )
-                            },
+                            self.approval_required_output_message(
+                                &approval_id,
+                                &reason,
+                                source.as_deref(),
+                                escalated,
+                                &taint_state,
+                            ),
                             messages,
                             observed_tool_calls,
                             observed_tool_decisions,
