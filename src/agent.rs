@@ -880,6 +880,12 @@ Fallback when native tool calls are unavailable:\n\
             ) {
                 Ok(c) => c,
                 Err(err_text) => {
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::RunEnd,
+                        serde_json::json!({"exit_reason":"provider_error"}),
+                    );
                     return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
