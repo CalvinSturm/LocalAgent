@@ -33,7 +33,6 @@ use crate::tools::{
 };
 use crate::trust::policy::Policy;
 use crate::types::{Message, Role, TokenUsage, ToolDef};
-use std::time::{Duration, Instant};
 
 mod agent_types;
 mod budget_guard;
@@ -1025,104 +1024,17 @@ impl<P: ModelProvider> Agent<P> {
                         let pending_post_write_paths =
                             pending_post_write_verification_paths(&observed_tool_executions);
                         for path in pending_post_write_paths {
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::PostWriteVerifyStart,
-                                serde_json::json!({
-                                    "name": "read_file",
-                                    "path": path.clone(),
-                                    "source": "runtime_post_write_verify",
-                                    "timeout_ms": post_write_verify_timeout_ms
-                                }),
-                            );
-                            let verify_started = Instant::now();
-                            let verify = match tokio::time::timeout(
-                                Duration::from_millis(post_write_verify_timeout_ms),
-                                self.tool_rt.exec_target.read_file(crate::target::ReadReq {
-                                    workdir: self.tool_rt.workdir.clone(),
-                                    path: path.clone(),
-                                    max_read_bytes: self.tool_rt.max_read_bytes,
-                                }),
-                            )
-                            .await
+                            match self
+                                .verify_post_write_path(
+                                    &run_id,
+                                    step as u32,
+                                    &path,
+                                    post_write_verify_timeout_ms,
+                                )
+                                .await
                             {
-                                Ok(result) => result,
-                                Err(_) => {
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::PostWriteVerifyEnd,
-                                        serde_json::json!({
-                                            "name": "read_file",
-                                            "path": path.clone(),
-                                            "ok": false,
-                                            "status": "timeout",
-                                            "source": "runtime_post_write_verify",
-                                            "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
-                                            "elapsed_ms": verify_started.elapsed().as_millis() as u64,
-                                            "timeout_ms": post_write_verify_timeout_ms
-                                        }),
-                                    );
-                                    let reason = format!(
-                                        "implementation guard: runtime post-write verification timed out on read_file for '{path}' after {}ms",
-                                        post_write_verify_timeout_ms
-                                    );
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::Error,
-                                        serde_json::json!({
-                                            "error": reason,
-                                            "source": "implementation_integrity_guard",
-                                            "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
-                                            "path": path.clone(),
-                                            "timeout_ms": post_write_verify_timeout_ms
-                                        }),
-                                    );
-                                    return self.finalize_planner_error_with_end(
-                                        step as u32,
-                                        run_id,
-                                        started_at,
-                                        reason,
-                                        messages,
-                                        observed_tool_calls,
-                                        observed_tool_decisions,
-                                        request_context_chars,
-                                        last_compaction_report,
-                                        hook_invocations,
-                                        provider_retry_count,
-                                        provider_error_count,
-                                        saw_token_usage,
-                                        &total_token_usage,
-                                        &taint_state,
-                                    );
-                                }
-                            };
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::PostWriteVerifyEnd,
-                                serde_json::json!({
-                                    "name": "read_file",
-                                    "path": path.clone(),
-                                    "ok": verify.ok,
-                                    "status": if verify.ok { "ok" } else { "failed" },
-                                    "source": "runtime_post_write_verify",
-                                    "failure_class": if verify.ok { serde_json::Value::Null } else { serde_json::Value::String("E_RUNTIME_POST_WRITE_VERIFY_FAILED".to_string()) },
-                                    "elapsed_ms": verify_started.elapsed().as_millis() as u64
-                                }),
-                            );
-                            observed_tool_executions.push(ToolExecutionRecord {
-                                name: "read_file".to_string(),
-                                path: Some(path.clone()),
-                                ok: verify.ok,
-                            });
-                            if !verify.ok {
-                                let reason = format!(
-                                    "implementation guard: runtime post-write verification failed read_file on '{path}': {}",
-                                    verify.content
-                                );
+                                Ok(record) => observed_tool_executions.push(record),
+                                Err(reason) => {
                                 self.emit_event(
                                     &run_id,
                                     step as u32,
@@ -1144,11 +1056,12 @@ impl<P: ModelProvider> Agent<P> {
                                     last_compaction_report,
                                     hook_invocations,
                                     provider_retry_count,
-                                    provider_error_count,
-                                    saw_token_usage,
-                                    &total_token_usage,
-                                    &taint_state,
-                                );
+                                        provider_error_count,
+                                        saw_token_usage,
+                                        &total_token_usage,
+                                        &taint_state,
+                                    );
+                                }
                             }
                         }
                     }
