@@ -9,11 +9,10 @@ use crate::agent_impl_guard::{
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 use crate::agent_taint_helpers::compute_taint_spans_for_tool;
-use crate::agent_tool_exec::ToolRunOutcome;
 use crate::agent_tool_exec::{
     classify_tool_failure, infer_truncated_flag, is_apply_patch_invalid_format_error,
-    make_invalid_args_tool_message, run_tool_once, schema_repair_instruction_message,
-    tool_result_error_code, tool_result_has_error,
+    make_invalid_args_tool_message, schema_repair_instruction_message, tool_result_error_code,
+    tool_result_has_error,
 };
 use crate::agent_utils::{provider_name, sha256_hex};
 use crate::compaction::{
@@ -2045,68 +2044,13 @@ impl<P: ModelProvider> Agent<P> {
                         let mut tool_msg = if let Some(err) = &invalid_args_error {
                             make_invalid_args_tool_message(tc, err, self.tool_rt.exec_target_kind)
                         } else {
-                            let tool_exec_timeout_ms = self.effective_tool_exec_timeout_ms();
-                            let outcome: ToolRunOutcome = match tokio::time::timeout(
-                                Duration::from_millis(tool_exec_timeout_ms),
-                                run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref()),
+                            self.run_tool_with_timeout_and_emit_mcp_events(
+                                &run_id,
+                                step as u32,
+                                tc,
+                                "await_result",
                             )
                             .await
-                            {
-                                Ok(outcome) => outcome,
-                                Err(_) => {
-                                    let reason = format!(
-                                        "runtime tool execution timeout: '{}' exceeded {}ms",
-                                        tc.name, tool_exec_timeout_ms
-                                    );
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::Error,
-                                        serde_json::json!({
-                                            "error": reason,
-                                            "source": "runtime_tool_timeout",
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "timeout_ms": tool_exec_timeout_ms
-                                        }),
-                                    );
-                                    ToolRunOutcome {
-                                        message: self
-                                            .tool_timeout_message(tc, tool_exec_timeout_ms),
-                                        mcp_meta: None,
-                                    }
-                                }
-                            };
-                            if let Some(meta) = outcome.mcp_meta {
-                                if meta.progress_ticks > 0 {
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::McpProgress,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "progress_ticks": meta.progress_ticks,
-                                            "elapsed_ms": meta.elapsed_ms,
-                                            "phase": "await_result"
-                                        }),
-                                    );
-                                }
-                                if meta.cancelled {
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::McpCancelled,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "reason": "timeout",
-                                            "elapsed_ms": meta.elapsed_ms
-                                        }),
-                                    );
-                                }
-                            }
-                            outcome.message
                         };
                         let mut tool_retry_count = 0u32;
                         if invalid_args_error.is_none() {
@@ -2405,68 +2349,14 @@ impl<P: ModelProvider> Agent<P> {
                                         &taint_state,
                                     );
                                 }
-                                let tool_exec_timeout_ms = self.effective_tool_exec_timeout_ms();
-                                let outcome: ToolRunOutcome = match tokio::time::timeout(
-                                    Duration::from_millis(tool_exec_timeout_ms),
-                                    run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref()),
-                                )
-                                .await
-                                {
-                                    Ok(outcome) => outcome,
-                                    Err(_) => {
-                                        let reason = format!(
-                                            "runtime tool execution timeout: '{}' exceeded {}ms",
-                                            tc.name, tool_exec_timeout_ms
-                                        );
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::Error,
-                                            serde_json::json!({
-                                                "error": reason,
-                                                "source": "runtime_tool_timeout",
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "timeout_ms": tool_exec_timeout_ms
-                                            }),
-                                        );
-                                        ToolRunOutcome {
-                                            message: self
-                                                .tool_timeout_message(tc, tool_exec_timeout_ms),
-                                            mcp_meta: None,
-                                        }
-                                    }
-                                };
-                                if let Some(meta) = outcome.mcp_meta {
-                                    if meta.progress_ticks > 0 {
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::McpProgress,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "progress_ticks": meta.progress_ticks,
-                                                "elapsed_ms": meta.elapsed_ms,
-                                                "phase": "retry_await_result"
-                                            }),
-                                        );
-                                    }
-                                    if meta.cancelled {
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::McpCancelled,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "reason": "timeout",
-                                                "elapsed_ms": meta.elapsed_ms
-                                            }),
-                                        );
-                                    }
-                                }
-                                tool_msg = outcome.message;
+                                tool_msg = self
+                                    .run_tool_with_timeout_and_emit_mcp_events(
+                                        &run_id,
+                                        step as u32,
+                                        tc,
+                                        "retry_await_result",
+                                    )
+                                    .await;
                             }
                         }
                         let original_content = tool_msg.content.clone().unwrap_or_default();
