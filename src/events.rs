@@ -18,6 +18,8 @@ pub enum EventKind {
     ToolExecTarget,
     ToolExecStart,
     ToolExecEnd,
+    PostWriteVerifyStart,
+    PostWriteVerifyEnd,
     ToolRetry,
     TaintUpdated,
     CompactionPerformed,

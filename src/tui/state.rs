@@ -144,6 +144,12 @@ impl UiState {
             EventKind::ToolExecEnd => {
                 self.apply_tool_exec_end_event(ev);
             }
+            EventKind::PostWriteVerifyStart => {
+                self.apply_post_write_verify_start_event(ev);
+            }
+            EventKind::PostWriteVerifyEnd => {
+                self.apply_post_write_verify_end_event(ev);
+            }
             EventKind::PolicyLoaded => {
                 self.apply_policy_loaded_event(ev);
             }
@@ -503,6 +509,44 @@ impl UiState {
             .filter(|s| !s.is_empty())
             .unwrap_or("-")
             .to_string();
+    }
+
+    fn apply_post_write_verify_start_event(&mut self, ev: &Event) {
+        let path = ev.data.get("path").and_then(|v| v.as_str()).unwrap_or("-");
+        let timeout_ms = ev
+            .data
+            .get("timeout_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        self.next_hint = "runtime_verify".to_string();
+        self.push_log(format!(
+            "post_write_verify_start: path={} timeout_ms={}",
+            path, timeout_ms
+        ));
+    }
+
+    fn apply_post_write_verify_end_event(&mut self, ev: &Event) {
+        let path = ev.data.get("path").and_then(|v| v.as_str()).unwrap_or("-");
+        let ok = ev.data.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        let status = ev
+            .data
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or(if ok { "ok" } else { "failed" });
+        let elapsed_ms = ev
+            .data
+            .get("elapsed_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        self.push_log(format!(
+            "post_write_verify_end: path={} ok={} status={} elapsed_ms={}",
+            path, ok, status, elapsed_ms
+        ));
+        self.next_hint = if ok {
+            "continue".to_string()
+        } else {
+            "blocked(runtime_verify)".to_string()
+        };
     }
 
     fn apply_mcp_drift_event(&mut self, ev: &Event) {

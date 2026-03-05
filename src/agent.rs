@@ -5,19 +5,17 @@ use uuid::Uuid;
 
 use crate::agent_impl_guard::{
     implementation_integrity_violation_with_tool_executions, normalize_tool_path,
-    pending_post_write_verification_paths,
-    prompt_requires_tool_only,
-    ToolExecutionRecord,
+    pending_post_write_verification_paths, prompt_requires_tool_only, ToolExecutionRecord,
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 use crate::agent_taint_helpers::{compute_taint_spans_for_tool, taint_record_from_state};
+use crate::agent_tool_exec::ToolRunOutcome;
 use crate::agent_tool_exec::{
     classify_tool_failure, contains_tool_wrapper_markers, extract_content_tool_calls,
     infer_truncated_flag, is_apply_patch_invalid_format_error, make_invalid_args_tool_message,
     run_tool_once, schema_repair_instruction_message, tool_result_error_code,
     tool_result_has_error,
 };
-use crate::agent_tool_exec::ToolRunOutcome;
 use crate::agent_utils::{add_opt_u32, provider_name, sha256_hex};
 use crate::agent_worker_protocol::parse_worker_step_status;
 use crate::compaction::{
@@ -43,7 +41,7 @@ use crate::tools::{
 };
 use crate::trust::policy::{McpAllowSummary, Policy};
 use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy)]
 pub enum AgentExitReason {
@@ -1236,7 +1234,9 @@ Fallback when native tool calls are unavailable:\n\
             {
                 malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
                 if malformed_tool_call_attempts >= 2 {
-                    let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: empty or malformed [TOOL_CALL] envelope".to_string();
+                    let reason =
+                        "MODEL_TOOL_PROTOCOL_VIOLATION: empty or malformed [TOOL_CALL] envelope"
+                            .to_string();
                     self.emit_event(
                         &run_id,
                         step as u32,
@@ -1872,8 +1872,8 @@ Fallback when native tool calls are unavailable:\n\
                     continue;
                 }
                 StepCompletionDecision::Finalize => {
-                    let (queue_delivered, queue_interrupted) =
-                        self.deliver_operator_queue_at_boundary(
+                    let (queue_delivered, queue_interrupted) = self
+                        .deliver_operator_queue_at_boundary(
                             &run_id,
                             step as u32,
                             DeliveryBoundary::TurnIdle,
@@ -1896,6 +1896,18 @@ Fallback when native tool calls are unavailable:\n\
                         let pending_post_write_paths =
                             pending_post_write_verification_paths(&observed_tool_executions);
                         for path in pending_post_write_paths {
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::PostWriteVerifyStart,
+                                serde_json::json!({
+                                    "name": "read_file",
+                                    "path": path.clone(),
+                                    "source": "runtime_post_write_verify",
+                                    "timeout_ms": post_write_verify_timeout_ms
+                                }),
+                            );
+                            let verify_started = Instant::now();
                             let verify = match tokio::time::timeout(
                                 Duration::from_millis(post_write_verify_timeout_ms),
                                 self.tool_rt.exec_target.read_file(crate::target::ReadReq {
@@ -1908,6 +1920,21 @@ Fallback when native tool calls are unavailable:\n\
                             {
                                 Ok(result) => result,
                                 Err(_) => {
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::PostWriteVerifyEnd,
+                                        serde_json::json!({
+                                            "name": "read_file",
+                                            "path": path.clone(),
+                                            "ok": false,
+                                            "status": "timeout",
+                                            "source": "runtime_post_write_verify",
+                                            "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
+                                            "elapsed_ms": verify_started.elapsed().as_millis() as u64,
+                                            "timeout_ms": post_write_verify_timeout_ms
+                                        }),
+                                    );
                                     let reason = format!(
                                         "implementation guard: runtime post-write verification timed out on read_file for '{path}' after {}ms",
                                         post_write_verify_timeout_ms
@@ -1920,7 +1947,7 @@ Fallback when native tool calls are unavailable:\n\
                                             "error": reason,
                                             "source": "implementation_integrity_guard",
                                             "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
-                                            "path": path,
+                                            "path": path.clone(),
                                             "timeout_ms": post_write_verify_timeout_ms
                                         }),
                                     );
@@ -1952,6 +1979,20 @@ Fallback when native tool calls are unavailable:\n\
                                     );
                                 }
                             };
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::PostWriteVerifyEnd,
+                                serde_json::json!({
+                                    "name": "read_file",
+                                    "path": path.clone(),
+                                    "ok": verify.ok,
+                                    "status": if verify.ok { "ok" } else { "failed" },
+                                    "source": "runtime_post_write_verify",
+                                    "failure_class": if verify.ok { serde_json::Value::Null } else { serde_json::Value::String("E_RUNTIME_POST_WRITE_VERIFY_FAILED".to_string()) },
+                                    "elapsed_ms": verify_started.elapsed().as_millis() as u64
+                                }),
+                            );
                             observed_tool_executions.push(ToolExecutionRecord {
                                 name: "read_file".to_string(),
                                 path: Some(path.clone()),
@@ -3231,7 +3272,8 @@ Fallback when native tool calls are unavailable:\n\
                                         }),
                                     );
                                     ToolRunOutcome {
-                                        message: self.tool_timeout_message(tc, tool_exec_timeout_ms),
+                                        message: self
+                                            .tool_timeout_message(tc, tool_exec_timeout_ms),
                                         mcp_meta: None,
                                     }
                                 }

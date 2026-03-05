@@ -69,7 +69,10 @@ fn step_completion_decision_executes_tools_when_tool_calls_present() {
 #[test]
 fn step_completion_decision_blocks_when_plan_step_pending() {
     let d = super::decide_step_completion(false, PlanToolEnforcementMode::Hard, 0, 1);
-    assert!(matches!(d, super::StepCompletionDecision::ContinuePendingPlan));
+    assert!(matches!(
+        d,
+        super::StepCompletionDecision::ContinuePendingPlan
+    ));
 }
 
 #[test]
@@ -680,7 +683,10 @@ fn implementation_guard_accepts_dot_prefixed_post_write_read_back() {
         &executions,
         true,
     );
-    assert!(err.is_none(), "dot-prefixed read_file should satisfy verification");
+    assert!(
+        err.is_none(),
+        "dot-prefixed read_file should satisfy verification"
+    );
 }
 
 #[test]
@@ -702,7 +708,10 @@ fn implementation_guard_requires_explicit_enforcement_signal() {
         &executions,
         false,
     );
-    assert!(err.is_none(), "guard must be off without explicit enforcement");
+    assert!(
+        err.is_none(),
+        "guard must be off without explicit enforcement"
+    );
 }
 
 #[test]
@@ -1577,7 +1586,9 @@ async fn operator_interrupt_delivers_post_tool_and_cancels_remaining_turn_work()
         .expect("write");
     let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
     let calls = Arc::new(AtomicUsize::new(0));
-    let provider = ToolCallProvider { calls: calls.clone() };
+    let provider = ToolCallProvider {
+        calls: calls.clone(),
+    };
     let mut agent = Agent {
         provider,
         model: "m".to_string(),
@@ -2764,6 +2775,7 @@ async fn runtime_post_write_verification_allows_finalize_without_model_read_back
     .await
     .expect("seed");
     let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
     let mut agent = Agent {
         provider: ReadPatchThenDoneProvider {
             calls: calls.clone(),
@@ -2835,7 +2847,9 @@ async fn runtime_post_write_verification_allows_finalize_without_model_read_back
         },
         mcp_registry: None,
         stream: false,
-        event_sink: None,
+        event_sink: Some(Box::new(EventCaptureSink {
+            events: events.clone(),
+        })),
         compaction_settings: CompactionSettings {
             max_context_chars: 0,
             mode: CompactionMode::Off,
@@ -2866,13 +2880,43 @@ async fn runtime_post_write_verification_allows_finalize_without_model_read_back
         operator_queue_limits: QueueLimits::default(),
         operator_queue_rx: None,
     };
-    let out = agent.run("Edit main.rs to return 2.", vec![], Vec::new()).await;
+    let out = agent
+        .run(
+            "Edit main.rs to return 2.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
     assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
     assert!(out.error.is_none(), "{out:?}");
     let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
         .await
         .expect("read main");
     assert!(main.contains("return 2;"), "{main}");
+    let evs = events.lock().expect("lock");
+    let verify_starts = evs
+        .iter()
+        .filter(|e| matches!(e.kind, crate::events::EventKind::PostWriteVerifyStart))
+        .count();
+    let verify_ends = evs
+        .iter()
+        .filter(|e| matches!(e.kind, crate::events::EventKind::PostWriteVerifyEnd))
+        .count();
+    assert_eq!(verify_starts, 1, "expected one runtime verify start");
+    assert_eq!(verify_ends, 1, "expected one runtime verify end");
+    let end_ok = evs
+        .iter()
+        .find(|e| matches!(e.kind, crate::events::EventKind::PostWriteVerifyEnd))
+        .and_then(|e| e.data.get("ok"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(end_ok, "runtime verify end should be ok");
 }
 
 #[tokio::test]
@@ -2886,6 +2930,7 @@ async fn runtime_post_write_verification_timeout_fails_deterministically() {
     .expect("seed");
     let calls = Arc::new(AtomicUsize::new(0));
     let read_calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
     let mut agent = Agent {
         provider: ReadPatchThenDoneProvider {
             calls: calls.clone(),
@@ -2962,7 +3007,9 @@ async fn runtime_post_write_verification_timeout_fails_deterministically() {
         },
         mcp_registry: None,
         stream: false,
-        event_sink: None,
+        event_sink: Some(Box::new(EventCaptureSink {
+            events: events.clone(),
+        })),
         compaction_settings: CompactionSettings {
             max_context_chars: 0,
             mode: CompactionMode::Off,
@@ -3016,12 +3063,34 @@ async fn runtime_post_write_verification_timeout_fails_deterministically() {
         "unexpected slow timeout path: {:?}",
         started.elapsed()
     );
-    assert!(matches!(out.exit_reason, AgentExitReason::PlannerError), "{out:?}");
+    assert!(
+        matches!(out.exit_reason, AgentExitReason::PlannerError),
+        "{out:?}"
+    );
     assert!(out
         .error
         .as_deref()
         .unwrap_or_default()
         .contains("runtime post-write verification timed out"));
+    let evs = events.lock().expect("lock");
+    let verify_starts = evs
+        .iter()
+        .filter(|e| matches!(e.kind, crate::events::EventKind::PostWriteVerifyStart))
+        .count();
+    let verify_ends = evs
+        .iter()
+        .filter(|e| matches!(e.kind, crate::events::EventKind::PostWriteVerifyEnd))
+        .count();
+    assert_eq!(verify_starts, 1, "expected one runtime verify start");
+    assert_eq!(verify_ends, 1, "expected one runtime verify end");
+    let timeout_status = evs
+        .iter()
+        .find(|e| matches!(e.kind, crate::events::EventKind::PostWriteVerifyEnd))
+        .and_then(|e| e.data.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(timeout_status, "timeout");
 }
 
 #[tokio::test]
@@ -3132,7 +3201,9 @@ async fn runtime_tool_execution_timeout_is_bounded() {
         operator_queue_rx: None,
     };
     let started = std::time::Instant::now();
-    let out = agent.run("Read a.txt then finish.", vec![], Vec::new()).await;
+    let out = agent
+        .run("Read a.txt then finish.", vec![], Vec::new())
+        .await;
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "tool timeout path should be bounded: {:?}",
