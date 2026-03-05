@@ -9,6 +9,115 @@ use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_allowed_tool_result(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        tc: &ToolCall,
+        approval_id: Option<String>,
+        approval_key: Option<String>,
+        reason: Option<String>,
+        source: Option<String>,
+        taint_enforced: bool,
+        escalated: bool,
+        escalation_reason: Option<String>,
+        approval_mode_meta: Option<String>,
+        auto_scope_meta: Option<String>,
+        approval_key_version_meta: Option<String>,
+        tool_schema_hash_hex: Option<String>,
+        hooks_config_hash_hex: Option<String>,
+        planner_hash_hex: Option<String>,
+        decision_exec_target: Option<String>,
+        final_ok: bool,
+        content: String,
+        input_digest: Option<String>,
+        output_digest: Option<String>,
+        input_len: Option<usize>,
+        output_len: Option<usize>,
+        tool_retry_count: u32,
+        final_truncated: bool,
+        final_failure_class: Option<crate::agent_tool_exec::ToolFailureClass>,
+        final_error_code: Option<crate::tools::ToolErrorCode>,
+        taint_state: &TaintState,
+        repeat_key: &str,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        successful_write_tool_ok_this_step: &mut bool,
+        tool_msg: Message,
+        messages: &mut Vec<Message>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+    ) {
+        self.gate.record(GateEvent {
+            run_id: run_id.to_string(),
+            step,
+            tool_call_id: tc.id.clone(),
+            tool: tc.name.clone(),
+            arguments: tc.arguments.clone(),
+            decision: "allow".to_string(),
+            decision_reason: reason.clone(),
+            decision_source: source.clone(),
+            approval_id,
+            approval_key,
+            approval_mode: approval_mode_meta,
+            auto_approve_scope: auto_scope_meta,
+            approval_key_version: approval_key_version_meta,
+            tool_schema_hash_hex,
+            hooks_config_hash_hex,
+            planner_hash_hex,
+            exec_target: decision_exec_target,
+            taint_overall: Some(taint_state.overall_str().to_string()),
+            taint_enforced,
+            escalated,
+            escalation_reason: escalation_reason.clone(),
+            result_ok: final_ok,
+            result_content: content.clone(),
+            result_input_digest: input_digest,
+            result_output_digest: output_digest,
+            result_input_len: input_len,
+            result_output_len: output_len,
+        });
+        observed_tool_decisions.push(ToolDecisionRecord {
+            step,
+            tool_call_id: tc.id.clone(),
+            tool: tc.name.clone(),
+            decision: "allow".to_string(),
+            reason,
+            source,
+            taint_overall: Some(taint_state.overall_str().to_string()),
+            taint_enforced,
+            escalated,
+            escalation_reason,
+        });
+        if final_ok {
+            failed_repeat_counts.remove(repeat_key);
+            if tc.name == "apply_patch" {
+                invalid_patch_format_attempts.remove(repeat_key);
+            }
+            if tc.name == "apply_patch" || tc.name == "write_file" {
+                *successful_write_tool_ok_this_step = true;
+            }
+        } else {
+            let n = failed_repeat_counts.entry(repeat_key.to_string()).or_insert(0);
+            *n = n.saturating_add(1);
+        }
+        self.emit_event(
+            run_id,
+            step,
+            crate::events::EventKind::ToolExecEnd,
+            serde_json::json!({
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "ok": final_ok,
+                "truncated": final_truncated,
+                "retry_count": tool_retry_count,
+                "failure_class": final_failure_class.map(|c| c.as_str()),
+                "error_code": final_error_code.map(|c| c.as_str())
+            }),
+        );
+        messages.push(tool_msg);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn finalize_gate_require_approval_with_end(
         &mut self,
         run_id: String,
