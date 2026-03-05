@@ -50,7 +50,10 @@ pub(crate) fn apply_run_command_defaults(
     workdir: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
     let _ = workdir;
-    if !matches!(cli.command, Some(Commands::Run) | Some(Commands::Exec)) {
+    if !matches!(
+        cli.command,
+        None | Some(Commands::Run) | Some(Commands::Exec)
+    ) {
         return None;
     }
     let no_session_explicit = argv_has_flag(argv, "--no-session");
@@ -64,6 +67,13 @@ pub(crate) fn apply_run_command_defaults(
         return Some(path);
     }
     None
+}
+
+pub(crate) fn is_bare_startup_bootstrap_invocation(cli: &Cli) -> bool {
+    cli.command.is_none()
+        && cli.run.provider.is_none()
+        && cli.run.model.is_none()
+        && cli.run.prompt.is_none()
 }
 
 pub(crate) async fn run_cli() -> anyhow::Result<()> {
@@ -105,6 +115,11 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
             "WARN: using legacy state dir at {}",
             paths.state_dir.display()
         );
+    }
+
+    if is_bare_startup_bootstrap_invocation(&cli) {
+        startup_bootstrap::run_startup_bootstrap(&cli.run, &paths).await?;
+        return Ok(());
     }
 
     startup_init::maybe_auto_init_state(&cli.command, cli.run.state_dir.clone(), &workdir, &paths)?;
@@ -446,16 +461,6 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
         }
 
         None => {}
-    }
-
-    if cli.command.is_none()
-        && cli.run.provider.is_none()
-        && cli.run.model.is_none()
-        && cli.run.prompt.is_none()
-    {
-        startup_bootstrap::run_startup_bootstrap(&cli.run, &paths).await?;
-
-        return Ok(());
     }
 
     validate_run_output_mode(&cli.run)?;

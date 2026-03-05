@@ -234,6 +234,55 @@ fn non_run_command_does_not_force_no_session_or_state_dir() {
 }
 
 #[test]
+fn bare_startup_bootstrap_detection_matches_no_flags_invocation() {
+    let cli = Cli::parse_from(["localagent"]);
+    assert!(crate::cli_dispatch::is_bare_startup_bootstrap_invocation(
+        &cli
+    ));
+
+    let with_prompt = Cli::parse_from([
+        "localagent",
+        "--provider",
+        "mock",
+        "--model",
+        "mock-model",
+        "--prompt",
+        "hi",
+    ]);
+    assert!(!crate::cli_dispatch::is_bare_startup_bootstrap_invocation(
+        &with_prompt
+    ));
+}
+
+#[test]
+fn bare_localagent_invocation_defaults_to_sessionless_and_ephemeral_state() {
+    let mut cli = Cli::parse_from([
+        "localagent",
+        "--provider",
+        "mock",
+        "--model",
+        "mock-model",
+        "--prompt",
+        "hi",
+    ]);
+    let argv = vec![
+        std::ffi::OsString::from("localagent"),
+        std::ffi::OsString::from("--provider"),
+        std::ffi::OsString::from("mock"),
+        std::ffi::OsString::from("--model"),
+        std::ffi::OsString::from("mock-model"),
+        std::ffi::OsString::from("--prompt"),
+        std::ffi::OsString::from("hi"),
+    ];
+    let tmp = tempdir().expect("tempdir");
+    let workdir = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    let _ = crate::cli_dispatch::apply_run_command_defaults(&mut cli, &argv, &workdir);
+    assert!(cli.run.no_session);
+    let state_dir = cli.run.state_dir.expect("state dir");
+    assert!(!state_dir.starts_with(&workdir));
+}
+
+#[test]
 
 fn doctor_url_construction_openai_compat() {
     let urls =
