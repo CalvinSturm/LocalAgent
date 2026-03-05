@@ -102,6 +102,17 @@ impl<P: ModelProvider> Agent<P> {
         }
     }
 
+    pub(super) fn control_envelope_reminder_message(&self) -> String {
+        format!(
+            "Return control JSON only using schema_version '{}'. Include step_id, status, and optional user_output for final response.",
+            crate::planner::STEP_RESULT_SCHEMA_VERSION
+        )
+    }
+
+    pub(super) fn tool_only_reminder_message(&self) -> String {
+        "Tool-only phase active. Return exactly one valid tool call and no prose.".to_string()
+    }
+
     pub(super) fn emit_run_start_events(&mut self, run_id: &str) {
         self.emit_event(
             run_id,

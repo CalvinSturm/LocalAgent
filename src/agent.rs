@@ -28,7 +28,7 @@ use crate::hooks::protocol::{
 use crate::hooks::runner::{make_pre_model_input, make_tool_result_input, HookManager};
 use crate::mcp::registry::McpRegistry;
 use crate::operator_queue::{
-    DeliveryBoundary, PendingMessageQueue, QueueLimits, QueueSubmitRequest,
+    PendingMessageQueue, QueueLimits, QueueSubmitRequest,
 };
 use crate::providers::ModelProvider;
 use crate::taint::{TaintMode, TaintState, TaintToggle};
@@ -687,10 +687,7 @@ impl<P: ModelProvider> Agent<P> {
                 messages.push(resp.assistant.clone());
                 messages.push(Message {
                     role: Role::Developer,
-                    content: Some(
-                        "Tool-only phase active. Return exactly one valid tool call and no prose."
-                            .to_string(),
-                    ),
+                    content: Some(self.tool_only_reminder_message()),
                     tool_call_id: None,
                     tool_name: None,
                     tool_calls: None,
@@ -754,10 +751,7 @@ impl<P: ModelProvider> Agent<P> {
                 }
                 messages.push(Message {
                     role: Role::Developer,
-                    content: Some(format!(
-                        "Return control JSON only using schema_version '{}'. Include step_id, status, and optional user_output for final response.",
-                        crate::planner::STEP_RESULT_SCHEMA_VERSION
-                    )),
+                    content: Some(self.control_envelope_reminder_message()),
                     tool_call_id: None,
                     tool_name: None,
                     tool_calls: None,
@@ -1167,12 +1161,7 @@ impl<P: ModelProvider> Agent<P> {
                 RuntimeCompletionDecision::FinalizeOk => {
                     blocked_runtime_completion_count = 0;
                     let (queue_delivered, queue_interrupted) = self
-                        .deliver_operator_queue_at_boundary(
-                            &run_id,
-                            step as u32,
-                            DeliveryBoundary::TurnIdle,
-                            &mut messages,
-                        );
+                        .inject_turn_idle_operator_messages(&run_id, step as u32, &mut messages);
                     if queue_interrupted || queue_delivered {
                         continue 'agent_steps;
                     }

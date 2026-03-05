@@ -8,6 +8,15 @@ use crate::types::{Message, Role};
 use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
+    pub(super) fn inject_turn_idle_operator_messages(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        messages: &mut Vec<Message>,
+    ) -> (bool, bool) {
+        self.deliver_operator_queue_at_boundary(run_id, step, DeliveryBoundary::TurnIdle, messages)
+    }
+
     pub(super) fn inject_post_tool_operator_messages(
         &mut self,
         run_id: &str,
