@@ -62,31 +62,31 @@ fn split_streaming_shows_only_post_think_visible_text() {
 
 #[test]
 fn runtime_completion_decision_executes_tools_when_tool_calls_present() {
-    let d = super::runtime_completion_decision(
-        true,
-        PlanToolEnforcementMode::Off,
-        0,
-        0,
-        false,
-        false,
-        0,
-        1,
-    );
+    let d = super::runtime_completion_decision(&super::RuntimeCompletionInputs {
+        has_tool_calls: true,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        active_plan_step_idx: 0,
+        plan_step_constraints_len: 0,
+        tool_only_phase_active: false,
+        enforce_implementation_integrity_guard: false,
+        observed_tool_calls_len: 0,
+        blocked_attempt_count_next: 1,
+    });
     assert!(matches!(d, super::RuntimeCompletionDecision::ExecuteTools));
 }
 
 #[test]
 fn runtime_completion_decision_no_tool_call_but_not_complete_returns_continue() {
-    let d = super::runtime_completion_decision(
-        false,
-        PlanToolEnforcementMode::Hard,
-        0,
-        1,
-        false,
-        false,
-        0,
-        1,
-    );
+    let d = super::runtime_completion_decision(&super::RuntimeCompletionInputs {
+        has_tool_calls: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Hard,
+        active_plan_step_idx: 0,
+        plan_step_constraints_len: 1,
+        tool_only_phase_active: false,
+        enforce_implementation_integrity_guard: false,
+        observed_tool_calls_len: 0,
+        blocked_attempt_count_next: 1,
+    });
     assert!(matches!(
         d,
         super::RuntimeCompletionDecision::Continue { .. }
@@ -95,16 +95,16 @@ fn runtime_completion_decision_no_tool_call_but_not_complete_returns_continue() 
 
 #[test]
 fn runtime_completion_decision_runtime_complete_returns_finalize_ok() {
-    let d = super::runtime_completion_decision(
-        false,
-        PlanToolEnforcementMode::Off,
-        0,
-        0,
-        false,
-        false,
-        1,
-        1,
-    );
+    let d = super::runtime_completion_decision(&super::RuntimeCompletionInputs {
+        has_tool_calls: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        active_plan_step_idx: 0,
+        plan_step_constraints_len: 0,
+        tool_only_phase_active: false,
+        enforce_implementation_integrity_guard: false,
+        observed_tool_calls_len: 1,
+        blocked_attempt_count_next: 1,
+    });
     assert!(matches!(d, super::RuntimeCompletionDecision::FinalizeOk));
 }
 

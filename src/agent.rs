@@ -114,7 +114,7 @@ fn injected_messages_enforce_implementation_integrity_guard(messages: &[Message]
     })
 }
 
-fn runtime_completion_decision(
+struct RuntimeCompletionInputs {
     has_tool_calls: bool,
     plan_tool_enforcement: PlanToolEnforcementMode,
     active_plan_step_idx: usize,
@@ -123,15 +123,17 @@ fn runtime_completion_decision(
     enforce_implementation_integrity_guard: bool,
     observed_tool_calls_len: usize,
     blocked_attempt_count_next: u32,
-) -> RuntimeCompletionDecision {
-    if has_tool_calls {
+}
+
+fn runtime_completion_decision(inputs: &RuntimeCompletionInputs) -> RuntimeCompletionDecision {
+    if inputs.has_tool_calls {
         return RuntimeCompletionDecision::ExecuteTools;
     }
-    if !matches!(plan_tool_enforcement, PlanToolEnforcementMode::Off)
-        && plan_step_constraints_len > 0
-        && active_plan_step_idx < plan_step_constraints_len
+    if !matches!(inputs.plan_tool_enforcement, PlanToolEnforcementMode::Off)
+        && inputs.plan_step_constraints_len > 0
+        && inputs.active_plan_step_idx < inputs.plan_step_constraints_len
     {
-        if blocked_attempt_count_next >= 2 {
+        if inputs.blocked_attempt_count_next >= 2 {
             return RuntimeCompletionDecision::FinalizeError {
                 reason:
                     "model repeatedly attempted to halt before completing required planner steps",
@@ -145,8 +147,8 @@ fn runtime_completion_decision(
                 "Continue execution. Do not finalize yet. Complete the pending planner step and return the next tool call.",
         };
     }
-    if tool_only_phase_active {
-        if blocked_attempt_count_next >= 2 {
+    if inputs.tool_only_phase_active {
+        if inputs.blocked_attempt_count_next >= 2 {
             return RuntimeCompletionDecision::FinalizeError {
                 reason: "model repeatedly attempted to finalize during tool-only phase without a tool call",
                 source: "runtime_completion_policy",
@@ -159,8 +161,8 @@ fn runtime_completion_decision(
                 "Tool-only phase active. Return exactly one valid tool call and no prose.",
         };
     }
-    if enforce_implementation_integrity_guard && observed_tool_calls_len == 0 {
-        if blocked_attempt_count_next >= 2 {
+    if inputs.enforce_implementation_integrity_guard && inputs.observed_tool_calls_len == 0 {
+        if inputs.blocked_attempt_count_next >= 2 {
             return RuntimeCompletionDecision::FinalizeError {
                 reason: "implementation guard: file-edit task finalized without any tool calls",
                 source: "implementation_integrity_guard",
@@ -1824,16 +1826,17 @@ Fallback when native tool calls are unavailable:\n\
                 taint_state.mark_assistant_context_tainted(idx);
             }
 
-            let completion_decision = runtime_completion_decision(
-                has_actionable_tool_calls,
-                self.plan_tool_enforcement,
+            let completion_inputs = RuntimeCompletionInputs {
+                has_tool_calls: has_actionable_tool_calls,
+                plan_tool_enforcement: self.plan_tool_enforcement,
                 active_plan_step_idx,
-                self.plan_step_constraints.len(),
+                plan_step_constraints_len: self.plan_step_constraints.len(),
                 tool_only_phase_active,
                 enforce_implementation_integrity_guard,
-                observed_tool_calls.len(),
-                blocked_runtime_completion_count.saturating_add(1),
-            );
+                observed_tool_calls_len: observed_tool_calls.len(),
+                blocked_attempt_count_next: blocked_runtime_completion_count.saturating_add(1),
+            };
+            let completion_decision = runtime_completion_decision(&completion_inputs);
             match completion_decision {
                 RuntimeCompletionDecision::Continue {
                     reason_code,

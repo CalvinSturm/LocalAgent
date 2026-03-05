@@ -7,6 +7,7 @@ pub(crate) struct ToolExecutionRecord {
     pub ok: bool,
 }
 
+#[cfg(test)]
 pub(crate) fn implementation_integrity_violation(
     user_prompt: &str,
     final_output: &str,

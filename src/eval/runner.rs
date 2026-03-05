@@ -920,14 +920,13 @@ async fn run_single(
         operator_queue_rx: None,
     };
     let session_messages = Vec::new();
-    let mut injected_messages = Vec::new();
-    injected_messages.push(Message {
+    let injected_messages = vec![Message {
         role: Role::System,
         content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
         tool_call_id: None,
         tool_name: None,
         tool_calls: None,
-    });
+    }];
     let outcome = agent
         .run(&prompt, session_messages, injected_messages)
         .await;
