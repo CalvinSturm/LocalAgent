@@ -1,12 +1,107 @@
 use std::collections::BTreeSet;
 
+use crate::agent_worker_protocol::parse_worker_step_status;
 use crate::events::EventKind;
 use crate::providers::ModelProvider;
 use crate::types::{GenerateRequest, Message, Role, ToolCall, ToolDef};
 
-use super::{Agent, PlanToolEnforcementMode};
+use super::{Agent, PlanStepConstraint, PlanToolEnforcementMode, WorkerStepStatus};
 
 impl<P: ModelProvider> Agent<P> {
+    pub(super) fn plan_enforcement_active(&self) -> bool {
+        !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
+            && !self.plan_step_constraints.is_empty()
+    }
+
+    pub(super) fn parse_worker_step_status_if_enforced(
+        &self,
+        assistant: &Message,
+    ) -> Option<WorkerStepStatus> {
+        if self.plan_enforcement_active() {
+            parse_worker_step_status(
+                assistant.content.as_deref().unwrap_or_default(),
+                &self.plan_step_constraints,
+            )
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn current_plan_constraint(&self, active_plan_step_idx: usize) -> Option<PlanStepConstraint> {
+        self.plan_step_constraints.get(active_plan_step_idx).cloned()
+    }
+
+    pub(super) fn current_plan_step_id_or_unknown(&self, active_plan_step_idx: usize) -> String {
+        self.current_plan_constraint(active_plan_step_idx)
+            .map(|c| c.step_id)
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    pub(super) fn is_plan_tool_allowed(&self, active_plan_step_idx: usize, tool_name: &str) -> bool {
+        if !self.plan_enforcement_active() {
+            return true;
+        }
+        let Some(constraint) = self.current_plan_constraint(active_plan_step_idx) else {
+            return true;
+        };
+        constraint.intended_tools.is_empty()
+            || constraint.intended_tools.iter().any(|t| t == tool_name)
+    }
+
+    pub(super) fn plan_allowed_tools_and_decision(
+        &self,
+        active_plan_step_idx: usize,
+        tool_name: &str,
+    ) -> (Vec<String>, bool) {
+        let plan_allowed_tools = self
+            .current_plan_constraint(active_plan_step_idx)
+            .map(|c| c.intended_tools)
+            .unwrap_or_default();
+        let allowed = self.is_plan_tool_allowed(active_plan_step_idx, tool_name);
+        (plan_allowed_tools, allowed)
+    }
+
+    pub(super) fn pending_plan_step_text(&self, active_plan_step_idx: usize) -> Option<String> {
+        let step_constraint = self.current_plan_constraint(active_plan_step_idx)?;
+        Some(format!(
+            "premature finalization blocked: plan step {} still pending (allowed tools: {})",
+            step_constraint.step_id,
+            if step_constraint.intended_tools.is_empty() {
+                "none".to_string()
+            } else {
+                step_constraint.intended_tools.join(", ")
+            }
+        ))
+    }
+
+    pub(super) fn pending_plan_step_corrective_message(
+        &self,
+        active_plan_step_idx: usize,
+    ) -> Option<String> {
+        let step_constraint = self.current_plan_constraint(active_plan_step_idx)?;
+        Some(format!(
+            "Continue execution. Do not finalize yet. Complete pending step {} using only intended tools ({}), then return the next tool call.",
+            step_constraint.step_id,
+            if step_constraint.intended_tools.is_empty() {
+                "none".to_string()
+            } else {
+                step_constraint.intended_tools.join(", ")
+            }
+        ))
+    }
+
+    pub(super) fn final_output_for_completion(
+        &self,
+        last_user_output: Option<&String>,
+        assistant_content: Option<&str>,
+    ) -> String {
+        if self.plan_enforcement_active() {
+            last_user_output.cloned().unwrap_or_default()
+        } else {
+            assistant_content.unwrap_or_default().to_string()
+        }
+    }
+
     pub(super) fn emit_run_start_events(&mut self, run_id: &str) {
         self.emit_event(
             run_id,

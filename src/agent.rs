@@ -17,7 +17,6 @@ use crate::agent_tool_exec::{
     tool_result_has_error,
 };
 use crate::agent_utils::{provider_name, sha256_hex};
-use crate::agent_worker_protocol::parse_worker_step_status;
 use crate::compaction::{
     context_size_chars, maybe_compact, CompactionReport, CompactionSettings,
 };
@@ -706,19 +705,8 @@ impl<P: ModelProvider> Agent<P> {
                 assistant.content = Some(sanitize_user_visible_output(c));
             }
             messages.push(assistant.clone());
-            let worker_step_status =
-                if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-                    && !self.plan_step_constraints.is_empty()
-                {
-                    parse_worker_step_status(
-                        assistant.content.as_deref().unwrap_or_default(),
-                        &self.plan_step_constraints,
-                    )
-                } else {
-                    None
-                };
-            if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-                && !self.plan_step_constraints.is_empty()
+            let worker_step_status = self.parse_worker_step_status_if_enforced(&assistant);
+            if self.plan_enforcement_active()
                 && worker_step_status.is_none()
                 && model_signaled_finalize
             {
@@ -783,11 +771,7 @@ impl<P: ModelProvider> Agent<P> {
                         last_user_output = Some(user_output.trim().to_string());
                     }
                 }
-                let current_step_id = self
-                    .plan_step_constraints
-                    .get(active_plan_step_idx)
-                    .map(|s| s.step_id.clone())
-                    .unwrap_or_default();
+                let current_step_id = self.current_plan_step_id_or_unknown(active_plan_step_idx);
                 match step_status.status.as_str() {
                     "done" => {
                         if step_status.step_id != current_step_id {
@@ -1094,21 +1078,12 @@ impl<P: ModelProvider> Agent<P> {
                     let mut source = "runtime_completion_policy";
                     let mut error_text = corrective_instruction.to_string();
                     if reason_code == "pending_plan_step"
-                        && !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-                        && active_plan_step_idx < self.plan_step_constraints.len()
+                        && self.plan_enforcement_active()
                     {
-                        let step_constraint =
-                            self.plan_step_constraints[active_plan_step_idx].clone();
-                        error_text = format!(
-                            "premature finalization blocked: plan step {} still pending (allowed tools: {})",
-                            step_constraint.step_id,
-                            if step_constraint.intended_tools.is_empty() {
-                                "none".to_string()
-                            } else {
-                                step_constraint.intended_tools.join(", ")
-                            }
-                        );
-                        source = "plan_halt_guard";
+                        if let Some(text) = self.pending_plan_step_text(active_plan_step_idx) {
+                            error_text = text;
+                            source = "plan_halt_guard";
+                        }
                     }
                     self.emit_event(
                         &run_id,
@@ -1131,20 +1106,10 @@ impl<P: ModelProvider> Agent<P> {
                         }),
                     );
                     let corrective_message = if reason_code == "pending_plan_step"
-                        && !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-                        && active_plan_step_idx < self.plan_step_constraints.len()
+                        && self.plan_enforcement_active()
                     {
-                        let step_constraint =
-                            self.plan_step_constraints[active_plan_step_idx].clone();
-                        format!(
-                            "Continue execution. Do not finalize yet. Complete pending step {} using only intended tools ({}), then return the next tool call.",
-                            step_constraint.step_id,
-                            if step_constraint.intended_tools.is_empty() {
-                                "none".to_string()
-                            } else {
-                                step_constraint.intended_tools.join(", ")
-                            }
-                        )
+                        self.pending_plan_step_corrective_message(active_plan_step_idx)
+                            .unwrap_or_else(|| corrective_instruction.to_string())
                     } else {
                         corrective_instruction.to_string()
                     };
@@ -1211,14 +1176,10 @@ impl<P: ModelProvider> Agent<P> {
                     if queue_interrupted || queue_delivered {
                         continue 'agent_steps;
                     }
-                    let final_output =
-                        if !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-                            && !self.plan_step_constraints.is_empty()
-                        {
-                            last_user_output.clone().unwrap_or_default()
-                        } else {
-                            assistant.content.unwrap_or_default()
-                        };
+                    let final_output = self.final_output_for_completion(
+                        last_user_output.as_ref(),
+                        assistant.content.as_deref(),
+                    );
                     if enforce_implementation_integrity_guard {
                         let post_write_verify_timeout_ms =
                             self.effective_post_write_verify_timeout_ms();
@@ -1993,18 +1954,12 @@ impl<P: ModelProvider> Agent<P> {
                         }
                     }
                 }
-                let plan_constraint = self
-                    .plan_step_constraints
-                    .get(active_plan_step_idx)
-                    .cloned();
-                let plan_allowed_tools = plan_constraint
-                    .as_ref()
-                    .map(|c| c.intended_tools.clone())
-                    .unwrap_or_default();
-                let plan_tool_allowed =
-                    matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-                        || plan_allowed_tools.is_empty()
-                        || plan_allowed_tools.iter().any(|t| t == &tc.name);
+                let (plan_allowed_tools, plan_tool_allowed) = self
+                    .plan_allowed_tools_and_decision(active_plan_step_idx, &tc.name);
+                let plan_step_id = self
+                    .current_plan_constraint(active_plan_step_idx)
+                    .map(|c| c.step_id)
+                    .unwrap_or_else(|| "unknown".to_string());
                 let repeat_key = failed_repeat_key(tc);
                 let failed_repeat_count =
                     failed_repeat_counts.get(&repeat_key).copied().unwrap_or(0);
@@ -2166,14 +2121,11 @@ impl<P: ModelProvider> Agent<P> {
                             }),
                         );
                         messages.push(tool_msg);
-                        self.drain_external_operator_queue(&run_id, step as u32);
-                        let (_, queue_interrupted) = self.deliver_operator_queue_at_boundary(
+                        if self.inject_post_tool_operator_messages(
                             &run_id,
                             step as u32,
-                            DeliveryBoundary::PostTool,
                             &mut messages,
-                        );
-                        if queue_interrupted {
+                        ) {
                             continue 'agent_steps;
                         }
                         messages.push(schema_repair_instruction_message(tc, err));
@@ -2246,14 +2198,10 @@ impl<P: ModelProvider> Agent<P> {
                     .to_string(),
                 );
                 if !plan_tool_allowed {
-                    let step_id = plan_constraint
-                        .as_ref()
-                        .map(|c| c.step_id.clone())
-                        .unwrap_or_else(|| "unknown".to_string());
                     let reason = format!(
                         "tool '{}' is not allowed for plan step {} (allowed: {})",
                         tc.name,
-                        step_id,
+                        plan_step_id,
                         if plan_allowed_tools.is_empty() {
                             "none".to_string()
                         } else {
@@ -2265,7 +2213,7 @@ impl<P: ModelProvider> Agent<P> {
                         step as u32,
                         EventKind::StepBlocked,
                         serde_json::json!({
-                            "step_id": step_id.clone(),
+                            "step_id": plan_step_id.clone(),
                             "tool": tc.name,
                             "reason": "tool_not_allowed_by_plan",
                             "allowed_tools": plan_allowed_tools.clone()
@@ -2282,7 +2230,7 @@ impl<P: ModelProvider> Agent<P> {
                             "reason": reason,
                             "source": "plan_step_constraint",
                             "planner_hash_hex": planner_hash_hex.clone(),
-                            "plan_step_id": step_id,
+                            "plan_step_id": plan_step_id,
                             "plan_step_index": active_plan_step_idx,
                             "plan_allowed_tools": plan_allowed_tools,
                             "enforcement_mode": format!("{:?}", self.plan_tool_enforcement).to_lowercase()
@@ -2365,14 +2313,11 @@ impl<P: ModelProvider> Agent<P> {
                                     docker: None,
                                 },
                             )));
-                            self.drain_external_operator_queue(&run_id, step as u32);
-                            let (_, queue_interrupted) = self.deliver_operator_queue_at_boundary(
+                            if self.inject_post_tool_operator_messages(
                                 &run_id,
                                 step as u32,
-                                DeliveryBoundary::PostTool,
                                 &mut messages,
-                            );
-                            if queue_interrupted {
+                            ) {
                                 continue 'agent_steps;
                             }
                             continue;
@@ -2710,15 +2655,11 @@ impl<P: ModelProvider> Agent<P> {
                                             }),
                                         );
                                         messages.push(tool_msg);
-                                        self.drain_external_operator_queue(&run_id, step as u32);
-                                        let (_, queue_interrupted) = self
-                                            .deliver_operator_queue_at_boundary(
-                                                &run_id,
-                                                step as u32,
-                                                DeliveryBoundary::PostTool,
-                                                &mut messages,
-                                            );
-                                        if queue_interrupted {
+                                        if self.inject_post_tool_operator_messages(
+                                            &run_id,
+                                            step as u32,
+                                            &mut messages,
+                                        ) {
                                             continue 'agent_steps;
                                         }
                                         let n = failed_repeat_counts
@@ -2827,18 +2768,11 @@ impl<P: ModelProvider> Agent<P> {
                                                 }),
                                             );
                                             messages.push(tool_msg);
-                                            self.drain_external_operator_queue(
+                                            if self.inject_post_tool_operator_messages(
                                                 &run_id,
                                                 step as u32,
-                                            );
-                                            let (_, queue_interrupted) = self
-                                                .deliver_operator_queue_at_boundary(
-                                                    &run_id,
-                                                    step as u32,
-                                                    DeliveryBoundary::PostTool,
-                                                    &mut messages,
-                                                );
-                                            if queue_interrupted {
+                                                &mut messages,
+                                            ) {
                                                 continue 'agent_steps;
                                             }
                                             let n = failed_repeat_counts
@@ -3431,14 +3365,11 @@ impl<P: ModelProvider> Agent<P> {
                                 &taint_state,
                             );
                         }
-                        self.drain_external_operator_queue(&run_id, step as u32);
-                        let (_, queue_interrupted) = self.deliver_operator_queue_at_boundary(
+                        if self.inject_post_tool_operator_messages(
                             &run_id,
                             step as u32,
-                            DeliveryBoundary::PostTool,
                             &mut messages,
-                        );
-                        if queue_interrupted {
+                        ) {
                             continue 'agent_steps;
                         }
                     }
@@ -3664,14 +3595,11 @@ impl<P: ModelProvider> Agent<P> {
                                 }),
                             );
                             messages.push(tool_msg);
-                            self.drain_external_operator_queue(&run_id, step as u32);
-                            let (_, queue_interrupted) = self.deliver_operator_queue_at_boundary(
+                            if self.inject_post_tool_operator_messages(
                                 &run_id,
                                 step as u32,
-                                DeliveryBoundary::PostTool,
                                 &mut messages,
-                            );
-                            if queue_interrupted {
+                            ) {
                                 continue 'agent_steps;
                             }
                             continue;

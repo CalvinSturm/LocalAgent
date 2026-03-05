@@ -8,6 +8,22 @@ use crate::types::{Message, Role};
 use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
+    pub(super) fn inject_post_tool_operator_messages(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        messages: &mut Vec<Message>,
+    ) -> bool {
+        self.drain_external_operator_queue(run_id, step);
+        let (_, queue_interrupted) = self.deliver_operator_queue_at_boundary(
+            run_id,
+            step,
+            DeliveryBoundary::PostTool,
+            messages,
+        );
+        queue_interrupted
+    }
+
     #[allow(dead_code)]
     pub fn queue_operator_message(
         &mut self,
