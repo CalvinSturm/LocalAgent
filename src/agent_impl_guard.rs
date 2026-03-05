@@ -56,10 +56,14 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
     }
     let mut successful_read_paths = std::collections::BTreeSet::<String>::new();
     let mut pending_post_write_verification = std::collections::BTreeSet::<String>::new();
+    let mut saw_effective_write = false;
     let allow_new_file_without_read = prompt_allows_new_file_without_read(user_prompt);
     for execution in tool_executions {
         if !execution.ok {
             continue;
+        }
+        if matches!(execution.name.as_str(), "apply_patch" | "write_file") {
+            saw_effective_write = true;
         }
         match execution.name.as_str() {
             "read_file" => {
@@ -90,6 +94,11 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
             }
             _ => {}
         }
+    }
+    if prompt_requires_effective_write(user_prompt) && !saw_effective_write {
+        return Some(
+            "implementation guard: file-edit task finalized without an effective write (writes failed or apply_patch changed:false)".to_string(),
+        );
     }
     if let Some(path) = pending_post_write_verification.iter().next() {
         return Some(format!(
@@ -151,6 +160,16 @@ fn prompt_allows_new_file_without_read(prompt: &str) -> bool {
         || p.contains("create new file")
         || p.contains("new file at")
         || p.contains("add new file")
+}
+
+pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
+    let p = prompt.to_ascii_lowercase();
+    p.contains("apply_patch")
+        || p.contains("write_file")
+        || p.contains("edit ")
+        || p.contains("modify ")
+        || p.contains("update ")
+        || p.contains("change ")
 }
 
 fn output_has_placeholder_artifacts(text: &str) -> bool {
