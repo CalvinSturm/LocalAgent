@@ -42,6 +42,7 @@ use crate::tools::{
 };
 use crate::trust::policy::{McpAllowSummary, Policy};
 use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AgentExitReason {
@@ -69,6 +70,7 @@ pub fn sanitize_user_visible_output(raw: &str) -> String {
 
 const MAX_SCHEMA_REPAIR_ATTEMPTS: u32 = 2;
 const MAX_FAILED_REPEAT_PER_KEY: u32 = 3;
+const POST_WRITE_VERIFY_READ_TIMEOUT_MS: u64 = 5_000;
 pub(crate) const INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG: &str =
     "INTERNAL_FLAG:enforce_implementation_integrity_guard";
 
@@ -1833,15 +1835,62 @@ Fallback when native tool calls are unavailable:\n\
                         let pending_post_write_paths =
                             pending_post_write_verification_paths(&observed_tool_executions);
                         for path in pending_post_write_paths {
-                            let verify = self
-                                .tool_rt
-                                .exec_target
-                                .read_file(crate::target::ReadReq {
+                            let verify = match tokio::time::timeout(
+                                Duration::from_millis(POST_WRITE_VERIFY_READ_TIMEOUT_MS),
+                                self.tool_rt.exec_target.read_file(crate::target::ReadReq {
                                     workdir: self.tool_rt.workdir.clone(),
                                     path: path.clone(),
                                     max_read_bytes: self.tool_rt.max_read_bytes,
-                                })
-                                .await;
+                                }),
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    let reason = format!(
+                                        "implementation guard: runtime post-write verification timed out on read_file for '{path}' after {}ms",
+                                        POST_WRITE_VERIFY_READ_TIMEOUT_MS
+                                    );
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::Error,
+                                        serde_json::json!({
+                                            "error": reason,
+                                            "source": "implementation_integrity_guard",
+                                            "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
+                                            "path": path,
+                                            "timeout_ms": POST_WRITE_VERIFY_READ_TIMEOUT_MS
+                                        }),
+                                    );
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::RunEnd,
+                                        serde_json::json!({"exit_reason":"planner_error"}),
+                                    );
+                                    return self.finalize_run_outcome(
+                                        AgentOutcomeBuilderInput {
+                                            run_id,
+                                            started_at,
+                                            exit_reason: AgentExitReason::PlannerError,
+                                            final_output: String::new(),
+                                            error: Some(reason),
+                                            messages,
+                                            tool_calls: observed_tool_calls,
+                                            tool_decisions: observed_tool_decisions,
+                                            final_prompt_size_chars: request_context_chars,
+                                            compaction_report: last_compaction_report,
+                                            hook_invocations,
+                                            provider_retry_count,
+                                            provider_error_count,
+                                        },
+                                        saw_token_usage,
+                                        &total_token_usage,
+                                        &taint_state,
+                                    );
+                                }
+                            };
                             observed_tool_executions.push(ToolExecutionRecord {
                                 name: "read_file".to_string(),
                                 path: Some(path.clone()),
