@@ -3019,8 +3019,21 @@ async fn runtime_post_write_verification_allows_finalize_without_model_read_back
         .iter()
         .filter(|e| matches!(e.kind, crate::events::EventKind::PostWriteVerifyEnd))
         .count();
+    let model_requests = evs
+        .iter()
+        .filter(|e| matches!(e.kind, crate::events::EventKind::ModelRequestStart))
+        .count();
     assert_eq!(verify_starts, 1, "expected one runtime verify start");
     assert_eq!(verify_ends, 1, "expected one runtime verify end");
+    assert_eq!(
+        model_requests, 2,
+        "runtime should finalize after verified write without another model turn"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "provider should not be called again after successful verified write"
+    );
     let end_ok = evs
         .iter()
         .find(|e| matches!(e.kind, crate::events::EventKind::PostWriteVerifyEnd))

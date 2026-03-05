@@ -474,7 +474,10 @@ impl UiState {
             row.short_result = truncate_chars(result, 200);
             row.running_since = None;
             row.running_for_ms = 0;
-            if matches!(ok, Some(false)) {
+            if matches!(ok, Some(true)) {
+                row.status = "OK:tool".to_string();
+                row.reason_token = "-".to_string();
+            } else if matches!(ok, Some(false)) {
                 let mut token = class_to_reason_token(failure_class).to_string();
                 if is_protocol_violation_text(result) {
                     token = "protocol".to_string();
@@ -554,6 +557,23 @@ impl UiState {
             "post_write_verify_end: path={} ok={} status={} elapsed_ms={}",
             path, ok, status, elapsed_ms
         ));
+        if ok {
+            if let Some(row) = self.tool_calls.iter_mut().rev().find(|r| {
+                (r.side_effects == "filesystem_write"
+                    || r.tool_name == "apply_patch"
+                    || r.tool_name == "write_file")
+                    && (r.ok != Some(true)
+                        || r.status == "running"
+                        || r.status.starts_with("FAIL:"))
+            }) {
+                row.ok = Some(true);
+                row.status = "OK:verified".to_string();
+                row.reason_token = "-".to_string();
+                if row.short_result.trim().is_empty() {
+                    row.short_result = format!("verified by runtime: {path}");
+                }
+            }
+        }
         self.next_hint = if ok {
             "continue".to_string()
         } else {
@@ -1641,6 +1661,32 @@ mod tests {
         assert!(s.mcp_stalled);
         assert!(s.mcp_running_for_ms >= 12_000);
         assert_eq!(s.tool_calls[0].status, "STALL");
+    }
+
+    #[test]
+    fn post_write_verify_success_marks_latest_write_row_verified() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolCallDetected,
+            serde_json::json!({"tool_call_id":"tc1","name":"apply_patch","side_effects":"filesystem_write"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecEnd,
+            serde_json::json!({"tool_call_id":"tc1","name":"apply_patch","ok":false,"content":"failed","failure_class":"E_NON_IDEMPOTENT"}),
+        ));
+        assert_eq!(s.tool_calls[0].status, "FAIL:tool");
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::PostWriteVerifyEnd,
+            serde_json::json!({"path":"main.rs","ok":true,"status":"ok","elapsed_ms":1}),
+        ));
+        assert_eq!(s.tool_calls[0].ok, Some(true));
+        assert_eq!(s.tool_calls[0].status, "OK:verified");
     }
 
     #[test]

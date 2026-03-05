@@ -2198,6 +2198,7 @@ Fallback when native tool calls are unavailable:\n\
                 }
             }
 
+            let mut successful_write_tool_ok_this_step = false;
             for tc in &resp.tool_calls {
                 self.record_detected_tool_call(&run_id, step as u32, tc, &mut observed_tool_calls);
                 if tc.name.starts_with("mcp.") {
@@ -4075,6 +4076,9 @@ Fallback when native tool calls are unavailable:\n\
                             if tc.name == "apply_patch" {
                                 invalid_patch_format_attempts.remove(&repeat_key);
                             }
+                            if tc.name == "apply_patch" || tc.name == "write_file" {
+                                successful_write_tool_ok_this_step = true;
+                            }
                         } else {
                             let n = failed_repeat_counts.entry(repeat_key).or_insert(0);
                             *n = n.saturating_add(1);
@@ -4501,6 +4505,235 @@ Fallback when native tool calls are unavailable:\n\
                         );
                     }
                 }
+            }
+
+            if enforce_implementation_integrity_guard && successful_write_tool_ok_this_step {
+                let post_write_verify_timeout_ms = self.effective_post_write_verify_timeout_ms();
+                let pending_post_write_paths =
+                    pending_post_write_verification_paths(&observed_tool_executions);
+                let verified_paths = pending_post_write_paths.iter().cloned().collect::<Vec<_>>();
+                for path in pending_post_write_paths {
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::PostWriteVerifyStart,
+                        serde_json::json!({
+                            "name": "read_file",
+                            "path": path.clone(),
+                            "source": "runtime_post_write_verify",
+                            "timeout_ms": post_write_verify_timeout_ms
+                        }),
+                    );
+                    let verify_started = Instant::now();
+                    let verify = match tokio::time::timeout(
+                        Duration::from_millis(post_write_verify_timeout_ms),
+                        self.tool_rt.exec_target.read_file(crate::target::ReadReq {
+                            workdir: self.tool_rt.workdir.clone(),
+                            path: path.clone(),
+                            max_read_bytes: self.tool_rt.max_read_bytes,
+                        }),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => {
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::PostWriteVerifyEnd,
+                                serde_json::json!({
+                                    "name": "read_file",
+                                    "path": path.clone(),
+                                    "ok": false,
+                                    "status": "timeout",
+                                    "source": "runtime_post_write_verify",
+                                    "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
+                                    "elapsed_ms": verify_started.elapsed().as_millis() as u64,
+                                    "timeout_ms": post_write_verify_timeout_ms
+                                }),
+                            );
+                            let reason = format!(
+                                "implementation guard: runtime post-write verification timed out on read_file for '{path}' after {}ms",
+                                post_write_verify_timeout_ms
+                            );
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::Error,
+                                serde_json::json!({
+                                    "error": reason,
+                                    "source": "implementation_integrity_guard",
+                                    "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
+                                    "path": path.clone(),
+                                    "timeout_ms": post_write_verify_timeout_ms
+                                }),
+                            );
+                            self.emit_event(
+                                &run_id,
+                                step as u32,
+                                EventKind::RunEnd,
+                                serde_json::json!({"exit_reason":"planner_error"}),
+                            );
+                            return self.finalize_run_outcome(
+                                AgentOutcomeBuilderInput {
+                                    run_id,
+                                    started_at,
+                                    exit_reason: AgentExitReason::PlannerError,
+                                    final_output: String::new(),
+                                    error: Some(reason),
+                                    messages,
+                                    tool_calls: observed_tool_calls,
+                                    tool_decisions: observed_tool_decisions,
+                                    final_prompt_size_chars: request_context_chars,
+                                    compaction_report: last_compaction_report,
+                                    hook_invocations,
+                                    provider_retry_count,
+                                    provider_error_count,
+                                },
+                                saw_token_usage,
+                                &total_token_usage,
+                                &taint_state,
+                            );
+                        }
+                    };
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::PostWriteVerifyEnd,
+                        serde_json::json!({
+                            "name": "read_file",
+                            "path": path.clone(),
+                            "ok": verify.ok,
+                            "status": if verify.ok { "ok" } else { "failed" },
+                            "source": "runtime_post_write_verify",
+                            "failure_class": if verify.ok { serde_json::Value::Null } else { serde_json::Value::String("E_RUNTIME_POST_WRITE_VERIFY_FAILED".to_string()) },
+                            "elapsed_ms": verify_started.elapsed().as_millis() as u64
+                        }),
+                    );
+                    observed_tool_executions.push(ToolExecutionRecord {
+                        name: "read_file".to_string(),
+                        path: Some(path.clone()),
+                        ok: verify.ok,
+                    });
+                    if !verify.ok {
+                        let reason = format!(
+                            "implementation guard: runtime post-write verification failed read_file on '{path}': {}",
+                            verify.content
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step as u32,
+                            EventKind::Error,
+                            serde_json::json!({
+                                "error": reason,
+                                "source": "implementation_integrity_guard"
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step as u32,
+                            EventKind::RunEnd,
+                            serde_json::json!({"exit_reason":"planner_error"}),
+                        );
+                        return self.finalize_run_outcome(
+                            AgentOutcomeBuilderInput {
+                                run_id,
+                                started_at,
+                                exit_reason: AgentExitReason::PlannerError,
+                                final_output: String::new(),
+                                error: Some(reason),
+                                messages,
+                                tool_calls: observed_tool_calls,
+                                tool_decisions: observed_tool_decisions,
+                                final_prompt_size_chars: request_context_chars,
+                                compaction_report: last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                            },
+                            saw_token_usage,
+                            &total_token_usage,
+                            &taint_state,
+                        );
+                    }
+                }
+                let final_output = if verified_paths.is_empty() {
+                    "Applied requested file changes and verified.".to_string()
+                } else {
+                    format!(
+                        "Applied requested file changes and verified: {}.",
+                        verified_paths.join(", ")
+                    )
+                };
+                if let Some(reason) = implementation_integrity_violation_with_tool_executions(
+                    user_prompt,
+                    &final_output,
+                    &observed_tool_calls,
+                    &observed_tool_executions,
+                    enforce_implementation_integrity_guard,
+                ) {
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "implementation_integrity_guard"
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::RunEnd,
+                        serde_json::json!({"exit_reason":"planner_error"}),
+                    );
+                    return self.finalize_run_outcome(
+                        AgentOutcomeBuilderInput {
+                            run_id,
+                            started_at,
+                            exit_reason: AgentExitReason::PlannerError,
+                            final_output: String::new(),
+                            error: Some(reason),
+                            messages,
+                            tool_calls: observed_tool_calls,
+                            tool_decisions: observed_tool_decisions,
+                            final_prompt_size_chars: request_context_chars,
+                            compaction_report: last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                        },
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    );
+                }
+                self.emit_event(
+                    &run_id,
+                    step as u32,
+                    EventKind::RunEnd,
+                    serde_json::json!({"exit_reason":"ok"}),
+                );
+                return self.finalize_run_outcome(
+                    AgentOutcomeBuilderInput {
+                        run_id,
+                        started_at,
+                        exit_reason: AgentExitReason::Ok,
+                        final_output,
+                        error: None,
+                        messages,
+                        tool_calls: observed_tool_calls,
+                        tool_decisions: observed_tool_decisions,
+                        final_prompt_size_chars: request_context_chars,
+                        compaction_report: last_compaction_report,
+                        hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                    },
+                    saw_token_usage,
+                    &total_token_usage,
+                    &taint_state,
+                );
             }
         }
 
