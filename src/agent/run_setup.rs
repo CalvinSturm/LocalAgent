@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::events::EventKind;
 use crate::providers::ModelProvider;
-use crate::types::{Message, Role, ToolCall};
+use crate::types::{GenerateRequest, Message, Role, ToolCall, ToolDef};
 
 use super::{Agent, PlanToolEnforcementMode};
 
@@ -73,6 +73,26 @@ Fallback when native tool calls are unavailable:\n\
             tool_calls: None,
         });
         messages
+    }
+
+    pub(super) fn build_generate_request(
+        &self,
+        messages: &[Message],
+        tools_sorted: Vec<ToolDef>,
+    ) -> GenerateRequest {
+        GenerateRequest {
+            model: self.model.clone(),
+            messages: messages.to_vec(),
+            tools: if self.omit_tools_field_when_empty && tools_sorted.is_empty() {
+                None
+            } else {
+                Some(tools_sorted)
+            },
+            temperature: self.temperature,
+            top_p: self.top_p,
+            max_tokens: self.max_tokens,
+            seed: self.seed,
+        }
     }
 
     pub(super) fn compute_run_preflight_caches(&self) -> (Option<String>, Option<String>, BTreeSet<String>) {

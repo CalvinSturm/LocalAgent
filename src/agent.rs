@@ -16,7 +16,7 @@ use crate::agent_tool_exec::{
     run_tool_once, schema_repair_instruction_message, tool_result_error_code,
     tool_result_has_error,
 };
-use crate::agent_utils::{add_opt_u32, provider_name, sha256_hex};
+use crate::agent_utils::{provider_name, sha256_hex};
 use crate::agent_worker_protocol::parse_worker_step_status;
 use crate::compaction::{
     context_size_chars, maybe_compact, CompactionReport, CompactionSettings,
@@ -31,7 +31,6 @@ use crate::mcp::registry::McpRegistry;
 use crate::operator_queue::{
     DeliveryBoundary, PendingMessageQueue, QueueLimits, QueueSubmitRequest,
 };
-use crate::providers::http::{message_short, ProviderError};
 use crate::providers::ModelProvider;
 use crate::taint::{TaintMode, TaintState, TaintToggle};
 use crate::tools::{
@@ -39,7 +38,7 @@ use crate::tools::{
     ToolErrorCode, ToolResultMeta, ToolRuntime,
 };
 use crate::trust::policy::Policy;
-use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolDef};
+use crate::types::{Message, Role, TokenUsage, ToolDef};
 use std::time::{Duration, Instant};
 
 mod agent_types;
@@ -47,6 +46,7 @@ mod model_io;
 mod operator_queue;
 mod runtime_completion;
 mod run_control;
+mod run_events;
 mod run_finalize;
 mod run_setup;
 mod timeouts;
@@ -63,6 +63,7 @@ pub(crate) use agent_types::WorkerStepStatus;
 use runtime_completion::{
     runtime_completion_decision, RuntimeCompletionDecision, RuntimeCompletionInputs,
 };
+use run_events::apply_usage_totals;
 use tool_helpers::{
     failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
     is_repairable_error_code, normalized_tool_path_from_args,
@@ -469,56 +470,20 @@ impl<P: ModelProvider> Agent<P> {
                 }
             }
 
-            let req = GenerateRequest {
-                model: self.model.clone(),
-                messages: messages.clone(),
-                tools: if self.omit_tools_field_when_empty && tools_sorted.is_empty() {
-                    None
-                } else {
-                    Some(tools_sorted)
-                },
-                temperature: self.temperature,
-                top_p: self.top_p,
-                max_tokens: self.max_tokens,
-                seed: self.seed,
-            };
+            let req = self.build_generate_request(&messages, tools_sorted);
             let request_context_chars = context_size_chars(&req.messages);
             let resp_result = self.execute_model_request(&run_id, step as u32, req).await;
 
             let mut resp = match resp_result {
                 Ok(r) => r,
                 Err(e) => {
-                    if let Some(pe) = e.downcast_ref::<ProviderError>() {
-                        for r in &pe.retries {
-                            provider_retry_count = provider_retry_count.saturating_add(1);
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::ProviderRetry,
-                                serde_json::json!({
-                                    "attempt": r.attempt,
-                                    "max_attempts": r.max_attempts,
-                                    "kind": r.kind,
-                                    "status": r.status,
-                                    "backoff_ms": r.backoff_ms
-                                }),
-                            );
-                        }
-                        provider_error_count = provider_error_count.saturating_add(1);
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::ProviderError,
-                            serde_json::json!({
-                                "kind": pe.kind,
-                                "status": pe.http_status,
-                                "retryable": pe.retryable,
-                                "attempt": pe.attempt,
-                                "max_attempts": pe.max_attempts,
-                                "message_short": message_short(&pe.message)
-                            }),
-                        );
-                    }
+                    self.record_provider_error_events(
+                        &run_id,
+                        step as u32,
+                        &e,
+                        &mut provider_retry_count,
+                        &mut provider_error_count,
+                    );
                     self.emit_event(
                         &run_id,
                         step as u32,
@@ -608,13 +573,7 @@ impl<P: ModelProvider> Agent<P> {
                 }
             }
             if let Some(usage) = &resp.usage {
-                saw_token_usage = true;
-                total_token_usage.prompt_tokens =
-                    add_opt_u32(total_token_usage.prompt_tokens, usage.prompt_tokens);
-                total_token_usage.completion_tokens =
-                    add_opt_u32(total_token_usage.completion_tokens, usage.completion_tokens);
-                total_token_usage.total_tokens =
-                    add_opt_u32(total_token_usage.total_tokens, usage.total_tokens);
+                apply_usage_totals(usage, &mut saw_token_usage, &mut total_token_usage);
             }
             self.emit_event(
                 &run_id,
