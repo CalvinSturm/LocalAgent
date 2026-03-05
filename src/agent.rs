@@ -1438,23 +1438,20 @@ impl<P: ModelProvider> Agent<P> {
                                                 "side_effects": tool_side_effects(&tc.name)
                                             }),
                                         );
-                                        return self.finalize_run_outcome_with_end(
+                                        return self.finalize_denied_with_end(
                                             step as u32,
-                                            AgentOutcomeBuilderInput {
-                                                run_id,
-                                                started_at,
-                                                exit_reason: AgentExitReason::Denied,
-                                                final_output: reason.clone(),
-                                                error: Some(reason),
-                                                messages,
-                                                tool_calls: observed_tool_calls,
-                                                tool_decisions: observed_tool_decisions,
-                                                final_prompt_size_chars: request_context_chars,
-                                                compaction_report: last_compaction_report,
-                                                hook_invocations,
-                                                provider_retry_count,
-                                                provider_error_count,
-                                            },
+                                            run_id,
+                                            started_at,
+                                            reason.clone(),
+                                            Some(reason),
+                                            messages,
+                                            observed_tool_calls,
+                                            observed_tool_decisions,
+                                            request_context_chars,
+                                            last_compaction_report,
+                                            hook_invocations,
+                                            provider_retry_count,
+                                            provider_error_count,
                                             saw_token_usage,
                                             &total_token_usage,
                                             &taint_state,
@@ -1547,23 +1544,20 @@ impl<P: ModelProvider> Agent<P> {
                                             "side_effects": tool_side_effects(&tc.name)
                                         }),
                                     );
-                                    return self.finalize_run_outcome_with_end(
+                                    return self.finalize_denied_with_end(
                                         step as u32,
-                                        AgentOutcomeBuilderInput {
-                                            run_id,
-                                            started_at,
-                                            exit_reason: AgentExitReason::Denied,
-                                            final_output: reason.clone(),
-                                            error: Some(reason),
-                                            messages,
-                                            tool_calls: observed_tool_calls,
-                                            tool_decisions: observed_tool_decisions,
-                                            final_prompt_size_chars: request_context_chars,
-                                            compaction_report: last_compaction_report,
-                                            hook_invocations,
-                                            provider_retry_count,
-                                            provider_error_count,
-                                        },
+                                        run_id,
+                                        started_at,
+                                        reason.clone(),
+                                        Some(reason),
+                                        messages,
+                                        observed_tool_calls,
+                                        observed_tool_decisions,
+                                        request_context_chars,
+                                        last_compaction_report,
+                                        hook_invocations,
+                                        provider_retry_count,
+                                        provider_error_count,
                                         saw_token_usage,
                                         &total_token_usage,
                                         &taint_state,
@@ -1660,23 +1654,20 @@ impl<P: ModelProvider> Agent<P> {
                                                 "side_effects": tool_side_effects(&tc.name)
                                             }),
                                         );
-                                        return self.finalize_run_outcome_with_end(
+                                        return self.finalize_denied_with_end(
                                             step as u32,
-                                            AgentOutcomeBuilderInput {
-                                                run_id,
-                                                started_at,
-                                                exit_reason: AgentExitReason::Denied,
-                                                final_output: reason.clone(),
-                                                error: Some(reason),
-                                                messages,
-                                                tool_calls: observed_tool_calls,
-                                                tool_decisions: observed_tool_decisions,
-                                                final_prompt_size_chars: request_context_chars,
-                                                compaction_report: last_compaction_report,
-                                                hook_invocations,
-                                                provider_retry_count,
-                                                provider_error_count,
-                                            },
+                                            run_id,
+                                            started_at,
+                                            reason.clone(),
+                                            Some(reason),
+                                            messages,
+                                            observed_tool_calls,
+                                            observed_tool_decisions,
+                                            request_context_chars,
+                                            last_compaction_report,
+                                            hook_invocations,
+                                            provider_retry_count,
+                                            provider_error_count,
                                             saw_token_usage,
                                             &total_token_usage,
                                             &taint_state,
@@ -1765,23 +1756,20 @@ impl<P: ModelProvider> Agent<P> {
                                             "side_effects": tool_side_effects(&tc.name)
                                         }),
                                     );
-                                    return self.finalize_run_outcome_with_end(
+                                    return self.finalize_denied_with_end(
                                         step as u32,
-                                        AgentOutcomeBuilderInput {
-                                            run_id,
-                                            started_at,
-                                            exit_reason: AgentExitReason::Denied,
-                                            final_output: reason.clone(),
-                                            error: Some(reason),
-                                            messages,
-                                            tool_calls: observed_tool_calls,
-                                            tool_decisions: observed_tool_decisions,
-                                            final_prompt_size_chars: request_context_chars,
-                                            compaction_report: last_compaction_report,
-                                            hook_invocations,
-                                            provider_retry_count,
-                                            provider_error_count,
-                                        },
+                                        run_id,
+                                        started_at,
+                                        reason.clone(),
+                                        Some(reason),
+                                        messages,
+                                        observed_tool_calls,
+                                        observed_tool_decisions,
+                                        request_context_chars,
+                                        last_compaction_report,
+                                        hook_invocations,
+                                        provider_retry_count,
+                                        provider_error_count,
                                         saw_token_usage,
                                         &total_token_usage,
                                         &taint_state,
@@ -2175,23 +2163,20 @@ impl<P: ModelProvider> Agent<P> {
                             continue;
                         }
                         PlanToolEnforcementMode::Hard => {
-                            return self.finalize_run_outcome_with_end(
+                            return self.finalize_denied_with_end(
                                 step as u32,
-                                AgentOutcomeBuilderInput {
-                                    run_id,
-                                    started_at,
-                                    exit_reason: AgentExitReason::Denied,
-                                    final_output: reason,
-                                    error: None,
-                                    messages,
-                                    tool_calls: observed_tool_calls,
-                                    tool_decisions: observed_tool_decisions,
-                                    final_prompt_size_chars: request_context_chars,
-                                    compaction_report: last_compaction_report,
-                                    hook_invocations,
-                                    provider_retry_count,
-                                    provider_error_count,
-                                },
+                                run_id,
+                                started_at,
+                                reason,
+                                None,
+                                messages,
+                                observed_tool_calls,
+                                observed_tool_decisions,
+                                request_context_chars,
+                                last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
                                 saw_token_usage,
                                 &total_token_usage,
                                 &taint_state,
@@ -3263,31 +3248,28 @@ impl<P: ModelProvider> Agent<P> {
                             escalated,
                             escalation_reason: escalation_reason.clone(),
                         });
-                        return self.finalize_run_outcome_with_end(
+                        return self.finalize_denied_with_end(
                             step as u32,
-                            AgentOutcomeBuilderInput {
-                                run_id,
-                                started_at,
-                                exit_reason: AgentExitReason::Denied,
-                                final_output: format!(
-                                    "Tool call '{}' denied: {}",
-                                    tc.name,
-                                    if let Some(src) = &source {
-                                        format!("{} (source: {})", reason, src)
-                                    } else {
-                                        reason.clone()
-                                    }
-                                ),
-                                error: None,
-                                messages,
-                                tool_calls: observed_tool_calls,
-                                tool_decisions: observed_tool_decisions,
-                                final_prompt_size_chars: request_context_chars,
-                                compaction_report: last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                            },
+                            run_id,
+                            started_at,
+                            format!(
+                                "Tool call '{}' denied: {}",
+                                tc.name,
+                                if let Some(src) = &source {
+                                    format!("{} (source: {})", reason, src)
+                                } else {
+                                    reason.clone()
+                                }
+                            ),
+                            None,
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
                             saw_token_usage,
                             &total_token_usage,
                             &taint_state,
