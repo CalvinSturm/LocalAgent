@@ -2641,94 +2641,25 @@ impl<P: ModelProvider> Agent<P> {
                         escalation_reason,
                     } => {
                         if let Some(err) = &invalid_args_error {
-                            self.emit_event(
+                            if self.handle_require_approval_invalid_args(
                                 &run_id,
                                 step as u32,
-                                EventKind::ToolDecision,
-                                serde_json::json!({
-                                    "tool_call_id": tc.id,
-                                    "name": tc.name,
-                                    "decision": "allow",
-                                "reason": format!("invalid args bypassed approval: {err}"),
-                                "approval_key_version": approval_key_version_meta.clone(),
-                                "tool_schema_hash_hex": tool_schema_hash_hex.clone(),
-                                "hooks_config_hash_hex": hooks_config_hash_hex.clone(),
-                                "planner_hash_hex": planner_hash_hex.clone(),
-                                "exec_target": decision_exec_target.clone(),
-                                "taint_overall": taint_state.overall_str(),
-                                "taint_enforced": taint_enforced,
-                                "escalated": escalated,
-                                "escalation_reason": escalation_reason.clone(),
-                                "side_effects": tool_side_effects(&tc.name),
-                                "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
-                            }),
-                            );
-                            self.emit_tool_exec_start_events(&run_id, step as u32, tc);
-                            let tool_msg = make_invalid_args_tool_message(
                                 tc,
                                 err,
-                                self.tool_rt.exec_target_kind,
-                            );
-                            let content = tool_msg.content.clone().unwrap_or_default();
-                            self.gate.record(GateEvent {
-                                run_id: run_id.clone(),
-                                step: step as u32,
-                                tool_call_id: tc.id.clone(),
-                                tool: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
-                                decision: "allow".to_string(),
-                                decision_reason: Some(format!(
-                                    "invalid args bypassed approval: {err}"
-                                )),
-                                decision_source: source.clone(),
-                                approval_id: None,
-                                approval_key: None,
-                                approval_mode: approval_mode_meta.clone(),
-                                auto_approve_scope: auto_scope_meta.clone(),
-                                approval_key_version: approval_key_version_meta.clone(),
-                                tool_schema_hash_hex: tool_schema_hash_hex.clone(),
-                                hooks_config_hash_hex: hooks_config_hash_hex.clone(),
-                                planner_hash_hex: planner_hash_hex.clone(),
-                                exec_target: decision_exec_target.clone(),
-                                taint_overall: Some(taint_state.overall_str().to_string()),
+                                source.clone(),
                                 taint_enforced,
                                 escalated,
-                                escalation_reason: escalation_reason.clone(),
-                                result_ok: false,
-                                result_content: content.clone(),
-                                result_input_digest: None,
-                                result_output_digest: None,
-                                result_input_len: None,
-                                result_output_len: None,
-                            });
-                            observed_tool_decisions.push(ToolDecisionRecord {
-                                step: step as u32,
-                                tool_call_id: tc.id.clone(),
-                                tool: tc.name.clone(),
-                                decision: "allow".to_string(),
-                                reason: Some(format!("invalid args bypassed approval: {err}")),
-                                source: source.clone(),
-                                taint_overall: Some(taint_state.overall_str().to_string()),
-                                taint_enforced,
-                                escalated,
-                                escalation_reason: escalation_reason.clone(),
-                            });
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::ToolExecEnd,
-                                serde_json::json!({
-                                    "tool_call_id": tc.id,
-                                    "name": tc.name,
-                                    "ok": false,
-                                    "truncated": false
-                                }),
-                            );
-                            messages.push(tool_msg);
-                            if self.inject_post_tool_operator_messages(
-                                &run_id,
-                                step as u32,
+                                escalation_reason.clone(),
+                                approval_mode_meta.clone(),
+                                auto_scope_meta.clone(),
+                                approval_key_version_meta.clone(),
+                                tool_schema_hash_hex.clone(),
+                                hooks_config_hash_hex.clone(),
+                                planner_hash_hex.clone(),
+                                decision_exec_target.clone(),
+                                &taint_state,
                                 &mut messages,
+                                &mut observed_tool_decisions,
                             ) {
                                 continue 'agent_steps;
                             }
