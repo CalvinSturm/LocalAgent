@@ -8,7 +8,7 @@ use crate::agent_impl_guard::{
     prompt_requires_tool_only, ToolExecutionRecord,
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
-use crate::agent_taint_helpers::{compute_taint_spans_for_tool, taint_record_from_state};
+use crate::agent_taint_helpers::compute_taint_spans_for_tool;
 use crate::agent_tool_exec::ToolRunOutcome;
 use crate::agent_tool_exec::{
     classify_tool_failure, contains_tool_wrapper_markers, extract_content_tool_calls,
@@ -33,18 +33,22 @@ use crate::operator_queue::{
     QueuedOperatorMessage,
 };
 use crate::providers::http::{message_short, ProviderError};
-use crate::providers::{ModelProvider, StreamDelta};
+use crate::providers::ModelProvider;
 use crate::taint::{TaintMode, TaintState, TaintToggle};
 use crate::tools::{
     envelope_to_message, to_tool_result_envelope, tool_side_effects, validate_builtin_tool_args,
     ToolErrorCode, ToolResultMeta, ToolRuntime,
 };
 use crate::trust::policy::Policy;
-use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
+use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolDef};
 use std::time::{Duration, Instant};
 
 mod agent_types;
+mod model_io;
+mod operator_queue;
 mod runtime_completion;
+mod run_finalize;
+mod run_setup;
 mod timeouts;
 mod tool_helpers;
 
@@ -111,215 +115,6 @@ pub struct Agent<P: ModelProvider> {
 }
 
 impl<P: ModelProvider> Agent<P> {
-    fn emit_run_start_events(&mut self, run_id: &str) {
-        self.emit_event(
-            run_id,
-            0,
-            EventKind::RunStart,
-            serde_json::json!({"model": self.model}),
-        );
-        if let Some(policy) = &self.policy_loaded {
-            self.emit_event(
-                run_id,
-                0,
-                EventKind::PolicyLoaded,
-                serde_json::json!({
-                    "version": policy.version,
-                    "rules_count": policy.rules_count,
-                    "includes_count": policy.includes_count,
-                    "mcp_allowlist": policy.mcp_allowlist
-                }),
-            );
-        }
-    }
-
-    fn build_initial_messages(
-        &self,
-        user_prompt: &str,
-        session_messages: Vec<Message>,
-        injected_messages: Vec<Message>,
-    ) -> Vec<Message> {
-        let mut messages = vec![Message {
-            role: Role::System,
-            content: Some(
-                "You are an agent that may call tools to gather information.\n\
-\n\
-TOOL_CONTRACT_VERSION: v1\n\
-\n\
-Tool use contract:\n\
-- Use only tools explicitly provided in this run.\n\
-- Emit at most one tool call per assistant step.\n\
-- Tool arguments must be a valid JSON object matching the tool schema.\n\
-- If a tool returns an error, read the tool error and retry with corrected arguments only when applicable.\n\
-- If no tool is needed, return a direct final answer.\n\
-\n\
-Fallback when native tool calls are unavailable:\n\
-- Emit exactly one wrapper block:\n\
-  [TOOL_CALL]\n\
-  {\"name\":\"<tool>\",\"arguments\":{...}}\n\
-  [END_TOOL_CALL]\n\
-- Emit no extra prose inside the wrapper."
-                    .to_string(),
-            ),
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-        }];
-        messages.extend(session_messages);
-        for msg in injected_messages {
-            messages.push(msg);
-        }
-        messages.push(Message {
-            role: Role::User,
-            content: Some(user_prompt.to_string()),
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-        });
-        messages
-    }
-
-    fn compute_run_preflight_caches(
-        &self,
-    ) -> (
-        Option<String>,
-        Option<String>,
-        std::collections::BTreeSet<String>,
-    ) {
-        let expected_mcp_catalog_hash_hex = self
-            .mcp_registry
-            .as_ref()
-            .and_then(|m| m.configured_tool_catalog_hash_hex().ok());
-        let expected_mcp_docs_hash_hex = self
-            .mcp_registry
-            .as_ref()
-            .and_then(|m| m.configured_tool_docs_hash_hex().ok());
-        let allowed_tool_names: std::collections::BTreeSet<String> =
-            self.tools.iter().map(|t| t.name.clone()).collect();
-        (
-            expected_mcp_catalog_hash_hex,
-            expected_mcp_docs_hash_hex,
-            allowed_tool_names,
-        )
-    }
-
-    fn emit_plan_step_started_if_needed(
-        &mut self,
-        run_id: &str,
-        step: u32,
-        active_plan_step_idx: usize,
-        announced_plan_step_id: &mut Option<String>,
-    ) {
-        if matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-            || self.plan_step_constraints.is_empty()
-            || active_plan_step_idx >= self.plan_step_constraints.len()
-        {
-            return;
-        }
-        let step_constraint = self.plan_step_constraints[active_plan_step_idx].clone();
-        if announced_plan_step_id.as_deref() == Some(step_constraint.step_id.as_str()) {
-            return;
-        }
-        self.emit_event(
-            run_id,
-            step,
-            EventKind::StepStarted,
-            serde_json::json!({
-                "step_id": step_constraint.step_id,
-                "step_index": active_plan_step_idx,
-                "allowed_tools": step_constraint.intended_tools,
-                "enforcement_mode": format!("{:?}", self.plan_tool_enforcement).to_lowercase()
-            }),
-        );
-        *announced_plan_step_id = Some(step_constraint.step_id.clone());
-    }
-
-    fn record_detected_tool_call(
-        &mut self,
-        run_id: &str,
-        step: u32,
-        tc: &ToolCall,
-        observed_tool_calls: &mut Vec<ToolCall>,
-    ) {
-        observed_tool_calls.push(tc.clone());
-        self.emit_event(
-            run_id,
-            step,
-            EventKind::ToolCallDetected,
-            serde_json::json!({
-                "tool_call_id": tc.id,
-                "name": tc.name,
-                "arguments": tc.arguments,
-                "side_effects": tool_side_effects(&tc.name),
-                "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
-            }),
-        );
-    }
-
-    async fn execute_model_request(
-        &mut self,
-        run_id: &str,
-        step: u32,
-        req: GenerateRequest,
-    ) -> anyhow::Result<crate::types::GenerateResponse> {
-        self.emit_event(
-            run_id,
-            step,
-            EventKind::ModelRequestStart,
-            serde_json::json!({
-                "message_count": req.messages.len(),
-                "tool_count": req.tools.as_ref().map(|t| t.len()).unwrap_or(0)
-            }),
-        );
-
-        if self.stream {
-            if self.provider.supports_streaming() {
-                let mut collected = Vec::<StreamDelta>::new();
-                let mut callback = |delta| collected.push(delta);
-                let out = self
-                    .provider
-                    .generate_streaming(req.clone(), &mut callback)
-                    .await;
-                for delta in collected {
-                    match delta {
-                        StreamDelta::Content(text) => {
-                            self.emit_event(
-                                run_id,
-                                step,
-                                EventKind::ModelDelta,
-                                serde_json::json!({"delta": text}),
-                            );
-                        }
-                        StreamDelta::ToolCallFragment(fragment) => {
-                            self.emit_event(
-                                run_id,
-                                step,
-                                EventKind::ModelDelta,
-                                serde_json::json!({
-                                    "tool_call_fragment": {
-                                        "index": fragment.index,
-                                        "id": fragment.id,
-                                        "name": fragment.name,
-                                        "arguments_fragment": fragment.arguments_fragment,
-                                        "complete": fragment.complete
-                                    }
-                                }),
-                            );
-                        }
-                    }
-                }
-                out
-            } else {
-                eprintln!(
-                    "WARN: provider does not support streaming; falling back to non-streaming"
-                );
-                self.provider.generate(req).await
-            }
-        } else {
-            self.provider.generate(req).await
-        }
-    }
-
     fn check_wall_time_budget_exceeded(
         &mut self,
         run_id: &str,
@@ -457,62 +252,6 @@ Fallback when native tool calls are unavailable:\n\
     #[allow(dead_code)]
     pub fn clear_operator_queue(&mut self) {
         self.operator_queue.clear();
-    }
-
-    fn finalize_run_outcome(
-        &self,
-        input: AgentOutcomeBuilderInput,
-        saw_token_usage: bool,
-        total_token_usage: &TokenUsage,
-        taint_state: &TaintState,
-    ) -> AgentOutcome {
-        AgentOutcome {
-            run_id: input.run_id,
-            started_at: input.started_at,
-            finished_at: crate::trust::now_rfc3339(),
-            exit_reason: input.exit_reason,
-            final_output: input.final_output,
-            error: input.error,
-            messages: input.messages,
-            tool_calls: input.tool_calls,
-            tool_decisions: input.tool_decisions,
-            compaction_settings: self.compaction_settings.clone(),
-            final_prompt_size_chars: input.final_prompt_size_chars,
-            compaction_report: input.compaction_report,
-            hook_invocations: input.hook_invocations,
-            provider_retry_count: input.provider_retry_count,
-            provider_error_count: input.provider_error_count,
-            token_usage: if saw_token_usage {
-                Some(total_token_usage.clone())
-            } else {
-                None
-            },
-            taint: taint_record_from_state(
-                self.taint_toggle,
-                self.taint_mode,
-                self.taint_digest_bytes,
-                taint_state,
-            ),
-        }
-    }
-
-    fn finalize_run_outcome_with_end(
-        &mut self,
-        step: u32,
-        input: AgentOutcomeBuilderInput,
-        saw_token_usage: bool,
-        total_token_usage: &TokenUsage,
-        taint_state: &TaintState,
-    ) -> AgentOutcome {
-        let run_id = input.run_id.clone();
-        let exit_reason = input.exit_reason.as_str().to_string();
-        self.emit_event(
-            &run_id,
-            step,
-            EventKind::RunEnd,
-            serde_json::json!({"exit_reason": exit_reason}),
-        );
-        self.finalize_run_outcome(input, saw_token_usage, total_token_usage, taint_state)
     }
 
     pub async fn run(

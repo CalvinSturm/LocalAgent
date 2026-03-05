@@ -1,8 +1,9 @@
-use crate::agent::Agent;
 use crate::events::EventKind;
 use crate::operator_queue::{DeliveryBoundary, QueueMessageKind};
 use crate::providers::ModelProvider;
 use crate::types::{Message, Role};
+
+use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
     pub(crate) fn deliver_operator_queue_at_boundary(
