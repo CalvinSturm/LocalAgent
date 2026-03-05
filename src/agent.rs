@@ -19,7 +19,7 @@ use crate::agent_tool_exec::{
 use crate::agent_utils::{add_opt_u32, provider_name, sha256_hex};
 use crate::agent_worker_protocol::parse_worker_step_status;
 use crate::compaction::{
-    context_size_chars, maybe_compact, CompactionOutcome, CompactionReport, CompactionSettings,
+    context_size_chars, maybe_compact, CompactionReport, CompactionSettings,
 };
 use crate::events::{EventKind, EventSink};
 use crate::gate::{ApprovalMode, AutoApproveScope, GateContext, GateDecision, GateEvent, ToolGate};
@@ -29,8 +29,7 @@ use crate::hooks::protocol::{
 use crate::hooks::runner::{make_pre_model_input, make_tool_result_input, HookManager};
 use crate::mcp::registry::McpRegistry;
 use crate::operator_queue::{
-    DeliveryBoundary, PendingMessageQueue, QueueLimits, QueueMessageKind, QueueSubmitRequest,
-    QueuedOperatorMessage,
+    DeliveryBoundary, PendingMessageQueue, QueueLimits, QueueSubmitRequest,
 };
 use crate::providers::http::{message_short, ProviderError};
 use crate::providers::ModelProvider;
@@ -47,6 +46,7 @@ mod agent_types;
 mod model_io;
 mod operator_queue;
 mod runtime_completion;
+mod run_control;
 mod run_finalize;
 mod run_setup;
 mod timeouts;
@@ -115,145 +115,6 @@ pub struct Agent<P: ModelProvider> {
 }
 
 impl<P: ModelProvider> Agent<P> {
-    fn check_wall_time_budget_exceeded(
-        &mut self,
-        run_id: &str,
-        step: u32,
-        run_started: &std::time::Instant,
-    ) -> Option<String> {
-        if self.tool_call_budget.max_wall_time_ms == 0 {
-            return None;
-        }
-        let elapsed_ms = run_started.elapsed().as_millis() as u64;
-        if elapsed_ms <= self.tool_call_budget.max_wall_time_ms {
-            return None;
-        }
-        let reason = format!(
-            "runtime budget exceeded: wall time {}ms > limit {}ms",
-            elapsed_ms, self.tool_call_budget.max_wall_time_ms
-        );
-        self.emit_event(
-            run_id,
-            step,
-            EventKind::Error,
-            serde_json::json!({
-                "error": reason,
-                "source": "runtime_budget",
-                "elapsed_ms": elapsed_ms,
-                "max_wall_time_ms": self.tool_call_budget.max_wall_time_ms
-            }),
-        );
-        self.emit_event(
-            run_id,
-            step,
-            EventKind::RunEnd,
-            serde_json::json!({"exit_reason":"budget_exceeded"}),
-        );
-        Some(reason)
-    }
-
-    fn compact_messages_for_step(
-        &mut self,
-        run_id: &str,
-        step: u32,
-        messages: &[Message],
-        provider_retry_count: &mut u32,
-        provider_error_count: &mut u32,
-    ) -> Result<CompactionOutcome, String> {
-        match maybe_compact(messages, &self.compaction_settings) {
-            Ok(c) => Ok(c),
-            Err(e) => {
-                if let Some(pe) = e.downcast_ref::<ProviderError>() {
-                    for r in &pe.retries {
-                        *provider_retry_count = provider_retry_count.saturating_add(1);
-                        self.emit_event(
-                            run_id,
-                            step,
-                            EventKind::ProviderRetry,
-                            serde_json::json!({
-                                "attempt": r.attempt,
-                                "max_attempts": r.max_attempts,
-                                "kind": r.kind,
-                                "status": r.status,
-                                "backoff_ms": r.backoff_ms
-                            }),
-                        );
-                    }
-                    *provider_error_count = provider_error_count.saturating_add(1);
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::ProviderError,
-                        serde_json::json!({
-                            "kind": pe.kind,
-                            "status": pe.http_status,
-                            "retryable": pe.retryable,
-                            "attempt": pe.attempt,
-                            "max_attempts": pe.max_attempts,
-                            "message_short": message_short(&pe.message)
-                        }),
-                    );
-                }
-                let err_text = format!("compaction failed: {e}");
-                self.emit_event(
-                    run_id,
-                    step,
-                    EventKind::Error,
-                    serde_json::json!({"error": err_text}),
-                );
-                self.emit_event(
-                    run_id,
-                    step,
-                    EventKind::RunEnd,
-                    serde_json::json!({"exit_reason":"provider_error"}),
-                );
-                Err(err_text)
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn queue_operator_message(
-        &mut self,
-        kind: QueueMessageKind,
-        content: &str,
-    ) -> QueuedOperatorMessage {
-        let submitted = self
-            .operator_queue
-            .submit(kind, content, &self.operator_queue_limits)
-            .queued;
-        if let Some(run_id) = self.gate_ctx.run_id.clone() {
-            self.emit_event(
-                &run_id,
-                0,
-                EventKind::QueueSubmitted,
-                serde_json::json!({
-                    "queue_id": submitted.queue_id,
-                    "sequence_no": submitted.sequence_no,
-                    "kind": submitted.kind,
-                    "truncated": submitted.truncated,
-                    "bytes_kept": submitted.bytes_kept,
-                    "bytes_loaded": submitted.bytes_loaded,
-                    "next_delivery": match submitted.kind {
-                        QueueMessageKind::Steer => DeliveryBoundary::PostTool.user_phrase(),
-                        QueueMessageKind::FollowUp => DeliveryBoundary::TurnIdle.user_phrase(),
-                    }
-                }),
-            );
-        }
-        submitted
-    }
-
-    #[allow(dead_code)]
-    pub fn pending_operator_messages(&self) -> &[QueuedOperatorMessage] {
-        self.operator_queue.pending()
-    }
-
-    #[allow(dead_code)]
-    pub fn clear_operator_queue(&mut self) {
-        self.operator_queue.clear();
-    }
-
     pub async fn run(
         &mut self,
         user_prompt: &str,
