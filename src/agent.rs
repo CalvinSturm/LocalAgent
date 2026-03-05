@@ -738,6 +738,10 @@ impl<P: ModelProvider> Agent<P> {
                 match step_status.status.as_str() {
                     "done" => {
                         if step_status.step_id != current_step_id {
+                            let transition_error = format!(
+                                "invalid step completion transition: got done for {}, expected {}",
+                                step_status.step_id, current_step_id
+                            );
                             self.emit_event(
                                 &run_id,
                                 step as u32,
@@ -755,10 +759,7 @@ impl<P: ModelProvider> Agent<P> {
                                     started_at,
                                     exit_reason: AgentExitReason::PlannerError,
                                     final_output: String::new(),
-                                    error: Some(format!(
-                                        "invalid step completion transition: got done for {}, expected {}",
-                                        step_status.step_id, current_step_id
-                                    )),
+                                    error: Some(transition_error),
                                     messages,
                                     tool_calls: observed_tool_calls,
                                     tool_decisions: observed_tool_decisions,
@@ -805,26 +806,19 @@ impl<P: ModelProvider> Agent<P> {
                                         "reason": "invalid_next_step_id"
                                     }),
                                 );
-                                return self.finalize_run_outcome_with_end(
+                                return self.finalize_planner_error_with_end(
                                     step as u32,
-                                    AgentOutcomeBuilderInput {
-                                        run_id,
-                                        started_at,
-                                        exit_reason: AgentExitReason::PlannerError,
-                                        final_output: String::new(),
-                                        error: Some(format!(
-                                            "invalid next_step_id in worker status: {}",
-                                            next
-                                        )),
-                                        messages,
-                                        tool_calls: observed_tool_calls,
-                                        tool_decisions: observed_tool_decisions,
-                                        final_prompt_size_chars: request_context_chars,
-                                        compaction_report: last_compaction_report,
-                                        hook_invocations,
-                                        provider_retry_count,
-                                        provider_error_count,
-                                    },
+                                    run_id,
+                                    started_at,
+                                    format!("invalid next_step_id in worker status: {}", next),
+                                    messages,
+                                    observed_tool_calls,
+                                    observed_tool_decisions,
+                                    request_context_chars,
+                                    last_compaction_report,
+                                    hook_invocations,
+                                    provider_retry_count,
+                                    provider_error_count,
                                     saw_token_usage,
                                     &total_token_usage,
                                     &taint_state,
@@ -836,6 +830,10 @@ impl<P: ModelProvider> Agent<P> {
                     }
                     "retry" => {
                         if step_status.step_id != current_step_id {
+                            let transition_error = format!(
+                                "invalid retry transition: got retry for {}, expected {}",
+                                step_status.step_id, current_step_id
+                            );
                             self.emit_event(
                                 &run_id,
                                 step as u32,
@@ -846,26 +844,19 @@ impl<P: ModelProvider> Agent<P> {
                                     "reason": "invalid_retry_transition"
                                 }),
                             );
-                            return self.finalize_run_outcome_with_end(
+                            return self.finalize_planner_error_with_end(
                                 step as u32,
-                                AgentOutcomeBuilderInput {
-                                    run_id,
-                                    started_at,
-                                    exit_reason: AgentExitReason::PlannerError,
-                                    final_output: String::new(),
-                                    error: Some(format!(
-                                        "invalid retry transition: got retry for {}, expected {}",
-                                        step_status.step_id, current_step_id
-                                    )),
-                                    messages,
-                                    tool_calls: observed_tool_calls,
-                                    tool_decisions: observed_tool_decisions,
-                                    final_prompt_size_chars: request_context_chars,
-                                    compaction_report: last_compaction_report,
-                                    hook_invocations,
-                                    provider_retry_count,
-                                    provider_error_count,
-                                },
+                                run_id,
+                                started_at,
+                                transition_error,
+                                messages,
+                                observed_tool_calls,
+                                observed_tool_decisions,
+                                request_context_chars,
+                                last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
                                 saw_token_usage,
                                 &total_token_usage,
                                 &taint_state,
@@ -886,26 +877,22 @@ impl<P: ModelProvider> Agent<P> {
                                     "retry_count": *entry
                                 }),
                             );
-                            return self.finalize_run_outcome_with_end(
+                            return self.finalize_planner_error_with_end(
                                 step as u32,
-                                AgentOutcomeBuilderInput {
-                                    run_id,
-                                    started_at,
-                                    exit_reason: AgentExitReason::PlannerError,
-                                    final_output: String::new(),
-                                    error: Some(format!(
-                                        "step {} exceeded retry transition limit",
-                                        step_status.step_id
-                                    )),
-                                    messages,
-                                    tool_calls: observed_tool_calls,
-                                    tool_decisions: observed_tool_decisions,
-                                    final_prompt_size_chars: request_context_chars,
-                                    compaction_report: last_compaction_report,
-                                    hook_invocations,
-                                    provider_retry_count,
-                                    provider_error_count,
-                                },
+                                run_id,
+                                started_at,
+                                format!(
+                                    "step {} exceeded retry transition limit",
+                                    step_status.step_id
+                                ),
+                                messages,
+                                observed_tool_calls,
+                                observed_tool_decisions,
+                                request_context_chars,
+                                last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
                                 saw_token_usage,
                                 &total_token_usage,
                                 &taint_state,
@@ -922,26 +909,22 @@ impl<P: ModelProvider> Agent<P> {
                                 "status": step_status.status
                             }),
                         );
-                        return self.finalize_run_outcome_with_end(
+                        return self.finalize_planner_error_with_end(
                             step as u32,
-                            AgentOutcomeBuilderInput {
-                                run_id,
-                                started_at,
-                                exit_reason: AgentExitReason::PlannerError,
-                                final_output: String::new(),
-                                error: Some(format!(
-                                    "worker requested {} transition for step {}",
-                                    step_status.status, step_status.step_id
-                                )),
-                                messages,
-                                tool_calls: observed_tool_calls,
-                                tool_decisions: observed_tool_decisions,
-                                final_prompt_size_chars: request_context_chars,
-                                compaction_report: last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                            },
+                            run_id,
+                            started_at,
+                            format!(
+                                "worker requested {} transition for step {}",
+                                step_status.status, step_status.step_id
+                            ),
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
                             saw_token_usage,
                             &total_token_usage,
                             &taint_state,
@@ -957,26 +940,22 @@ impl<P: ModelProvider> Agent<P> {
                                 "reason": "worker_fail_transition"
                             }),
                         );
-                        return self.finalize_run_outcome_with_end(
+                        return self.finalize_planner_error_with_end(
                             step as u32,
-                            AgentOutcomeBuilderInput {
-                                run_id,
-                                started_at,
-                                exit_reason: AgentExitReason::PlannerError,
-                                final_output: String::new(),
-                                error: Some(format!(
-                                    "worker requested {} transition for step {}",
-                                    step_status.status, step_status.step_id
-                                )),
-                                messages,
-                                tool_calls: observed_tool_calls,
-                                tool_decisions: observed_tool_decisions,
-                                final_prompt_size_chars: request_context_chars,
-                                compaction_report: last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                            },
+                            run_id,
+                            started_at,
+                            format!(
+                                "worker requested {} transition for step {}",
+                                step_status.status, step_status.step_id
+                            ),
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
                             saw_token_usage,
                             &total_token_usage,
                             &taint_state,
@@ -1070,13 +1049,8 @@ impl<P: ModelProvider> Agent<P> {
                             "failure_class": failure_class
                         }),
                     );
-                    self.emit_event(
-                        &run_id,
+                    return self.finalize_run_outcome_with_end(
                         step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"planner_error"}),
-                    );
-                    return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
                             started_at,
@@ -1169,13 +1143,8 @@ impl<P: ModelProvider> Agent<P> {
                                             "timeout_ms": post_write_verify_timeout_ms
                                         }),
                                     );
-                                    self.emit_event(
-                                        &run_id,
+                                    return self.finalize_run_outcome_with_end(
                                         step as u32,
-                                        EventKind::RunEnd,
-                                        serde_json::json!({"exit_reason":"planner_error"}),
-                                    );
-                                    return self.finalize_run_outcome(
                                         AgentOutcomeBuilderInput {
                                             run_id,
                                             started_at,
@@ -1230,13 +1199,8 @@ impl<P: ModelProvider> Agent<P> {
                                         "source": "implementation_integrity_guard"
                                     }),
                                 );
-                                self.emit_event(
-                                    &run_id,
+                                return self.finalize_run_outcome_with_end(
                                     step as u32,
-                                    EventKind::RunEnd,
-                                    serde_json::json!({"exit_reason":"planner_error"}),
-                                );
-                                return self.finalize_run_outcome(
                                     AgentOutcomeBuilderInput {
                                         run_id,
                                         started_at,
@@ -1314,13 +1278,8 @@ impl<P: ModelProvider> Agent<P> {
                                 "source": "implementation_integrity_guard"
                             }),
                         );
-                        self.emit_event(
-                            &run_id,
+                        return self.finalize_run_outcome_with_end(
                             step as u32,
-                            EventKind::RunEnd,
-                            serde_json::json!({"exit_reason":"planner_error"}),
-                        );
-                        return self.finalize_run_outcome(
                             AgentOutcomeBuilderInput {
                                 run_id,
                                 started_at,
@@ -1341,13 +1300,8 @@ impl<P: ModelProvider> Agent<P> {
                             &taint_state,
                         );
                     }
-                    self.emit_event(
-                        &run_id,
+                    return self.finalize_run_outcome_with_end(
                         step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"ok"}),
-                    );
-                    return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
                             started_at,
@@ -1484,13 +1438,8 @@ impl<P: ModelProvider> Agent<P> {
                                                 "side_effects": tool_side_effects(&tc.name)
                                             }),
                                         );
-                                        self.emit_event(
-                                            &run_id,
+                                        return self.finalize_run_outcome_with_end(
                                             step as u32,
-                                            EventKind::RunEnd,
-                                            serde_json::json!({"exit_reason":"denied"}),
-                                        );
-                                        return self.finalize_run_outcome(
                                             AgentOutcomeBuilderInput {
                                                 run_id,
                                                 started_at,
@@ -1598,13 +1547,8 @@ impl<P: ModelProvider> Agent<P> {
                                             "side_effects": tool_side_effects(&tc.name)
                                         }),
                                     );
-                                    self.emit_event(
-                                        &run_id,
+                                    return self.finalize_run_outcome_with_end(
                                         step as u32,
-                                        EventKind::RunEnd,
-                                        serde_json::json!({"exit_reason":"denied"}),
-                                    );
-                                    return self.finalize_run_outcome(
                                         AgentOutcomeBuilderInput {
                                             run_id,
                                             started_at,
@@ -1716,13 +1660,8 @@ impl<P: ModelProvider> Agent<P> {
                                                 "side_effects": tool_side_effects(&tc.name)
                                             }),
                                         );
-                                        self.emit_event(
-                                            &run_id,
+                                        return self.finalize_run_outcome_with_end(
                                             step as u32,
-                                            EventKind::RunEnd,
-                                            serde_json::json!({"exit_reason":"denied"}),
-                                        );
-                                        return self.finalize_run_outcome(
                                             AgentOutcomeBuilderInput {
                                                 run_id,
                                                 started_at,
@@ -1826,13 +1765,8 @@ impl<P: ModelProvider> Agent<P> {
                                             "side_effects": tool_side_effects(&tc.name)
                                         }),
                                     );
-                                    self.emit_event(
-                                        &run_id,
+                                    return self.finalize_run_outcome_with_end(
                                         step as u32,
-                                        EventKind::RunEnd,
-                                        serde_json::json!({"exit_reason":"denied"}),
-                                    );
-                                    return self.finalize_run_outcome(
                                         AgentOutcomeBuilderInput {
                                             run_id,
                                             started_at,
@@ -1921,13 +1855,8 @@ impl<P: ModelProvider> Agent<P> {
                             "name": tc.name
                         }),
                     );
-                    self.emit_event(
-                        &run_id,
+                    return self.finalize_run_outcome_with_end(
                         step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"planner_error"}),
-                    );
-                    return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
                             started_at,
@@ -1981,13 +1910,8 @@ impl<P: ModelProvider> Agent<P> {
                                 "attempt": malformed_tool_call_attempts
                             }),
                         );
-                        self.emit_event(
-                            &run_id,
+                        return self.finalize_run_outcome_with_end(
                             step as u32,
-                            EventKind::RunEnd,
-                            serde_json::json!({"exit_reason":"planner_error"}),
-                        );
-                        return self.finalize_run_outcome(
                             AgentOutcomeBuilderInput {
                                 run_id,
                                 started_at,
@@ -2251,13 +2175,8 @@ impl<P: ModelProvider> Agent<P> {
                             continue;
                         }
                         PlanToolEnforcementMode::Hard => {
-                            self.emit_event(
-                                &run_id,
+                            return self.finalize_run_outcome_with_end(
                                 step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"denied"}),
-                            );
-                            return self.finalize_run_outcome(
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -2365,13 +2284,8 @@ impl<P: ModelProvider> Agent<P> {
                                 EventKind::Error,
                                 serde_json::json!({"error": reason.clone()}),
                             );
-                            self.emit_event(
-                                &run_id,
+                            return self.finalize_run_outcome_with_end(
                                 step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"budget_exceeded"}),
-                            );
-                            return self.finalize_run_outcome(
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -2414,13 +2328,8 @@ impl<P: ModelProvider> Agent<P> {
                                     }
                                 }),
                             );
-                            self.emit_event(
-                                &run_id,
+                            return self.finalize_run_outcome_with_end(
                                 step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"budget_exceeded"}),
-                            );
-                            return self.finalize_run_outcome(
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -2629,13 +2538,8 @@ impl<P: ModelProvider> Agent<P> {
                                                 "attempt": invalid_patch_attempt
                                             }),
                                         );
-                                        self.emit_event(
-                                            &run_id,
+                                        return self.finalize_run_outcome_with_end(
                                             step as u32,
-                                            EventKind::RunEnd,
-                                            serde_json::json!({"exit_reason":"planner_error"}),
-                                        );
-                                        return self.finalize_run_outcome(
                                             AgentOutcomeBuilderInput {
                                                 run_id,
                                                 started_at,
@@ -2845,13 +2749,8 @@ impl<P: ModelProvider> Agent<P> {
                                         EventKind::Error,
                                         serde_json::json!({"error": reason.clone()}),
                                     );
-                                    self.emit_event(
-                                        &run_id,
+                                    return self.finalize_run_outcome_with_end(
                                         step as u32,
-                                        EventKind::RunEnd,
-                                        serde_json::json!({"exit_reason":"budget_exceeded"}),
-                                    );
-                                    return self.finalize_run_outcome(
                                         AgentOutcomeBuilderInput {
                                             run_id,
                                             started_at,
@@ -2889,13 +2788,8 @@ impl<P: ModelProvider> Agent<P> {
                                             }
                                         }),
                                     );
-                                    self.emit_event(
-                                        &run_id,
+                                    return self.finalize_run_outcome_with_end(
                                         step as u32,
-                                        EventKind::RunEnd,
-                                        serde_json::json!({"exit_reason":"budget_exceeded"}),
-                                    );
-                                    return self.finalize_run_outcome(
                                         AgentOutcomeBuilderInput {
                                             run_id,
                                             started_at,
@@ -3266,13 +3160,8 @@ impl<P: ModelProvider> Agent<P> {
                                     "path": blocked_path
                                 }),
                             );
-                            self.emit_event(
-                                &run_id,
+                            return self.finalize_run_outcome_with_end(
                                 step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"planner_error"}),
-                            );
-                            return self.finalize_run_outcome(
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -3374,13 +3263,8 @@ impl<P: ModelProvider> Agent<P> {
                             escalated,
                             escalation_reason: escalation_reason.clone(),
                         });
-                        self.emit_event(
-                            &run_id,
+                        return self.finalize_run_outcome_with_end(
                             step as u32,
-                            EventKind::RunEnd,
-                            serde_json::json!({"exit_reason":"denied"}),
-                        );
-                        return self.finalize_run_outcome(
                             AgentOutcomeBuilderInput {
                                 run_id,
                                 started_at,
@@ -3598,13 +3482,8 @@ impl<P: ModelProvider> Agent<P> {
                             escalated,
                             escalation_reason: escalation_reason.clone(),
                         });
-                        self.emit_event(
-                            &run_id,
+                        return self.finalize_run_outcome_with_end(
                             step as u32,
-                            EventKind::RunEnd,
-                            serde_json::json!({"exit_reason":"approval_required"}),
-                        );
-                        return self.finalize_run_outcome(
                             AgentOutcomeBuilderInput {
                                 run_id,
                                 started_at,
@@ -3710,13 +3589,8 @@ impl<P: ModelProvider> Agent<P> {
                                     "timeout_ms": post_write_verify_timeout_ms
                                 }),
                             );
-                            self.emit_event(
-                                &run_id,
+                            return self.finalize_run_outcome_with_end(
                                 step as u32,
-                                EventKind::RunEnd,
-                                serde_json::json!({"exit_reason":"planner_error"}),
-                            );
-                            return self.finalize_run_outcome(
                                 AgentOutcomeBuilderInput {
                                     run_id,
                                     started_at,
@@ -3771,13 +3645,8 @@ impl<P: ModelProvider> Agent<P> {
                                 "source": "implementation_integrity_guard"
                             }),
                         );
-                        self.emit_event(
-                            &run_id,
+                        return self.finalize_run_outcome_with_end(
                             step as u32,
-                            EventKind::RunEnd,
-                            serde_json::json!({"exit_reason":"planner_error"}),
-                        );
-                        return self.finalize_run_outcome(
                             AgentOutcomeBuilderInput {
                                 run_id,
                                 started_at,
@@ -3823,13 +3692,8 @@ impl<P: ModelProvider> Agent<P> {
                             "source": "implementation_integrity_guard"
                         }),
                     );
-                    self.emit_event(
-                        &run_id,
+                    return self.finalize_run_outcome_with_end(
                         step as u32,
-                        EventKind::RunEnd,
-                        serde_json::json!({"exit_reason":"planner_error"}),
-                    );
-                    return self.finalize_run_outcome(
                         AgentOutcomeBuilderInput {
                             run_id,
                             started_at,
@@ -3850,13 +3714,8 @@ impl<P: ModelProvider> Agent<P> {
                         &taint_state,
                     );
                 }
-                self.emit_event(
-                    &run_id,
+                return self.finalize_run_outcome_with_end(
                     step as u32,
-                    EventKind::RunEnd,
-                    serde_json::json!({"exit_reason":"ok"}),
-                );
-                return self.finalize_run_outcome(
                     AgentOutcomeBuilderInput {
                         run_id,
                         started_at,
@@ -3879,14 +3738,9 @@ impl<P: ModelProvider> Agent<P> {
             }
         }
 
-        self.emit_event(
-            &run_id,
-            self.max_steps as u32,
-            EventKind::RunEnd,
-            serde_json::json!({"exit_reason":"max_steps"}),
-        );
         let final_prompt_size_chars = context_size_chars(&messages);
-        self.finalize_run_outcome(
+        self.finalize_run_outcome_with_end(
+            self.max_steps as u32,
             AgentOutcomeBuilderInput {
                 run_id,
                 started_at,
