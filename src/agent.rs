@@ -8,7 +8,6 @@ use crate::agent_impl_guard::{
     prompt_requires_tool_only, ToolExecutionRecord,
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
-use crate::agent_taint_helpers::compute_taint_spans_for_tool;
 use crate::agent_tool_exec::{
     classify_tool_failure, infer_truncated_flag, is_apply_patch_invalid_format_error,
     make_invalid_args_tool_message, schema_repair_instruction_message, tool_result_error_code,
@@ -2343,32 +2342,14 @@ impl<P: ModelProvider> Agent<P> {
                         } else {
                             None
                         };
-                        if matches!(self.taint_toggle, TaintToggle::On) {
-                            let spans = compute_taint_spans_for_tool(
-                                tc,
-                                &content,
-                                self.policy_for_taint.as_ref(),
-                                self.taint_digest_bytes,
-                            );
-                            if !spans.is_empty() {
-                                let tool_message_index = messages.len();
-                                taint_state.add_tool_spans(
-                                    &tc.id,
-                                    tool_message_index,
-                                    spans.clone(),
-                                );
-                                self.emit_event(
-                                    &run_id,
-                                    step as u32,
-                                    EventKind::TaintUpdated,
-                                    serde_json::json!({
-                                        "overall": taint_state.overall_str(),
-                                        "new_spans": spans.len(),
-                                        "sources": taint_state.sources_count_for_last_update()
-                                    }),
-                                );
-                            }
-                        }
+                        self.update_taint_for_tool_result(
+                            &run_id,
+                            step as u32,
+                            tc,
+                            &content,
+                            messages.len(),
+                            &mut taint_state,
+                        );
                         self.record_allowed_tool_result(
                             &run_id,
                             step as u32,

@@ -1,4 +1,5 @@
 use crate::agent_impl_guard::normalize_tool_path;
+use crate::agent_taint_helpers::compute_taint_spans_for_tool;
 use crate::agent_tool_exec::{run_tool_once, tool_result_has_error};
 use crate::agent_utils::sha256_hex;
 use crate::events::EventKind;
@@ -227,5 +228,39 @@ impl<P: ModelProvider> Agent<P> {
                 Err(e.message)
             }
         }
+    }
+
+    pub(super) fn update_taint_for_tool_result(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        tc: &ToolCall,
+        content: &str,
+        tool_message_index: usize,
+        taint_state: &mut crate::taint::TaintState,
+    ) {
+        if !matches!(self.taint_toggle, crate::taint::TaintToggle::On) {
+            return;
+        }
+        let spans = compute_taint_spans_for_tool(
+            tc,
+            content,
+            self.policy_for_taint.as_ref(),
+            self.taint_digest_bytes,
+        );
+        if spans.is_empty() {
+            return;
+        }
+        taint_state.add_tool_spans(&tc.id, tool_message_index, spans.clone());
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::TaintUpdated,
+            serde_json::json!({
+                "overall": taint_state.overall_str(),
+                "new_spans": spans.len(),
+                "sources": taint_state.sources_count_for_last_update()
+            }),
+        );
     }
 }
