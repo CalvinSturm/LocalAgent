@@ -3,3 +3,4 @@ target/
 .openagent/
 /.localagent/
 /.tmp/
+/.manual_test_temp/
