@@ -4,8 +4,8 @@ use crate::agent_budget::{
 use uuid::Uuid;
 
 use crate::agent_impl_guard::{
-    implementation_integrity_violation_with_tool_executions, normalize_tool_path,
-    pending_post_write_verification_paths, prompt_requires_tool_only, ToolExecutionRecord,
+    implementation_integrity_violation_with_tool_executions, pending_post_write_verification_paths,
+    prompt_requires_tool_only, ToolExecutionRecord,
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 use crate::agent_taint_helpers::{compute_taint_spans_for_tool, taint_record_from_state};
@@ -34,42 +34,35 @@ use crate::operator_queue::{
 };
 use crate::providers::http::{message_short, ProviderError};
 use crate::providers::{ModelProvider, StreamDelta};
-use crate::taint::{TaintMode, TaintSpan, TaintState, TaintToggle};
+use crate::taint::{TaintMode, TaintState, TaintToggle};
 use crate::tools::{
     envelope_to_message, to_tool_result_envelope, tool_side_effects, validate_builtin_tool_args,
     ToolErrorCode, ToolResultMeta, ToolRuntime,
 };
-use crate::trust::policy::{McpAllowSummary, Policy};
+use crate::trust::policy::Policy;
 use crate::types::{GenerateRequest, Message, Role, TokenUsage, ToolCall, ToolDef};
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Copy)]
-pub enum AgentExitReason {
-    Ok,
-    ProviderError,
-    PlannerError,
-    Denied,
-    ApprovalRequired,
-    HookAborted,
-    MaxSteps,
-    BudgetExceeded,
-    Cancelled,
-}
+mod agent_types;
+mod runtime_completion;
+mod timeouts;
+mod tool_helpers;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeCompletionDecision {
-    ExecuteTools,
-    Continue {
-        reason_code: &'static str,
-        corrective_instruction: &'static str,
-    },
-    FinalizeOk,
-    FinalizeError {
-        reason: &'static str,
-        source: &'static str,
-        failure_class: &'static str,
-    },
-}
+pub use agent_types::{
+    AgentExitReason, AgentOutcome, AgentTaintRecord, McpPinEnforcementMode,
+    McpRuntimeTraceEntry, PlanStepConstraint, PlanToolEnforcementMode, PolicyLoadedInfo,
+    ToolCallBudget, ToolDecisionRecord,
+};
+
+use agent_types::AgentOutcomeBuilderInput;
+pub(crate) use agent_types::WorkerStepStatus;
+use runtime_completion::{
+    runtime_completion_decision, RuntimeCompletionDecision, RuntimeCompletionInputs,
+};
+use tool_helpers::{
+    failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
+    is_repairable_error_code, normalized_tool_path_from_args,
+};
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     sanitize_user_visible_output_impl(raw)
@@ -81,256 +74,6 @@ const DEFAULT_POST_WRITE_VERIFY_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_TOOL_EXEC_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG: &str =
     "INTERNAL_FLAG:enforce_implementation_integrity_guard";
-
-fn is_repairable_error_code(code: ToolErrorCode) -> bool {
-    matches!(
-        code,
-        ToolErrorCode::ToolArgsInvalid
-            | ToolErrorCode::ToolUnknown
-            | ToolErrorCode::ToolArgsMalformedJson
-            | ToolErrorCode::ToolPathDenied
-    )
-}
-
-fn failed_repeat_key(tc: &ToolCall) -> String {
-    let canonical_args = crate::trust::approvals::canonical_json(&tc.arguments)
-        .unwrap_or_else(|_| "null".to_string());
-    sha256_hex(format!("{}|{canonical_args}", tc.name).as_bytes())
-}
-
-fn normalized_tool_path_from_args(tc: &ToolCall) -> Option<String> {
-    tc.arguments
-        .get("path")
-        .and_then(|v| v.as_str())
-        .map(normalize_tool_path)
-}
-
-fn injected_messages_enforce_implementation_integrity_guard(messages: &[Message]) -> bool {
-    messages.iter().any(|m| {
-        matches!(m.role, Role::System | Role::Developer)
-            && m.content
-                .as_deref()
-                .is_some_and(|c| c.trim() == INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG)
-    })
-}
-
-struct RuntimeCompletionInputs {
-    has_tool_calls: bool,
-    plan_tool_enforcement: PlanToolEnforcementMode,
-    active_plan_step_idx: usize,
-    plan_step_constraints_len: usize,
-    tool_only_phase_active: bool,
-    enforce_implementation_integrity_guard: bool,
-    observed_tool_calls_len: usize,
-    blocked_attempt_count_next: u32,
-}
-
-fn runtime_completion_decision(inputs: &RuntimeCompletionInputs) -> RuntimeCompletionDecision {
-    if inputs.has_tool_calls {
-        return RuntimeCompletionDecision::ExecuteTools;
-    }
-    if !matches!(inputs.plan_tool_enforcement, PlanToolEnforcementMode::Off)
-        && inputs.plan_step_constraints_len > 0
-        && inputs.active_plan_step_idx < inputs.plan_step_constraints_len
-    {
-        if inputs.blocked_attempt_count_next >= 2 {
-            return RuntimeCompletionDecision::FinalizeError {
-                reason:
-                    "model repeatedly attempted to halt before completing required planner steps",
-                source: "runtime_completion_policy",
-                failure_class: "E_RUNTIME_COMPLETION_PENDING_PLAN",
-            };
-        }
-        return RuntimeCompletionDecision::Continue {
-            reason_code: "pending_plan_step",
-            corrective_instruction:
-                "Continue execution. Do not finalize yet. Complete the pending planner step and return the next tool call.",
-        };
-    }
-    if inputs.tool_only_phase_active {
-        if inputs.blocked_attempt_count_next >= 2 {
-            return RuntimeCompletionDecision::FinalizeError {
-                reason: "model repeatedly attempted to finalize during tool-only phase without a tool call",
-                source: "runtime_completion_policy",
-                failure_class: "E_RUNTIME_COMPLETION_TOOL_ONLY",
-            };
-        }
-        return RuntimeCompletionDecision::Continue {
-            reason_code: "tool_only_requires_tool_call",
-            corrective_instruction:
-                "Tool-only phase active. Return exactly one valid tool call and no prose.",
-        };
-    }
-    if inputs.enforce_implementation_integrity_guard && inputs.observed_tool_calls_len == 0 {
-        if inputs.blocked_attempt_count_next >= 2 {
-            return RuntimeCompletionDecision::FinalizeError {
-                reason: "implementation guard: file-edit task finalized without any tool calls",
-                source: "implementation_integrity_guard",
-                failure_class: "E_RUNTIME_COMPLETION_IMPLEMENTATION_NO_TOOLS",
-            };
-        }
-        return RuntimeCompletionDecision::Continue {
-            reason_code: "implementation_requires_tool_calls",
-            corrective_instruction:
-                "Implementation task requires concrete tool-backed changes. Read/edit files with tools and then continue.",
-        };
-    }
-    RuntimeCompletionDecision::FinalizeOk
-}
-
-impl AgentExitReason {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            AgentExitReason::Ok => "ok",
-            AgentExitReason::ProviderError => "provider_error",
-            AgentExitReason::PlannerError => "planner_error",
-            AgentExitReason::Denied => "denied",
-            AgentExitReason::ApprovalRequired => "approval_required",
-            AgentExitReason::HookAborted => "hook_aborted",
-            AgentExitReason::MaxSteps => "max_steps",
-            AgentExitReason::BudgetExceeded => "budget_exceeded",
-            AgentExitReason::Cancelled => "cancelled",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ToolCallBudget {
-    pub max_wall_time_ms: u64,
-    pub max_total_tool_calls: usize,
-    pub max_mcp_calls: usize,
-    pub max_filesystem_read_calls: usize,
-    pub max_filesystem_write_calls: usize,
-    pub max_shell_calls: usize,
-    pub max_network_calls: usize,
-    pub max_browser_calls: usize,
-    pub tool_exec_timeout_ms: u64,
-    pub post_write_verify_timeout_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct AgentOutcome {
-    pub run_id: String,
-    pub started_at: String,
-    pub finished_at: String,
-    pub exit_reason: AgentExitReason,
-    pub final_output: String,
-    pub error: Option<String>,
-    pub messages: Vec<Message>,
-    pub tool_calls: Vec<ToolCall>,
-    pub tool_decisions: Vec<ToolDecisionRecord>,
-    pub compaction_settings: CompactionSettings,
-    pub final_prompt_size_chars: usize,
-    pub compaction_report: Option<CompactionReport>,
-    pub hook_invocations: Vec<HookInvocationReport>,
-    pub provider_retry_count: u32,
-    pub provider_error_count: u32,
-    pub token_usage: Option<TokenUsage>,
-    pub taint: Option<AgentTaintRecord>,
-}
-
-struct AgentOutcomeBuilderInput {
-    run_id: String,
-    started_at: String,
-    exit_reason: AgentExitReason,
-    final_output: String,
-    error: Option<String>,
-    messages: Vec<Message>,
-    tool_calls: Vec<ToolCall>,
-    tool_decisions: Vec<ToolDecisionRecord>,
-    final_prompt_size_chars: usize,
-    compaction_report: Option<CompactionReport>,
-    hook_invocations: Vec<HookInvocationReport>,
-    provider_retry_count: u32,
-    provider_error_count: u32,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AgentTaintRecord {
-    pub enabled: bool,
-    pub mode: String,
-    pub digest_bytes: usize,
-    pub overall: String,
-    #[serde(default)]
-    pub spans_by_tool_call_id: std::collections::BTreeMap<String, Vec<TaintSpan>>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolDecisionRecord {
-    pub step: u32,
-    pub tool_call_id: String,
-    pub tool: String,
-    pub decision: String,
-    pub reason: Option<String>,
-    pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub taint_overall: Option<String>,
-    #[serde(default)]
-    pub taint_enforced: bool,
-    #[serde(default)]
-    pub escalated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub escalation_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct McpRuntimeTraceEntry {
-    pub step: u32,
-    pub lifecycle: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress_ticks: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub elapsed_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PolicyLoadedInfo {
-    pub version: u32,
-    pub rules_count: usize,
-    pub includes_count: usize,
-    pub includes_resolved: Vec<String>,
-    pub mcp_allowlist: Option<McpAllowSummary>,
-}
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, clap::ValueEnum,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanToolEnforcementMode {
-    Off,
-    Soft,
-    Hard,
-}
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, clap::ValueEnum,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum McpPinEnforcementMode {
-    Off,
-    Warn,
-    Hard,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PlanStepConstraint {
-    pub step_id: String,
-    pub intended_tools: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct WorkerStepStatus {
-    pub(crate) step_id: String,
-    pub(crate) status: String,
-    pub(crate) next_step_id: Option<String>,
-    pub(crate) user_output: Option<String>,
-}
 
 pub struct Agent<P: ModelProvider> {
     pub provider: P,
@@ -368,61 +111,6 @@ pub struct Agent<P: ModelProvider> {
 }
 
 impl<P: ModelProvider> Agent<P> {
-    fn effective_tool_exec_timeout_ms(&self) -> u64 {
-        if self.tool_call_budget.tool_exec_timeout_ms == 0 {
-            DEFAULT_TOOL_EXEC_TIMEOUT_MS
-        } else {
-            self.tool_call_budget.tool_exec_timeout_ms
-        }
-    }
-
-    fn effective_post_write_verify_timeout_ms(&self) -> u64 {
-        if self.tool_call_budget.post_write_verify_timeout_ms == 0 {
-            DEFAULT_POST_WRITE_VERIFY_TIMEOUT_MS
-        } else {
-            self.tool_call_budget.post_write_verify_timeout_ms
-        }
-    }
-
-    fn tool_timeout_message(&self, tc: &ToolCall, timeout_ms: u64) -> Message {
-        let source = if tc.name.starts_with("mcp.") {
-            "mcp"
-        } else {
-            "builtin"
-        };
-        let execution_target = if source == "mcp" {
-            "host".to_string()
-        } else {
-            match self.tool_rt.exec_target_kind {
-                crate::target::ExecTargetKind::Host => "host".to_string(),
-                crate::target::ExecTargetKind::Docker => "docker".to_string(),
-            }
-        };
-        envelope_to_message(to_tool_result_envelope(
-            tc,
-            source,
-            false,
-            format!(
-                "tool execution timed out after {}ms (runtime timeout)",
-                timeout_ms
-            ),
-            false,
-            ToolResultMeta {
-                side_effects: tool_side_effects(&tc.name),
-                bytes: None,
-                exit_code: None,
-                stderr_truncated: None,
-                stdout_truncated: None,
-                source: source.to_string(),
-                execution_target,
-                warnings: None,
-                warnings_max: None,
-                warnings_truncated: None,
-                docker: None,
-            },
-        ))
-    }
-
     fn emit_run_start_events(&mut self, run_id: &str) {
         self.emit_event(
             run_id,
