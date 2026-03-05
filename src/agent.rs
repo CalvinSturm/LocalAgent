@@ -57,7 +57,6 @@ pub use agent_types::{
     ToolCallBudget, ToolDecisionRecord,
 };
 
-use agent_types::AgentOutcomeBuilderInput;
 pub(crate) use agent_types::WorkerStepStatus;
 use runtime_completion::{
     runtime_completion_decision, RuntimeCompletionDecision, RuntimeCompletionInputs,
@@ -175,22 +174,18 @@ impl<P: ModelProvider> Agent<P> {
                 self.check_wall_time_budget_exceeded(&run_id, step as u32, &run_started)
             {
                 let final_prompt_size_chars = context_size_chars(&messages);
-                return self.finalize_run_outcome(
-                    AgentOutcomeBuilderInput {
-                        run_id,
-                        started_at,
-                        exit_reason: AgentExitReason::BudgetExceeded,
-                        final_output: reason.clone(),
-                        error: Some(reason),
-                        messages,
-                        tool_calls: observed_tool_calls,
-                        tool_decisions: observed_tool_decisions,
-                        final_prompt_size_chars,
-                        compaction_report: last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                    },
+                return self.finalize_budget_exceeded(
+                    run_id,
+                    started_at,
+                    reason,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_decisions,
+                    final_prompt_size_chars,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
                     saw_token_usage,
                     &total_token_usage,
                     &taint_state,

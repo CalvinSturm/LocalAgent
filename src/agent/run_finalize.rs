@@ -8,6 +8,46 @@ use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn finalize_budget_exceeded(
+        &self,
+        run_id: String,
+        started_at: String,
+        reason: String,
+        messages: Vec<crate::types::Message>,
+        tool_calls: Vec<crate::types::ToolCall>,
+        tool_decisions: Vec<super::ToolDecisionRecord>,
+        final_prompt_size_chars: usize,
+        compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+    ) -> AgentOutcome {
+        self.finalize_run_outcome(
+            AgentOutcomeBuilderInput {
+                run_id,
+                started_at,
+                exit_reason: super::AgentExitReason::BudgetExceeded,
+                final_output: reason.clone(),
+                error: Some(reason),
+                messages,
+                tool_calls,
+                tool_decisions,
+                final_prompt_size_chars,
+                compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+            },
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn finalize_approval_required_with_end(
         &mut self,
         step: u32,
