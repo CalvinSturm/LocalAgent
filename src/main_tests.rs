@@ -147,6 +147,93 @@ impl ModelProvider for QualificationTestProvider {
 }
 
 #[test]
+fn run_command_defaults_to_no_session_and_derived_state_dir() {
+    let mut cli = Cli::parse_from([
+        "localagent",
+        "--provider",
+        "mock",
+        "--model",
+        "mock-model",
+        "run",
+    ]);
+    let argv = vec![
+        std::ffi::OsString::from("localagent"),
+        std::ffi::OsString::from("--provider"),
+        std::ffi::OsString::from("mock"),
+        std::ffi::OsString::from("--model"),
+        std::ffi::OsString::from("mock-model"),
+        std::ffi::OsString::from("run"),
+    ];
+    let tmp = tempdir().expect("tempdir");
+    let workdir = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    crate::cli_dispatch::apply_run_command_defaults(&mut cli, &argv, &workdir);
+    assert!(cli.run.no_session);
+    let state_dir = cli.run.state_dir.expect("state dir");
+    assert!(!state_dir.starts_with(&workdir));
+}
+
+#[test]
+fn run_command_respects_explicit_state_dir_override() {
+    let mut cli = Cli::parse_from([
+        "localagent",
+        "--provider",
+        "mock",
+        "--model",
+        "mock-model",
+        "--state-dir",
+        "custom_state",
+        "run",
+    ]);
+    let argv = vec![
+        std::ffi::OsString::from("localagent"),
+        std::ffi::OsString::from("--provider"),
+        std::ffi::OsString::from("mock"),
+        std::ffi::OsString::from("--model"),
+        std::ffi::OsString::from("mock-model"),
+        std::ffi::OsString::from("--state-dir"),
+        std::ffi::OsString::from("custom_state"),
+        std::ffi::OsString::from("run"),
+    ];
+    let tmp = tempdir().expect("tempdir");
+    let workdir = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    crate::cli_dispatch::apply_run_command_defaults(&mut cli, &argv, &workdir);
+    assert!(cli.run.no_session);
+    assert_eq!(
+        cli.run
+            .state_dir
+            .as_ref()
+            .expect("state dir")
+            .to_string_lossy(),
+        "custom_state"
+    );
+}
+
+#[test]
+fn non_run_command_does_not_force_no_session_or_state_dir() {
+    let mut cli = Cli::parse_from([
+        "localagent",
+        "--provider",
+        "mock",
+        "--model",
+        "mock-model",
+        "chat",
+    ]);
+    let argv = vec![
+        std::ffi::OsString::from("localagent"),
+        std::ffi::OsString::from("--provider"),
+        std::ffi::OsString::from("mock"),
+        std::ffi::OsString::from("--model"),
+        std::ffi::OsString::from("mock-model"),
+        std::ffi::OsString::from("chat"),
+    ];
+    let tmp = tempdir().expect("tempdir");
+    let workdir = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    crate::cli_dispatch::apply_run_command_defaults(&mut cli, &argv, &workdir);
+    assert!(!cli.run.no_session);
+    assert!(cli.run.state_dir.is_none());
+}
+
+#[test]
 
 fn doctor_url_construction_openai_compat() {
     let urls =

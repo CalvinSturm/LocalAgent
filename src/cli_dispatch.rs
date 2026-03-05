@@ -14,6 +14,35 @@ use crate::{
     session_ops, startup_bootstrap, startup_init, taskgraph, tasks_graph_runtime, trust, tui,
 };
 
+fn argv_has_flag(argv: &[std::ffi::OsString], flag: &str) -> bool {
+    argv.iter().skip(1).any(|arg| {
+        arg.to_str()
+            .is_some_and(|s| s == flag || s.starts_with(&format!("{flag}=")))
+    })
+}
+
+fn default_state_dir_for_workdir(workdir: &std::path::Path) -> std::path::PathBuf {
+    let parent = workdir.parent().unwrap_or(workdir);
+    let key = crate::store::sha256_hex(crate::store::stable_path_string(workdir).as_bytes());
+    parent.join(".localagent").join(&key[..12])
+}
+
+pub(crate) fn apply_run_command_defaults(
+    cli: &mut Cli,
+    argv: &[std::ffi::OsString],
+    workdir: &std::path::Path,
+) {
+    if !matches!(cli.command, Some(Commands::Run) | Some(Commands::Exec)) {
+        return;
+    }
+    if !argv_has_flag(argv, "--no-session") {
+        cli.run.no_session = true;
+    }
+    if cli.run.state_dir.is_none() {
+        cli.run.state_dir = Some(default_state_dir_for_workdir(workdir));
+    }
+}
+
 pub(crate) async fn run_cli() -> anyhow::Result<()> {
     let argv = std::env::args_os().collect::<Vec<_>>();
     let mut cli = Cli::parse_from(argv.clone());
@@ -37,6 +66,7 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
 
     let workdir = std::fs::canonicalize(&cli.run.workdir)
         .with_context(|| format!("failed to resolve workdir: {}", cli.run.workdir.display()))?;
+    apply_run_command_defaults(&mut cli, &argv, &workdir);
 
     let paths = resolve_state_paths(
         &workdir,
