@@ -1002,11 +1002,18 @@ impl UiState {
         side_effects: String,
         status: &str,
     ) -> &mut ToolRow {
-        if let Some(idx) = self
-            .tool_calls
-            .iter()
-            .position(|t| t.tool_call_id == tool_call_id)
-        {
+        // Some providers reuse or omit tool_call_id. Avoid collapsing different
+        // tools into one row by using (tool_call_id, tool_name) identity when
+        // names are available on both sides.
+        if let Some(idx) = self.tool_calls.iter().position(|t| {
+            if t.tool_call_id != tool_call_id {
+                return false;
+            }
+            if tool_name.is_empty() || t.tool_name.is_empty() {
+                return true;
+            }
+            t.tool_name == tool_name
+        }) {
             let row = &mut self.tool_calls[idx];
             row.status = status.to_string();
             if status == "running" && row.running_since.is_none() {
@@ -1312,6 +1319,41 @@ mod tests {
         assert_eq!(s.browser_execs, 0);
         assert_eq!(s.last_failure_class, "-");
         assert_eq!(s.next_hint, "running");
+    }
+
+    #[test]
+    fn same_tool_call_id_across_different_tools_keeps_distinct_rows() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolCallDetected,
+            serde_json::json!({"tool_call_id":"shared","name":"read_file","side_effects":"filesystem_read"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecEnd,
+            serde_json::json!({"tool_call_id":"shared","name":"read_file","ok":true,"content":"ok"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolCallDetected,
+            serde_json::json!({"tool_call_id":"shared","name":"apply_patch","side_effects":"filesystem_write"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecEnd,
+            serde_json::json!({"tool_call_id":"shared","name":"apply_patch","ok":true,"content":"ok"}),
+        ));
+
+        assert_eq!(s.tool_calls.len(), 2);
+        assert_eq!(s.tool_calls[0].tool_name, "read_file");
+        assert_eq!(s.tool_calls[1].tool_name, "apply_patch");
+        assert_eq!(s.tool_calls[0].status, "OK:tool");
+        assert_eq!(s.tool_calls[1].status, "OK:tool");
     }
 
     #[test]
