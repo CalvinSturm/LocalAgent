@@ -4,6 +4,8 @@ use crate::agent_utils::add_opt_u32;
 use crate::events::EventKind;
 use crate::providers::http::{message_short, ProviderError};
 use crate::providers::ModelProvider;
+use crate::tools::tool_side_effects;
+use crate::types::ToolCall;
 use crate::types::TokenUsage;
 
 use super::Agent;
@@ -21,6 +23,34 @@ pub(super) fn apply_usage_totals(
 }
 
 impl<P: ModelProvider> Agent<P> {
+    pub(super) fn emit_tool_exec_start_events(&mut self, run_id: &str, step: u32, tc: &ToolCall) {
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::ToolExecTarget,
+            serde_json::json!({
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "exec_target": if tc.name.starts_with("mcp.") { "host" } else {
+                    match self.tool_rt.exec_target_kind {
+                        crate::target::ExecTargetKind::Host => "host",
+                        crate::target::ExecTargetKind::Docker => "docker",
+                    }
+                }
+            }),
+        );
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::ToolExecStart,
+            serde_json::json!({
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "side_effects": tool_side_effects(&tc.name)
+            }),
+        );
+    }
+
     pub(super) fn record_provider_error_events(
         &mut self,
         run_id: &str,

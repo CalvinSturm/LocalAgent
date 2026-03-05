@@ -1981,27 +1981,7 @@ impl<P: ModelProvider> Agent<P> {
                                 "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
                         );
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::ToolExecTarget,
-                            serde_json::json!({
-                                "tool_call_id": tc.id,
-                                "name": tc.name,
-                                "exec_target": if tc.name.starts_with("mcp.") { "host" } else {
-                                    match self.tool_rt.exec_target_kind {
-                                        crate::target::ExecTargetKind::Host => "host",
-                                        crate::target::ExecTargetKind::Docker => "docker",
-                                    }
-                                }
-                            }),
-                        );
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::ToolExecStart,
-                            serde_json::json!({"tool_call_id": tc.id, "name": tc.name, "side_effects": tool_side_effects(&tc.name)}),
-                        );
+                        self.emit_tool_exec_start_events(&run_id, step as u32, tc);
                         let mut tool_msg = if let Some(err) = &invalid_args_error {
                             make_invalid_args_tool_message(tc, err, self.tool_rt.exec_target_kind)
                         } else {
@@ -2743,27 +2723,7 @@ impl<P: ModelProvider> Agent<P> {
                                 "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
                             }),
                             );
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::ToolExecTarget,
-                                serde_json::json!({
-                                    "tool_call_id": tc.id,
-                                    "name": tc.name,
-                                    "exec_target": if tc.name.starts_with("mcp.") { "host" } else {
-                                        match self.tool_rt.exec_target_kind {
-                                            crate::target::ExecTargetKind::Host => "host",
-                                            crate::target::ExecTargetKind::Docker => "docker",
-                                        }
-                                    }
-                                }),
-                            );
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::ToolExecStart,
-                                serde_json::json!({"tool_call_id": tc.id, "name": tc.name, "side_effects": tool_side_effects(&tc.name)}),
-                            );
+                            self.emit_tool_exec_start_events(&run_id, step as u32, tc);
                             let tool_msg = make_invalid_args_tool_message(
                                 tc,
                                 err,
