@@ -3350,44 +3350,40 @@ impl<P: ModelProvider> Agent<P> {
                             escalated,
                             escalation_reason: escalation_reason.clone(),
                         });
-                        return self.finalize_run_outcome_with_end(
+                        return self.finalize_approval_required_with_end(
                             step as u32,
-                            AgentOutcomeBuilderInput {
-                                run_id,
-                                started_at,
-                                exit_reason: AgentExitReason::ApprovalRequired,
-                                final_output: if escalated {
-                                    let src = if taint_state.last_sources.is_empty() {
-                                        "other".to_string()
-                                    } else {
-                                        taint_state.last_sources.join("/")
-                                    };
-                                    format!(
-                                        "Approval required due to tainted content (source: {}). Run: localagent approve {} (or deny) then re-run.",
-                                        src, approval_id
-                                    )
+                            run_id,
+                            started_at,
+                            if escalated {
+                                let src = if taint_state.last_sources.is_empty() {
+                                    "other".to_string()
                                 } else {
-                                    format!(
-                                        "Approval required: {} ({}){}. Run: localagent approve {} (or deny) then re-run.",
-                                        approval_id,
-                                        reason,
-                                        source
-                                            .as_ref()
-                                            .map(|s| format!(" [source: {}]", s))
-                                            .unwrap_or_default(),
-                                        approval_id
-                                    )
-                                },
-                                error: None,
-                                messages,
-                                tool_calls: observed_tool_calls,
-                                tool_decisions: observed_tool_decisions,
-                                final_prompt_size_chars: request_context_chars,
-                                compaction_report: last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
+                                    taint_state.last_sources.join("/")
+                                };
+                                format!(
+                                    "Approval required due to tainted content (source: {}). Run: localagent approve {} (or deny) then re-run.",
+                                    src, approval_id
+                                )
+                            } else {
+                                format!(
+                                    "Approval required: {} ({}){}. Run: localagent approve {} (or deny) then re-run.",
+                                    approval_id,
+                                    reason,
+                                    source
+                                        .as_ref()
+                                        .map(|s| format!(" [source: {}]", s))
+                                        .unwrap_or_default(),
+                                    approval_id
+                                )
                             },
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
                             saw_token_usage,
                             &total_token_usage,
                             &taint_state,
