@@ -219,6 +219,48 @@ impl<P: ModelProvider> Agent<P> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn finalize_planner_error_with_output_with_end(
+        &mut self,
+        step: u32,
+        run_id: String,
+        started_at: String,
+        error: String,
+        messages: Vec<crate::types::Message>,
+        tool_calls: Vec<crate::types::ToolCall>,
+        tool_decisions: Vec<super::ToolDecisionRecord>,
+        final_prompt_size_chars: usize,
+        compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+    ) -> AgentOutcome {
+        self.finalize_run_outcome_with_end(
+            step,
+            AgentOutcomeBuilderInput {
+                run_id,
+                started_at,
+                exit_reason: super::AgentExitReason::PlannerError,
+                final_output: error.clone(),
+                error: Some(error),
+                messages,
+                tool_calls,
+                tool_decisions,
+                final_prompt_size_chars,
+                compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+            },
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+        )
+    }
+
     pub(super) fn finalize_run_outcome(
         &self,
         input: AgentOutcomeBuilderInput,
