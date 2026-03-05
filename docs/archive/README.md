@@ -23,3 +23,5 @@ For canonical docs, use:
 - `PR7_SCOPE_TUI_LEARN_OVERLAY_UX.md`
 - `PR7B_SCOPE_TUI_LEARN_OVERLAY_REVIEW_PROMOTE.md`
 - `PR7D_SCOPE_GUIDED_CAPTURE_AND_EVAL_PROOF.md`
+- `runtime-loop-audit-2026-03-04.md`
+- `runtime-loop-audit-2026-03-05.md`
