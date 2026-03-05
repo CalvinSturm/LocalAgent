@@ -1960,28 +1960,13 @@ impl<P: ModelProvider> Agent<P> {
                             &mut tool_budget_usage,
                             tc.name.starts_with("mcp."),
                         ) {
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::ToolDecision,
-                                serde_json::json!({
-                                    "tool_call_id": tc.id,
-                                    "name": tc.name,
-                                    "decision": "deny",
-                                    "reason": reason.clone(),
-                                    "source": "runtime_budget",
-                                    "side_effects": side_effects,
-                                    "budget": {
-                                        "max_total_tool_calls": self.tool_call_budget.max_total_tool_calls,
-                                        "max_mcp_calls": self.tool_call_budget.max_mcp_calls
-                                    }
-                                }),
-                            );
-                            return self.finalize_budget_exceeded_with_end(
-                                step as u32,
+                            return self.finalize_runtime_mcp_budget_exceeded_with_tool_decision(
                                 run_id,
-                                started_at,
+                                step as u32,
+                                tc,
                                 reason,
+                                side_effects,
+                                started_at,
                                 messages,
                                 observed_tool_calls,
                                 observed_tool_decisions,
@@ -2319,23 +2304,11 @@ impl<P: ModelProvider> Agent<P> {
                                     &mut tool_budget_usage,
                                     tc.name.starts_with("mcp."),
                                 ) {
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::Error,
-                                        serde_json::json!({
-                                            "error": reason.clone(),
-                                            "source": "runtime_budget",
-                                            "budget": {
-                                                "max_mcp_calls": self.tool_call_budget.max_mcp_calls
-                                            }
-                                        }),
-                                    );
-                                    return self.finalize_budget_exceeded_with_end(
-                                        step as u32,
+                                    return self.finalize_runtime_mcp_budget_exceeded_with_error(
                                         run_id,
-                                        started_at,
+                                        step as u32,
                                         reason,
+                                        started_at,
                                         messages,
                                         observed_tool_calls,
                                         observed_tool_decisions,
