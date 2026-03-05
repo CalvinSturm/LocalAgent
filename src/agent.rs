@@ -40,6 +40,7 @@ use crate::types::{Message, Role, TokenUsage, ToolDef};
 use std::time::{Duration, Instant};
 
 mod agent_types;
+mod mcp_drift;
 mod model_io;
 mod operator_queue;
 mod response_normalization;
@@ -1323,49 +1324,13 @@ impl<P: ModelProvider> Agent<P> {
                                         self.mcp_pin_enforcement,
                                         McpPinEnforcementMode::Hard
                                     ) {
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::StepBlocked,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "reason": "mcp_drift"
-                                            }),
-                                        );
-                                        observed_tool_decisions.push(ToolDecisionRecord {
-                                            step: step as u32,
-                                            tool_call_id: tc.id.clone(),
-                                            tool: tc.name.clone(),
-                                            decision: "deny".to_string(),
-                                            reason: Some(reason.clone()),
-                                            source: Some("mcp_drift".to_string()),
-                                            taint_overall: Some(
-                                                taint_state.overall_str().to_string(),
-                                            ),
-                                            taint_enforced: false,
-                                            escalated: false,
-                                            escalation_reason: None,
-                                        });
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::ToolDecision,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "decision": "deny",
-                                                "reason": reason,
-                                                "source": "mcp_drift",
-                                                "side_effects": tool_side_effects(&tc.name)
-                                            }),
-                                        );
-                                        return self.finalize_denied_with_end(
-                                            step as u32,
+                                        return self.finalize_mcp_drift_hard_deny_with_end(
                                             run_id,
+                                            step as u32,
+                                            tc,
+                                            reason,
+                                            "mcp_drift",
                                             started_at,
-                                            reason.clone(),
-                                            Some(reason),
                                             messages,
                                             observed_tool_calls,
                                             observed_tool_decisions,
@@ -1379,30 +1344,13 @@ impl<P: ModelProvider> Agent<P> {
                                             &taint_state,
                                         );
                                     }
-                                    observed_tool_decisions.push(ToolDecisionRecord {
-                                        step: step as u32,
-                                        tool_call_id: tc.id.clone(),
-                                        tool: tc.name.clone(),
-                                        decision: "allow".to_string(),
-                                        reason: Some(reason.clone()),
-                                        source: Some("mcp_drift_warn".to_string()),
-                                        taint_overall: Some(taint_state.overall_str().to_string()),
-                                        taint_enforced: false,
-                                        escalated: false,
-                                        escalation_reason: None,
-                                    });
-                                    self.emit_event(
+                                    self.record_mcp_drift_warn_decision(
                                         &run_id,
                                         step as u32,
-                                        EventKind::ToolDecision,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "decision": "allow",
-                                            "reason": reason,
-                                            "source": "mcp_drift_warn",
-                                            "side_effects": tool_side_effects(&tc.name)
-                                        }),
+                                        tc,
+                                        reason,
+                                        &taint_state,
+                                        &mut observed_tool_decisions,
                                     );
                                 }
                             }
@@ -1431,47 +1379,13 @@ impl<P: ModelProvider> Agent<P> {
                                     }),
                                 );
                                 if matches!(self.mcp_pin_enforcement, McpPinEnforcementMode::Hard) {
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::StepBlocked,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "reason": "mcp_drift"
-                                        }),
-                                    );
-                                    observed_tool_decisions.push(ToolDecisionRecord {
-                                        step: step as u32,
-                                        tool_call_id: tc.id.clone(),
-                                        tool: tc.name.clone(),
-                                        decision: "deny".to_string(),
-                                        reason: Some(reason.clone()),
-                                        source: Some("mcp_drift".to_string()),
-                                        taint_overall: Some(taint_state.overall_str().to_string()),
-                                        taint_enforced: false,
-                                        escalated: false,
-                                        escalation_reason: None,
-                                    });
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::ToolDecision,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "decision": "deny",
-                                            "reason": reason,
-                                            "source": "mcp_drift",
-                                            "side_effects": tool_side_effects(&tc.name)
-                                        }),
-                                    );
-                                    return self.finalize_denied_with_end(
-                                        step as u32,
+                                    return self.finalize_mcp_drift_hard_deny_with_end(
                                         run_id,
+                                        step as u32,
+                                        tc,
+                                        reason,
+                                        "mcp_drift",
                                         started_at,
-                                        reason.clone(),
-                                        Some(reason),
                                         messages,
                                         observed_tool_calls,
                                         observed_tool_decisions,
@@ -1485,30 +1399,13 @@ impl<P: ModelProvider> Agent<P> {
                                         &taint_state,
                                     );
                                 }
-                                observed_tool_decisions.push(ToolDecisionRecord {
-                                    step: step as u32,
-                                    tool_call_id: tc.id.clone(),
-                                    tool: tc.name.clone(),
-                                    decision: "allow".to_string(),
-                                    reason: Some(reason.clone()),
-                                    source: Some("mcp_drift_warn".to_string()),
-                                    taint_overall: Some(taint_state.overall_str().to_string()),
-                                    taint_enforced: false,
-                                    escalated: false,
-                                    escalation_reason: None,
-                                });
-                                self.emit_event(
+                                self.record_mcp_drift_warn_decision(
                                     &run_id,
                                     step as u32,
-                                    EventKind::ToolDecision,
-                                    serde_json::json!({
-                                        "tool_call_id": tc.id,
-                                        "name": tc.name,
-                                        "decision": "allow",
-                                        "reason": reason,
-                                        "source": "mcp_drift_warn",
-                                        "side_effects": tool_side_effects(&tc.name)
-                                    }),
+                                    tc,
+                                    reason,
+                                    &taint_state,
+                                    &mut observed_tool_decisions,
                                 );
                             }
                             (Ok(actual_hash), None) => {
@@ -1539,49 +1436,13 @@ impl<P: ModelProvider> Agent<P> {
                                         self.mcp_pin_enforcement,
                                         McpPinEnforcementMode::Hard
                                     ) {
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::StepBlocked,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "reason": "mcp_drift"
-                                            }),
-                                        );
-                                        observed_tool_decisions.push(ToolDecisionRecord {
-                                            step: step as u32,
-                                            tool_call_id: tc.id.clone(),
-                                            tool: tc.name.clone(),
-                                            decision: "deny".to_string(),
-                                            reason: Some(reason.clone()),
-                                            source: Some("mcp_drift".to_string()),
-                                            taint_overall: Some(
-                                                taint_state.overall_str().to_string(),
-                                            ),
-                                            taint_enforced: false,
-                                            escalated: false,
-                                            escalation_reason: None,
-                                        });
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::ToolDecision,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "decision": "deny",
-                                                "reason": reason,
-                                                "source": "mcp_drift",
-                                                "side_effects": tool_side_effects(&tc.name)
-                                            }),
-                                        );
-                                        return self.finalize_denied_with_end(
-                                            step as u32,
+                                        return self.finalize_mcp_drift_hard_deny_with_end(
                                             run_id,
+                                            step as u32,
+                                            tc,
+                                            reason,
+                                            "mcp_drift",
                                             started_at,
-                                            reason.clone(),
-                                            Some(reason),
                                             messages,
                                             observed_tool_calls,
                                             observed_tool_decisions,
@@ -1595,30 +1456,13 @@ impl<P: ModelProvider> Agent<P> {
                                             &taint_state,
                                         );
                                     }
-                                    observed_tool_decisions.push(ToolDecisionRecord {
-                                        step: step as u32,
-                                        tool_call_id: tc.id.clone(),
-                                        tool: tc.name.clone(),
-                                        decision: "allow".to_string(),
-                                        reason: Some(reason.clone()),
-                                        source: Some("mcp_drift_warn".to_string()),
-                                        taint_overall: Some(taint_state.overall_str().to_string()),
-                                        taint_enforced: false,
-                                        escalated: false,
-                                        escalation_reason: None,
-                                    });
-                                    self.emit_event(
+                                    self.record_mcp_drift_warn_decision(
                                         &run_id,
                                         step as u32,
-                                        EventKind::ToolDecision,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "decision": "allow",
-                                            "reason": reason,
-                                            "source": "mcp_drift_warn",
-                                            "side_effects": tool_side_effects(&tc.name)
-                                        }),
+                                        tc,
+                                        reason,
+                                        &taint_state,
+                                        &mut observed_tool_decisions,
                                     );
                                 }
                             }
@@ -1643,47 +1487,13 @@ impl<P: ModelProvider> Agent<P> {
                                     }),
                                 );
                                 if matches!(self.mcp_pin_enforcement, McpPinEnforcementMode::Hard) {
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::StepBlocked,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "reason": "mcp_drift_probe_failed"
-                                        }),
-                                    );
-                                    observed_tool_decisions.push(ToolDecisionRecord {
-                                        step: step as u32,
-                                        tool_call_id: tc.id.clone(),
-                                        tool: tc.name.clone(),
-                                        decision: "deny".to_string(),
-                                        reason: Some(reason.clone()),
-                                        source: Some("mcp_drift".to_string()),
-                                        taint_overall: Some(taint_state.overall_str().to_string()),
-                                        taint_enforced: false,
-                                        escalated: false,
-                                        escalation_reason: None,
-                                    });
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::ToolDecision,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "decision": "deny",
-                                            "reason": reason,
-                                            "source": "mcp_drift",
-                                            "side_effects": tool_side_effects(&tc.name)
-                                        }),
-                                    );
-                                    return self.finalize_denied_with_end(
-                                        step as u32,
+                                    return self.finalize_mcp_drift_hard_deny_with_end(
                                         run_id,
+                                        step as u32,
+                                        tc,
+                                        reason,
+                                        "mcp_drift_probe_failed",
                                         started_at,
-                                        reason.clone(),
-                                        Some(reason),
                                         messages,
                                         observed_tool_calls,
                                         observed_tool_decisions,
@@ -1697,30 +1507,13 @@ impl<P: ModelProvider> Agent<P> {
                                         &taint_state,
                                     );
                                 }
-                                observed_tool_decisions.push(ToolDecisionRecord {
-                                    step: step as u32,
-                                    tool_call_id: tc.id.clone(),
-                                    tool: tc.name.clone(),
-                                    decision: "allow".to_string(),
-                                    reason: Some(reason.clone()),
-                                    source: Some("mcp_drift_warn".to_string()),
-                                    taint_overall: Some(taint_state.overall_str().to_string()),
-                                    taint_enforced: false,
-                                    escalated: false,
-                                    escalation_reason: None,
-                                });
-                                self.emit_event(
+                                self.record_mcp_drift_warn_decision(
                                     &run_id,
                                     step as u32,
-                                    EventKind::ToolDecision,
-                                    serde_json::json!({
-                                        "tool_call_id": tc.id,
-                                        "name": tc.name,
-                                        "decision": "allow",
-                                        "reason": reason,
-                                        "source": "mcp_drift_warn",
-                                        "side_effects": tool_side_effects(&tc.name)
-                                    }),
+                                    tc,
+                                    reason,
+                                    &taint_state,
+                                    &mut observed_tool_decisions,
                                 );
                             }
                         }
