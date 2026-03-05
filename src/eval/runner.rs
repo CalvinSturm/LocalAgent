@@ -836,8 +836,7 @@ async fn run_single(
     };
     let task_max_tokens = if is_c2 { Some(256) } else { None };
     let mut task_http = config.http;
-    if is_c2
-        && (task_http.stream_idle_timeout_ms == 0 || task_http.stream_idle_timeout_ms > 15_000)
+    if is_c2 && (task_http.stream_idle_timeout_ms == 0 || task_http.stream_idle_timeout_ms > 15_000)
     {
         task_http.stream_idle_timeout_ms = 15_000;
     }
@@ -929,7 +928,9 @@ async fn run_single(
         tool_name: None,
         tool_calls: None,
     });
-    let outcome = agent.run(&prompt, session_messages, injected_messages).await;
+    let outcome = agent
+        .run(&prompt, session_messages, injected_messages)
+        .await;
     let wall_time_ms = run_started.elapsed().as_millis() as u64;
     let mut failures = evaluate_assertions(&task.assertions, workdir, &outcome);
     let verifier_started = std::time::Instant::now();
