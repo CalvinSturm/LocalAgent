@@ -483,7 +483,7 @@ fn implementation_guard_accepts_post_write_read_back() {
 }
 
 #[test]
-fn implementation_guard_patch_only_marker_allows_missing_post_write_read_back() {
+fn implementation_guard_requires_post_write_read_back_without_bypass() {
     let calls = vec![
         crate::types::ToolCall {
             id: "tc1".to_string(),
@@ -514,9 +514,9 @@ fn implementation_guard_patch_only_marker_allows_missing_post_write_read_back() 
         &calls,
         &executions,
         true,
-        true,
-    );
-    assert!(err.is_none(), "expected no guard failure, got: {err:?}");
+    )
+    .expect("expected guard failure");
+    assert!(err.contains("post-write verification missing read_file on 'main.rs'"));
 }
 
 #[test]
@@ -551,7 +551,6 @@ fn implementation_guard_requires_successful_read_before_apply_patch() {
         &calls,
         &executions,
         true,
-        false,
     )
     .expect("expected guard failure");
     assert!(err.contains("apply_patch on 'chess.html' requires prior read_file"));
@@ -599,7 +598,6 @@ fn implementation_guard_requires_successful_post_write_read_back() {
         &calls,
         &executions,
         true,
-        false,
     )
     .expect("expected guard failure");
     assert!(err.contains("post-write verification missing read_file on 'chess.html'"));
@@ -647,7 +645,6 @@ fn implementation_guard_accepts_dot_prefixed_post_write_read_back() {
         &calls,
         &executions,
         true,
-        false,
     );
     assert!(err.is_none(), "dot-prefixed read_file should satisfy verification");
 }
@@ -669,7 +666,6 @@ fn implementation_guard_requires_explicit_enforcement_signal() {
         "done",
         &calls,
         &executions,
-        false,
         false,
     );
     assert!(err.is_none(), "guard must be off without explicit enforcement");

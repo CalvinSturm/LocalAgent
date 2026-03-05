@@ -30,7 +30,6 @@ pub(crate) fn implementation_integrity_violation(
         observed_tool_calls,
         &tool_executions,
         true,
-        false,
     )
 }
 
@@ -40,7 +39,6 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
     observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
     enforce_implementation_integrity_guard: bool,
-    allow_skip_post_write_verification: bool,
 ) -> Option<String> {
     if !enforce_implementation_integrity_guard {
         return None;
@@ -92,12 +90,10 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
             _ => {}
         }
     }
-    if !allow_skip_post_write_verification {
-        if let Some(path) = pending_post_write_verification.iter().next() {
-            return Some(format!(
-                "implementation guard: post-write verification missing read_file on '{path}'"
-            ));
-        }
+    if let Some(path) = pending_post_write_verification.iter().next() {
+        return Some(format!(
+            "implementation guard: post-write verification missing read_file on '{path}'"
+        ));
     }
     None
 }
