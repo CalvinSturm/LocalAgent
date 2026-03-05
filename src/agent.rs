@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 
 mod agent_types;
 mod budget_guard;
+mod gate_paths;
 mod mcp_drift;
 mod model_io;
 mod operator_queue;
@@ -2599,85 +2600,24 @@ impl<P: ModelProvider> Agent<P> {
                         escalated,
                         escalation_reason,
                     } => {
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::ToolDecision,
-                            serde_json::json!({
-                                "tool_call_id": tc.id,
-                                "name": tc.name,
-                                "decision": "deny",
-                                "reason": reason.clone(),
-                                "approval_key": approval_key.clone(),
-                                "source": source.clone(),
-                                "approval_key_version": approval_key_version_meta.clone(),
-                                "tool_schema_hash_hex": tool_schema_hash_hex.clone(),
-                                "hooks_config_hash_hex": hooks_config_hash_hex.clone(),
-                                "planner_hash_hex": planner_hash_hex.clone(),
-                                "exec_target": decision_exec_target.clone(),
-                                "taint_overall": taint_state.overall_str(),
-                                "taint_enforced": taint_enforced,
-                                "escalated": escalated,
-                                "escalation_reason": escalation_reason.clone(),
-                                "side_effects": tool_side_effects(&tc.name),
-                                "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
-                            }),
-                        );
-                        self.gate.record(GateEvent {
-                            run_id: run_id.clone(),
-                            step: step as u32,
-                            tool_call_id: tc.id.clone(),
-                            tool: tc.name.clone(),
-                            arguments: tc.arguments.clone(),
-                            decision: "deny".to_string(),
-                            decision_reason: Some(reason.clone()),
-                            decision_source: source.clone(),
-                            approval_id: None,
-                            approval_key,
-                            approval_mode: approval_mode_meta.clone(),
-                            auto_approve_scope: auto_scope_meta.clone(),
-                            approval_key_version: approval_key_version_meta.clone(),
-                            tool_schema_hash_hex: tool_schema_hash_hex.clone(),
-                            hooks_config_hash_hex: hooks_config_hash_hex.clone(),
-                            planner_hash_hex: planner_hash_hex.clone(),
-                            exec_target: decision_exec_target.clone(),
-                            taint_overall: Some(taint_state.overall_str().to_string()),
-                            taint_enforced,
-                            escalated,
-                            escalation_reason: escalation_reason.clone(),
-                            result_ok: false,
-                            result_content: reason.clone(),
-                            result_input_digest: None,
-                            result_output_digest: None,
-                            result_input_len: None,
-                            result_output_len: None,
-                        });
-                        observed_tool_decisions.push(ToolDecisionRecord {
-                            step: step as u32,
-                            tool_call_id: tc.id.clone(),
-                            tool: tc.name.clone(),
-                            decision: "deny".to_string(),
-                            reason: Some(reason.clone()),
-                            source: source.clone(),
-                            taint_overall: Some(taint_state.overall_str().to_string()),
-                            taint_enforced,
-                            escalated,
-                            escalation_reason: escalation_reason.clone(),
-                        });
-                        return self.finalize_denied_with_end(
-                            step as u32,
+                        return self.finalize_gate_deny_with_end(
                             run_id,
+                            step as u32,
+                            tc,
+                            reason,
+                            approval_key,
+                            source,
+                            taint_enforced,
+                            escalated,
+                            escalation_reason,
+                            approval_mode_meta.clone(),
+                            auto_scope_meta.clone(),
+                            approval_key_version_meta.clone(),
+                            tool_schema_hash_hex.clone(),
+                            hooks_config_hash_hex.clone(),
+                            planner_hash_hex.clone(),
+                            decision_exec_target.clone(),
                             started_at,
-                            format!(
-                                "Tool call '{}' denied: {}",
-                                tc.name,
-                                if let Some(src) = &source {
-                                    format!("{} (source: {})", reason, src)
-                                } else {
-                                    reason.clone()
-                                }
-                            ),
-                            None,
                             messages,
                             observed_tool_calls,
                             observed_tool_decisions,
