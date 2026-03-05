@@ -19,7 +19,7 @@ use crate::compaction::{
     context_size_chars, maybe_compact, CompactionReport, CompactionSettings,
 };
 use crate::events::{EventKind, EventSink};
-use crate::gate::{ApprovalMode, AutoApproveScope, GateContext, GateDecision, GateEvent, ToolGate};
+use crate::gate::{GateContext, GateDecision, GateEvent, ToolGate};
 use crate::hooks::protocol::{
     HookInvocationReport, PreModelCompactionPayload, PreModelPayload, ToolResultPayload,
 };
@@ -1711,39 +1711,15 @@ impl<P: ModelProvider> Agent<P> {
                         }
                     }
                 }
-                let approval_mode_meta =
-                    if matches!(self.gate_ctx.approval_mode, ApprovalMode::Auto) {
-                        Some("auto".to_string())
-                    } else {
-                        None
-                    };
-                let auto_scope_meta = if matches!(self.gate_ctx.approval_mode, ApprovalMode::Auto) {
-                    Some(
-                        match self.gate_ctx.auto_approve_scope {
-                            AutoApproveScope::Run => "run",
-                            AutoApproveScope::Session => "session",
-                        }
-                        .to_string(),
-                    )
-                } else {
-                    None
-                };
-                let approval_key_version_meta =
-                    Some(self.gate_ctx.approval_key_version.as_str().to_string());
-                let tool_schema_hash_hex = self.gate_ctx.tool_schema_hashes.get(&tc.name).cloned();
-                let hooks_config_hash_hex = self.gate_ctx.hooks_config_hash_hex.clone();
-                let planner_hash_hex = self.gate_ctx.planner_hash_hex.clone();
-                self.gate_ctx.taint_enabled = matches!(self.taint_toggle, TaintToggle::On);
-                self.gate_ctx.taint_mode = self.taint_mode;
-                self.gate_ctx.taint_overall = taint_state.overall;
-                self.gate_ctx.taint_sources = taint_state.last_sources.clone();
-                let decision_exec_target = Some(
-                    match self.gate_ctx.exec_target {
-                        crate::target::ExecTargetKind::Host => "host",
-                        crate::target::ExecTargetKind::Docker => "docker",
-                    }
-                    .to_string(),
-                );
+                let (
+                    approval_mode_meta,
+                    auto_scope_meta,
+                    approval_key_version_meta,
+                    tool_schema_hash_hex,
+                    hooks_config_hash_hex,
+                    planner_hash_hex,
+                    decision_exec_target,
+                ) = self.gate_decision_metadata_for_tool(tc, &taint_state);
                 if !plan_tool_allowed {
                     let reason = format!(
                         "tool '{}' is not allowed for plan step {} (allowed: {})",

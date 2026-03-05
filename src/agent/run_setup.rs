@@ -3,11 +3,73 @@ use std::collections::BTreeSet;
 use crate::agent_worker_protocol::parse_worker_step_status;
 use crate::events::EventKind;
 use crate::providers::ModelProvider;
+use crate::taint::{TaintState, TaintToggle};
 use crate::types::{GenerateRequest, Message, Role, ToolCall, ToolDef};
 
 use super::{Agent, PlanStepConstraint, PlanToolEnforcementMode, WorkerStepStatus};
 
 impl<P: ModelProvider> Agent<P> {
+    #[allow(clippy::type_complexity)]
+    pub(super) fn gate_decision_metadata_for_tool(
+        &mut self,
+        tc: &ToolCall,
+        taint_state: &TaintState,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
+        let approval_mode_meta = if matches!(
+            self.gate_ctx.approval_mode,
+            crate::gate::ApprovalMode::Auto
+        ) {
+            Some("auto".to_string())
+        } else {
+            None
+        };
+        let auto_scope_meta = if matches!(self.gate_ctx.approval_mode, crate::gate::ApprovalMode::Auto)
+        {
+            Some(
+                match self.gate_ctx.auto_approve_scope {
+                    crate::gate::AutoApproveScope::Run => "run",
+                    crate::gate::AutoApproveScope::Session => "session",
+                }
+                .to_string(),
+            )
+        } else {
+            None
+        };
+        let approval_key_version_meta =
+            Some(self.gate_ctx.approval_key_version.as_str().to_string());
+        let tool_schema_hash_hex = self.gate_ctx.tool_schema_hashes.get(&tc.name).cloned();
+        let hooks_config_hash_hex = self.gate_ctx.hooks_config_hash_hex.clone();
+        let planner_hash_hex = self.gate_ctx.planner_hash_hex.clone();
+        self.gate_ctx.taint_enabled = matches!(self.taint_toggle, TaintToggle::On);
+        self.gate_ctx.taint_mode = self.taint_mode;
+        self.gate_ctx.taint_overall = taint_state.overall;
+        self.gate_ctx.taint_sources = taint_state.last_sources.clone();
+        let decision_exec_target = Some(
+            match self.gate_ctx.exec_target {
+                crate::target::ExecTargetKind::Host => "host",
+                crate::target::ExecTargetKind::Docker => "docker",
+            }
+            .to_string(),
+        );
+        (
+            approval_mode_meta,
+            auto_scope_meta,
+            approval_key_version_meta,
+            tool_schema_hash_hex,
+            hooks_config_hash_hex,
+            planner_hash_hex,
+            decision_exec_target,
+        )
+    }
+
     pub(super) fn plan_enforcement_active(&self) -> bool {
         !matches!(self.plan_tool_enforcement, PlanToolEnforcementMode::Off)
             && !self.plan_step_constraints.is_empty()
