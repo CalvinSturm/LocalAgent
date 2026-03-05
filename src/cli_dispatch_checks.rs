@@ -338,7 +338,9 @@ fn apply_check_runner_report_meta(
         "max_read_bytes": run.max_read_bytes,
         "max_steps": run.max_steps,
         "max_total_tool_calls": run.max_total_tool_calls,
-        "max_wall_time_ms": run.max_wall_time_ms
+        "max_wall_time_ms": run.max_wall_time_ms,
+        "tool_exec_timeout_ms": run.tool_exec_timeout_ms,
+        "post_write_verify_timeout_ms": run.post_write_verify_timeout_ms
     });
     let canonical = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
     report.runner_profile = "localagent_check_v1".to_string();

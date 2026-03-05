@@ -736,6 +736,12 @@ pub(crate) struct EvalArgs {
     #[arg(long, default_value_t = 0)]
     pub(crate) max_mcp_calls: usize,
 
+    #[arg(long, default_value_t = 30_000)]
+    pub(crate) tool_exec_timeout_ms: u64,
+
+    #[arg(long, default_value_t = 5_000)]
+    pub(crate) post_write_verify_timeout_ms: u64,
+
     #[arg(long, default_value_t = 600)]
     pub(crate) timeout_seconds: u64,
 
@@ -1005,6 +1011,12 @@ pub(crate) struct RunArgs {
 
     #[arg(long, default_value_t = 0)]
     pub(crate) max_browser_calls: usize,
+
+    #[arg(long, default_value_t = 30_000)]
+    pub(crate) tool_exec_timeout_ms: u64,
+
+    #[arg(long, default_value_t = 5_000)]
+    pub(crate) post_write_verify_timeout_ms: u64,
 
     #[arg(long, default_value = ".")]
     pub(crate) workdir: PathBuf,

@@ -24,6 +24,8 @@ pub struct EvalConfig {
     pub max_steps: usize,
     pub max_wall_time_ms: u64,
     pub max_mcp_calls: usize,
+    pub tool_exec_timeout_ms: u64,
+    pub post_write_verify_timeout_ms: u64,
     pub timeout_seconds: u64,
     pub trust: TrustMode,
     pub approval_mode: ApprovalMode,
@@ -102,6 +104,10 @@ pub struct EvalResultsConfig {
     pub max_wall_time_ms: u64,
     #[serde(default)]
     pub max_mcp_calls: usize,
+    #[serde(default)]
+    pub tool_exec_timeout_ms: u64,
+    #[serde(default)]
+    pub post_write_verify_timeout_ms: u64,
     pub timeout_seconds: u64,
     pub trust_mode: String,
     pub approval_mode: String,
@@ -166,6 +172,8 @@ impl EvalResultsConfig {
             max_steps: 30,
             max_wall_time_ms: 0,
             max_mcp_calls: 0,
+            tool_exec_timeout_ms: 30_000,
+            post_write_verify_timeout_ms: 5_000,
             timeout_seconds: 60,
             trust_mode: "on".to_string(),
             approval_mode: "auto".to_string(),

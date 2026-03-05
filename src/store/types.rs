@@ -232,6 +232,10 @@ pub struct RunCliConfig {
     pub max_network_calls: usize,
     #[serde(default)]
     pub max_browser_calls: usize,
+    #[serde(default)]
+    pub tool_exec_timeout_ms: u64,
+    #[serde(default)]
+    pub post_write_verify_timeout_ms: u64,
     pub approval_mode: String,
     pub auto_approve_scope: String,
     pub approval_key: String,
@@ -388,6 +392,10 @@ pub struct ConfigFingerprintV1 {
     pub max_network_calls: usize,
     #[serde(default)]
     pub max_browser_calls: usize,
+    #[serde(default)]
+    pub tool_exec_timeout_ms: u64,
+    #[serde(default)]
+    pub post_write_verify_timeout_ms: u64,
     pub session_name: String,
     pub no_session: bool,
     pub max_session_messages: usize,

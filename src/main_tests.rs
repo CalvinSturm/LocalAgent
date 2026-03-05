@@ -897,6 +897,10 @@ fn default_run_args() -> super::RunArgs {
 
         max_browser_calls: 0,
 
+        tool_exec_timeout_ms: 30_000,
+
+        post_write_verify_timeout_ms: 5_000,
+
         workdir: std::path::PathBuf::from("."),
 
         state_dir: None,

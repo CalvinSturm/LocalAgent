@@ -228,6 +228,8 @@ pub(crate) async fn handle_eval_command(
         max_steps: args.max_steps,
         max_wall_time_ms: args.max_wall_time_ms,
         max_mcp_calls: args.max_mcp_calls,
+        tool_exec_timeout_ms: args.tool_exec_timeout_ms,
+        post_write_verify_timeout_ms: args.post_write_verify_timeout_ms,
         timeout_seconds: args.timeout_seconds,
         trust: args.trust,
         approval_mode: args.approval_mode,

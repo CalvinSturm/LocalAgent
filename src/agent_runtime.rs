@@ -757,6 +757,16 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             max_shell_calls: args.max_shell_calls,
             max_network_calls: args.max_network_calls,
             max_browser_calls: args.max_browser_calls,
+            tool_exec_timeout_ms: if args.no_limits {
+                0
+            } else {
+                args.tool_exec_timeout_ms
+            },
+            post_write_verify_timeout_ms: if args.no_limits {
+                0
+            } else {
+                args.post_write_verify_timeout_ms
+            },
         },
         mcp_runtime_trace: Vec::new(),
         operator_queue: crate::operator_queue::PendingMessageQueue::default(),

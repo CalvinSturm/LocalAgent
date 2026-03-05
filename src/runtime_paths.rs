@@ -164,6 +164,8 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         max_shell_calls: args.max_shell_calls,
         max_network_calls: args.max_network_calls,
         max_browser_calls: args.max_browser_calls,
+        tool_exec_timeout_ms: args.tool_exec_timeout_ms,
+        post_write_verify_timeout_ms: args.post_write_verify_timeout_ms,
         approval_mode: format!("{:?}", args.approval_mode).to_lowercase(),
         auto_approve_scope: format!("{:?}", args.auto_approve_scope).to_lowercase(),
         approval_key: args.approval_key.as_str().to_string(),
@@ -315,6 +317,8 @@ pub(crate) fn build_config_fingerprint(
         max_shell_calls: args.max_shell_calls,
         max_network_calls: args.max_network_calls,
         max_browser_calls: args.max_browser_calls,
+        tool_exec_timeout_ms: args.tool_exec_timeout_ms,
+        post_write_verify_timeout_ms: args.post_write_verify_timeout_ms,
         session_name: if args.no_session {
             String::new()
         } else {

@@ -17,6 +17,7 @@ use crate::agent_tool_exec::{
     run_tool_once, schema_repair_instruction_message, tool_result_error_code,
     tool_result_has_error,
 };
+use crate::agent_tool_exec::ToolRunOutcome;
 use crate::agent_utils::{add_opt_u32, provider_name, sha256_hex};
 use crate::agent_worker_protocol::parse_worker_step_status;
 use crate::compaction::{
@@ -70,7 +71,8 @@ pub fn sanitize_user_visible_output(raw: &str) -> String {
 
 const MAX_SCHEMA_REPAIR_ATTEMPTS: u32 = 2;
 const MAX_FAILED_REPEAT_PER_KEY: u32 = 3;
-const POST_WRITE_VERIFY_READ_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_POST_WRITE_VERIFY_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_TOOL_EXEC_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG: &str =
     "INTERNAL_FLAG:enforce_implementation_integrity_guard";
 
@@ -167,6 +169,8 @@ pub struct ToolCallBudget {
     pub max_shell_calls: usize,
     pub max_network_calls: usize,
     pub max_browser_calls: usize,
+    pub tool_exec_timeout_ms: u64,
+    pub post_write_verify_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +333,61 @@ pub struct Agent<P: ModelProvider> {
 }
 
 impl<P: ModelProvider> Agent<P> {
+    fn effective_tool_exec_timeout_ms(&self) -> u64 {
+        if self.tool_call_budget.tool_exec_timeout_ms == 0 {
+            DEFAULT_TOOL_EXEC_TIMEOUT_MS
+        } else {
+            self.tool_call_budget.tool_exec_timeout_ms
+        }
+    }
+
+    fn effective_post_write_verify_timeout_ms(&self) -> u64 {
+        if self.tool_call_budget.post_write_verify_timeout_ms == 0 {
+            DEFAULT_POST_WRITE_VERIFY_TIMEOUT_MS
+        } else {
+            self.tool_call_budget.post_write_verify_timeout_ms
+        }
+    }
+
+    fn tool_timeout_message(&self, tc: &ToolCall, timeout_ms: u64) -> Message {
+        let source = if tc.name.starts_with("mcp.") {
+            "mcp"
+        } else {
+            "builtin"
+        };
+        let execution_target = if source == "mcp" {
+            "host".to_string()
+        } else {
+            match self.tool_rt.exec_target_kind {
+                crate::target::ExecTargetKind::Host => "host".to_string(),
+                crate::target::ExecTargetKind::Docker => "docker".to_string(),
+            }
+        };
+        envelope_to_message(to_tool_result_envelope(
+            tc,
+            source,
+            false,
+            format!(
+                "tool execution timed out after {}ms (runtime timeout)",
+                timeout_ms
+            ),
+            false,
+            ToolResultMeta {
+                side_effects: tool_side_effects(&tc.name),
+                bytes: None,
+                exit_code: None,
+                stderr_truncated: None,
+                stdout_truncated: None,
+                source: source.to_string(),
+                execution_target,
+                warnings: None,
+                warnings_max: None,
+                warnings_truncated: None,
+                docker: None,
+            },
+        ))
+    }
+
     fn emit_run_start_events(&mut self, run_id: &str) {
         self.emit_event(
             run_id,
@@ -1832,11 +1891,13 @@ Fallback when native tool calls are unavailable:\n\
                             assistant.content.unwrap_or_default()
                         };
                     if enforce_implementation_integrity_guard {
+                        let post_write_verify_timeout_ms =
+                            self.effective_post_write_verify_timeout_ms();
                         let pending_post_write_paths =
                             pending_post_write_verification_paths(&observed_tool_executions);
                         for path in pending_post_write_paths {
                             let verify = match tokio::time::timeout(
-                                Duration::from_millis(POST_WRITE_VERIFY_READ_TIMEOUT_MS),
+                                Duration::from_millis(post_write_verify_timeout_ms),
                                 self.tool_rt.exec_target.read_file(crate::target::ReadReq {
                                     workdir: self.tool_rt.workdir.clone(),
                                     path: path.clone(),
@@ -1849,7 +1910,7 @@ Fallback when native tool calls are unavailable:\n\
                                 Err(_) => {
                                     let reason = format!(
                                         "implementation guard: runtime post-write verification timed out on read_file for '{path}' after {}ms",
-                                        POST_WRITE_VERIFY_READ_TIMEOUT_MS
+                                        post_write_verify_timeout_ms
                                     );
                                     self.emit_event(
                                         &run_id,
@@ -1860,7 +1921,7 @@ Fallback when native tool calls are unavailable:\n\
                                             "source": "implementation_integrity_guard",
                                             "failure_class": "E_RUNTIME_POST_WRITE_VERIFY_TIMEOUT",
                                             "path": path,
-                                            "timeout_ms": POST_WRITE_VERIFY_READ_TIMEOUT_MS
+                                            "timeout_ms": post_write_verify_timeout_ms
                                         }),
                                     );
                                     self.emit_event(
@@ -3144,8 +3205,37 @@ Fallback when native tool calls are unavailable:\n\
                         let mut tool_msg = if let Some(err) = &invalid_args_error {
                             make_invalid_args_tool_message(tc, err, self.tool_rt.exec_target_kind)
                         } else {
-                            let outcome =
-                                run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref()).await;
+                            let tool_exec_timeout_ms = self.effective_tool_exec_timeout_ms();
+                            let outcome: ToolRunOutcome = match tokio::time::timeout(
+                                Duration::from_millis(tool_exec_timeout_ms),
+                                run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref()),
+                            )
+                            .await
+                            {
+                                Ok(outcome) => outcome,
+                                Err(_) => {
+                                    let reason = format!(
+                                        "runtime tool execution timeout: '{}' exceeded {}ms",
+                                        tc.name, tool_exec_timeout_ms
+                                    );
+                                    self.emit_event(
+                                        &run_id,
+                                        step as u32,
+                                        EventKind::Error,
+                                        serde_json::json!({
+                                            "error": reason,
+                                            "source": "runtime_tool_timeout",
+                                            "tool_call_id": tc.id,
+                                            "name": tc.name,
+                                            "timeout_ms": tool_exec_timeout_ms
+                                        }),
+                                    );
+                                    ToolRunOutcome {
+                                        message: self.tool_timeout_message(tc, tool_exec_timeout_ms),
+                                        mcp_meta: None,
+                                    }
+                                }
+                            };
                             if let Some(meta) = outcome.mcp_meta {
                                 if meta.progress_ticks > 0 {
                                     self.emit_event(
@@ -3551,9 +3641,38 @@ Fallback when native tool calls are unavailable:\n\
                                         &taint_state,
                                     );
                                 }
-                                let outcome =
-                                    run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref())
-                                        .await;
+                                let tool_exec_timeout_ms = self.effective_tool_exec_timeout_ms();
+                                let outcome: ToolRunOutcome = match tokio::time::timeout(
+                                    Duration::from_millis(tool_exec_timeout_ms),
+                                    run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref()),
+                                )
+                                .await
+                                {
+                                    Ok(outcome) => outcome,
+                                    Err(_) => {
+                                        let reason = format!(
+                                            "runtime tool execution timeout: '{}' exceeded {}ms",
+                                            tc.name, tool_exec_timeout_ms
+                                        );
+                                        self.emit_event(
+                                            &run_id,
+                                            step as u32,
+                                            EventKind::Error,
+                                            serde_json::json!({
+                                                "error": reason,
+                                                "source": "runtime_tool_timeout",
+                                                "tool_call_id": tc.id,
+                                                "name": tc.name,
+                                                "timeout_ms": tool_exec_timeout_ms
+                                            }),
+                                        );
+                                        ToolRunOutcome {
+                                            message: self
+                                                .tool_timeout_message(tc, tool_exec_timeout_ms),
+                                            mcp_meta: None,
+                                        }
+                                    }
+                                };
                                 if let Some(meta) = outcome.mcp_meta {
                                     if meta.progress_ticks > 0 {
                                         self.emit_event(
