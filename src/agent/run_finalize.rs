@@ -8,6 +8,91 @@ use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn finalize_verified_write_completion(
+        &mut self,
+        step: u32,
+        run_id: String,
+        started_at: String,
+        user_prompt: &str,
+        verified_paths: Vec<String>,
+        observed_tool_calls: Vec<crate::types::ToolCall>,
+        observed_tool_executions: &[crate::agent_impl_guard::ToolExecutionRecord],
+        observed_tool_decisions: Vec<super::ToolDecisionRecord>,
+        messages: Vec<crate::types::Message>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+        enforce_implementation_integrity_guard: bool,
+    ) -> AgentOutcome {
+        let final_output = if verified_paths.is_empty() {
+            "Applied requested file changes and verified.".to_string()
+        } else {
+            format!(
+                "Applied requested file changes and verified: {}.",
+                verified_paths.join(", ")
+            )
+        };
+        if let Some(reason) =
+            crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+                user_prompt,
+                &final_output,
+                &observed_tool_calls,
+                observed_tool_executions,
+                enforce_implementation_integrity_guard,
+            )
+        {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::Error,
+                serde_json::json!({
+                    "error": reason,
+                    "source": "implementation_integrity_guard"
+                }),
+            );
+            return self.finalize_planner_error_with_end(
+                step,
+                run_id,
+                started_at,
+                reason,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                request_context_chars,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            );
+        }
+        self.finalize_ok_with_end(
+            step,
+            run_id,
+            started_at,
+            final_output,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            request_context_chars,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn finalize_budget_exceeded(
         &self,
         run_id: String,

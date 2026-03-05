@@ -2484,56 +2484,16 @@ impl<P: ModelProvider> Agent<P> {
                     }
                     }
                 }
-                let final_output = if verified_paths.is_empty() {
-                    "Applied requested file changes and verified.".to_string()
-                } else {
-                    format!(
-                        "Applied requested file changes and verified: {}.",
-                        verified_paths.join(", ")
-                    )
-                };
-                if let Some(reason) = implementation_integrity_violation_with_tool_executions(
-                    user_prompt,
-                    &final_output,
-                    &observed_tool_calls,
-                    &observed_tool_executions,
-                    enforce_implementation_integrity_guard,
-                ) {
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::Error,
-                        serde_json::json!({
-                            "error": reason,
-                            "source": "implementation_integrity_guard"
-                        }),
-                    );
-                    return self.finalize_planner_error_with_end(
-                        step as u32,
-                        run_id,
-                        started_at,
-                        reason,
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    );
-                }
-                return self.finalize_ok_with_end(
+                return self.finalize_verified_write_completion(
                     step as u32,
                     run_id,
                     started_at,
-                    final_output,
-                    messages,
+                    user_prompt,
+                    verified_paths,
                     observed_tool_calls,
+                    &observed_tool_executions,
                     observed_tool_decisions,
+                    messages,
                     request_context_chars,
                     last_compaction_report,
                     hook_invocations,
@@ -2542,6 +2502,7 @@ impl<P: ModelProvider> Agent<P> {
                     saw_token_usage,
                     &total_token_usage,
                     &taint_state,
+                    enforce_implementation_integrity_guard,
                 );
             }
         }
