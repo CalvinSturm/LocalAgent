@@ -40,6 +40,7 @@ use crate::types::{Message, Role, TokenUsage, ToolDef};
 use std::time::{Duration, Instant};
 
 mod agent_types;
+mod budget_guard;
 mod mcp_drift;
 mod model_io;
 mod operator_queue;
@@ -1929,58 +1930,19 @@ impl<P: ModelProvider> Agent<P> {
                                     }
                                 }),
                             );
-                            self.gate.record(GateEvent {
-                                run_id: run_id.clone(),
-                                step: step as u32,
-                                tool_call_id: tc.id.clone(),
-                                tool: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
-                                decision: "deny".to_string(),
-                                decision_reason: Some(reason.clone()),
-                                decision_source: Some("runtime_budget".to_string()),
-                                approval_id: None,
-                                approval_key: None,
-                                approval_mode: approval_mode_meta.clone(),
-                                auto_approve_scope: auto_scope_meta.clone(),
-                                approval_key_version: approval_key_version_meta.clone(),
-                                tool_schema_hash_hex: tool_schema_hash_hex.clone(),
-                                hooks_config_hash_hex: hooks_config_hash_hex.clone(),
-                                planner_hash_hex: planner_hash_hex.clone(),
-                                exec_target: decision_exec_target.clone(),
-                                taint_overall: Some(taint_state.overall_str().to_string()),
-                                taint_enforced: false,
-                                escalated: false,
-                                escalation_reason: None,
-                                result_ok: false,
-                                result_content: reason.clone(),
-                                result_input_digest: None,
-                                result_output_digest: None,
-                                result_input_len: None,
-                                result_output_len: None,
-                            });
-                            observed_tool_decisions.push(ToolDecisionRecord {
-                                step: step as u32,
-                                tool_call_id: tc.id.clone(),
-                                tool: tc.name.clone(),
-                                decision: "deny".to_string(),
-                                reason: Some(reason.clone()),
-                                source: Some("runtime_budget".to_string()),
-                                taint_overall: Some(taint_state.overall_str().to_string()),
-                                taint_enforced: false,
-                                escalated: false,
-                                escalation_reason: None,
-                            });
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::Error,
-                                serde_json::json!({"error": reason.clone()}),
-                            );
-                            return self.finalize_budget_exceeded_with_end(
-                                step as u32,
+                            return self.finalize_runtime_budget_deny_with_end(
                                 run_id,
-                                started_at,
+                                step as u32,
+                                tc,
                                 reason,
+                                approval_mode_meta.clone(),
+                                auto_scope_meta.clone(),
+                                approval_key_version_meta.clone(),
+                                tool_schema_hash_hex.clone(),
+                                hooks_config_hash_hex.clone(),
+                                planner_hash_hex.clone(),
+                                decision_exec_target.clone(),
+                                started_at,
                                 messages,
                                 observed_tool_calls,
                                 observed_tool_decisions,
@@ -2382,58 +2344,19 @@ impl<P: ModelProvider> Agent<P> {
                                             "side_effects": side_effects
                                         }),
                                     );
-                                    self.gate.record(GateEvent {
-                                        run_id: run_id.clone(),
-                                        step: step as u32,
-                                        tool_call_id: tc.id.clone(),
-                                        tool: tc.name.clone(),
-                                        arguments: tc.arguments.clone(),
-                                        decision: "deny".to_string(),
-                                        decision_reason: Some(reason.clone()),
-                                        decision_source: Some("runtime_budget".to_string()),
-                                        approval_id: None,
-                                        approval_key: None,
-                                        approval_mode: approval_mode_meta.clone(),
-                                        auto_approve_scope: auto_scope_meta.clone(),
-                                        approval_key_version: approval_key_version_meta.clone(),
-                                        tool_schema_hash_hex: tool_schema_hash_hex.clone(),
-                                        hooks_config_hash_hex: hooks_config_hash_hex.clone(),
-                                        planner_hash_hex: planner_hash_hex.clone(),
-                                        exec_target: decision_exec_target.clone(),
-                                        taint_overall: Some(taint_state.overall_str().to_string()),
-                                        taint_enforced: false,
-                                        escalated: false,
-                                        escalation_reason: None,
-                                        result_ok: false,
-                                        result_content: reason.clone(),
-                                        result_input_digest: None,
-                                        result_output_digest: None,
-                                        result_input_len: None,
-                                        result_output_len: None,
-                                    });
-                                    observed_tool_decisions.push(ToolDecisionRecord {
-                                        step: step as u32,
-                                        tool_call_id: tc.id.clone(),
-                                        tool: tc.name.clone(),
-                                        decision: "deny".to_string(),
-                                        reason: Some(reason.clone()),
-                                        source: Some("runtime_budget".to_string()),
-                                        taint_overall: Some(taint_state.overall_str().to_string()),
-                                        taint_enforced: false,
-                                        escalated: false,
-                                        escalation_reason: None,
-                                    });
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::Error,
-                                        serde_json::json!({"error": reason.clone()}),
-                                    );
-                                    return self.finalize_budget_exceeded_with_end(
-                                        step as u32,
+                                    return self.finalize_runtime_budget_deny_with_end(
                                         run_id,
-                                        started_at,
+                                        step as u32,
+                                        tc,
                                         reason,
+                                        approval_mode_meta.clone(),
+                                        auto_scope_meta.clone(),
+                                        approval_key_version_meta.clone(),
+                                        tool_schema_hash_hex.clone(),
+                                        hooks_config_hash_hex.clone(),
+                                        planner_hash_hex.clone(),
+                                        decision_exec_target.clone(),
+                                        started_at,
                                         messages,
                                         observed_tool_calls,
                                         observed_tool_decisions,
