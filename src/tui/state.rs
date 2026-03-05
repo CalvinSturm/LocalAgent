@@ -199,12 +199,7 @@ impl UiState {
     }
 
     fn apply_tool_call_detected_event(&mut self, ev: &Event) {
-        let id = ev
-            .data
-            .get("tool_call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+        let id = event_tool_call_id(&ev.data);
         let name = event_tool_name(&ev.data).to_string();
         let side = ev
             .data
@@ -333,12 +328,7 @@ impl UiState {
     }
 
     fn apply_tool_decision_event(&mut self, ev: &Event) {
-        let id = ev
-            .data
-            .get("tool_call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+        let id = event_tool_call_id(&ev.data);
         let name = event_tool_name(&ev.data).to_string();
         let side = ev
             .data
@@ -402,12 +392,7 @@ impl UiState {
     }
 
     fn apply_tool_exec_start_event(&mut self, ev: &Event) {
-        let id = ev
-            .data
-            .get("tool_call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+        let id = event_tool_call_id(&ev.data);
         let name = event_tool_name(&ev.data).to_string();
         let side = ev
             .data
@@ -425,12 +410,7 @@ impl UiState {
     }
 
     fn apply_tool_exec_end_event(&mut self, ev: &Event) {
-        let id = ev
-            .data
-            .get("tool_call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+        let id = event_tool_call_id(&ev.data);
         let name = event_tool_name(&ev.data).to_string();
         let ok = ev.data.get("ok").and_then(|v| v.as_bool());
         let result = ev
@@ -1112,6 +1092,28 @@ fn event_tool_name(data: &serde_json::Value) -> &str {
         .unwrap_or_default()
 }
 
+fn event_tool_call_id(data: &serde_json::Value) -> String {
+    if let Some(s) = data.get("tool_call_id").and_then(|v| v.as_str()) {
+        return s.to_string();
+    }
+    if let Some(u) = data.get("tool_call_id").and_then(|v| v.as_u64()) {
+        return u.to_string();
+    }
+    if let Some(i) = data.get("tool_call_id").and_then(|v| v.as_i64()) {
+        return i.to_string();
+    }
+    if let Some(s) = data.get("id").and_then(|v| v.as_str()) {
+        return s.to_string();
+    }
+    if let Some(u) = data.get("id").and_then(|v| v.as_u64()) {
+        return u.to_string();
+    }
+    if let Some(i) = data.get("id").and_then(|v| v.as_i64()) {
+        return i.to_string();
+    }
+    String::new()
+}
+
 fn short_hash(s: &str) -> String {
     if s.is_empty() {
         "-".to_string()
@@ -1373,6 +1375,38 @@ mod tests {
             2,
             EventKind::ToolExecEnd,
             serde_json::json!({"tool_call_id":"tc2","tool":"apply_patch","ok":true,"content":"ok"}),
+        ));
+        assert_eq!(s.tool_calls.len(), 2);
+        assert_eq!(s.tool_calls[0].tool_name, "read_file");
+        assert_eq!(s.tool_calls[1].tool_name, "apply_patch");
+    }
+
+    #[test]
+    fn numeric_tool_call_id_does_not_collapse_distinct_tools() {
+        let mut s = UiState::new(10);
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolCallDetected,
+            serde_json::json!({"tool_call_id":101,"tool":"read_file","side_effects":"filesystem_read"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            1,
+            EventKind::ToolExecEnd,
+            serde_json::json!({"tool_call_id":101,"tool":"read_file","ok":true,"content":"ok"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            2,
+            EventKind::ToolCallDetected,
+            serde_json::json!({"tool_call_id":202,"tool":"apply_patch","side_effects":"filesystem_write"}),
+        ));
+        s.apply_event(&Event::new(
+            "r1".to_string(),
+            2,
+            EventKind::ToolExecEnd,
+            serde_json::json!({"tool_call_id":202,"tool":"apply_patch","ok":true,"content":"ok"}),
         ));
         assert_eq!(s.tool_calls.len(), 2);
         assert_eq!(s.tool_calls[0].tool_name, "read_file");
