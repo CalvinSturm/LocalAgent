@@ -71,6 +71,15 @@ pub(super) enum RetryLoopDecision {
     Finalize(super::agent_types::AgentOutcome),
 }
 
+pub(super) enum ToolRetryLoopOutcome {
+    Completed {
+        tool_msg: Message,
+        tool_retry_count: u32,
+    },
+    RestartAgentStep,
+    Finalize(super::agent_types::AgentOutcome),
+}
+
 impl<P: ModelProvider> Agent<P> {
     pub(super) async fn run_tool_with_timeout_and_emit_mcp_events(
         &mut self,
@@ -686,5 +695,149 @@ impl<P: ModelProvider> Agent<P> {
             .run_tool_with_timeout_and_emit_mcp_events(&run_id, step, tc, "retry_await_result")
             .await;
         RetryLoopDecision::ContinueWithToolMsg(tool_msg, next_retry_count)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn handle_tool_retry_loop(
+        &mut self,
+        run_id: String,
+        step: u32,
+        tc: &ToolCall,
+        initial_tool_msg: Message,
+        side_effects: crate::types::SideEffects,
+        plan_tool_allowed: bool,
+        repeat_key: &str,
+        tool_budget_usage: &mut crate::agent_budget::ToolCallBudgetUsage,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        messages: &mut Vec<Message>,
+        approval_mode_meta: Option<String>,
+        auto_scope_meta: Option<String>,
+        approval_key_version_meta: Option<String>,
+        tool_schema_hash_hex: Option<String>,
+        hooks_config_hash_hex: Option<String>,
+        planner_hash_hex: Option<String>,
+        decision_exec_target: Option<String>,
+        started_at: String,
+        observed_tool_calls: Vec<ToolCall>,
+        observed_tool_decisions: Vec<super::ToolDecisionRecord>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &crate::types::TokenUsage,
+        taint_state: &crate::taint::TaintState,
+    ) -> ToolRetryLoopOutcome {
+        let mut tool_msg = initial_tool_msg;
+        let mut tool_retry_count = 0u32;
+        loop {
+            let current_content = tool_msg.content.clone().unwrap_or_default();
+            if !tool_result_has_error(&current_content) {
+                break;
+            }
+            match self.handle_invalid_apply_patch_format(
+                run_id.clone(),
+                step,
+                tc,
+                tool_retry_count,
+                &current_content,
+                tool_msg.clone(),
+                repeat_key,
+                plan_tool_allowed,
+                invalid_patch_format_attempts,
+                messages,
+                failed_repeat_counts,
+                started_at.clone(),
+                observed_tool_calls.clone(),
+                observed_tool_decisions.clone(),
+                request_context_chars,
+                last_compaction_report.clone(),
+                hook_invocations.clone(),
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ) {
+                InvalidPatchFormatDecision::Continue => {}
+                InvalidPatchFormatDecision::RestartAgentStep => {
+                    return ToolRetryLoopOutcome::RestartAgentStep;
+                }
+                InvalidPatchFormatDecision::Finalize(outcome) => {
+                    return ToolRetryLoopOutcome::Finalize(outcome);
+                }
+            }
+            if let Some(error_code) = crate::agent_tool_exec::tool_result_error_code(&current_content)
+            {
+                if is_repairable_error_code(error_code) && plan_tool_allowed {
+                    match self.handle_schema_repair_attempt(
+                        &run_id,
+                        step,
+                        tc,
+                        error_code,
+                        tool_retry_count,
+                        &current_content,
+                        &tool_msg,
+                        repeat_key,
+                        messages,
+                        failed_repeat_counts,
+                        schema_repair_attempts,
+                    ) {
+                        SchemaRepairDecision::RestartAgentStep => {
+                            return ToolRetryLoopOutcome::RestartAgentStep;
+                        }
+                        SchemaRepairDecision::Exhausted => {}
+                    }
+                }
+            }
+            match self
+                .handle_generic_retry_iteration(
+                    run_id.clone(),
+                    step,
+                    tc,
+                    &current_content,
+                    side_effects,
+                    tool_retry_count,
+                    tool_budget_usage,
+                    approval_mode_meta.clone(),
+                    auto_scope_meta.clone(),
+                    approval_key_version_meta.clone(),
+                    tool_schema_hash_hex.clone(),
+                    hooks_config_hash_hex.clone(),
+                    planner_hash_hex.clone(),
+                    decision_exec_target.clone(),
+                    started_at.clone(),
+                    messages.clone(),
+                    observed_tool_calls.clone(),
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                )
+                .await
+            {
+                RetryLoopDecision::Break => break,
+                RetryLoopDecision::ContinueWithToolMsg(next_msg, next_count) => {
+                    tool_msg = next_msg;
+                    tool_retry_count = next_count;
+                }
+                RetryLoopDecision::Finalize(outcome) => {
+                    return ToolRetryLoopOutcome::Finalize(outcome);
+                }
+            }
+        }
+
+        ToolRetryLoopOutcome::Completed {
+            tool_msg,
+            tool_retry_count,
+        }
     }
 }

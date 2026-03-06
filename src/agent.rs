@@ -63,8 +63,7 @@ use run_events::apply_usage_totals;
 use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
 use tool_helpers::{
     failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
-    is_repairable_error_code, normalized_tool_path_from_args, InvalidPatchFormatDecision,
-    RetryLoopDecision, SchemaRepairDecision,
+    normalized_tool_path_from_args, ToolRetryLoopOutcome,
 };
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
@@ -1907,23 +1906,27 @@ impl<P: ModelProvider> Agent<P> {
                         };
                         let mut tool_retry_count = 0u32;
                         if invalid_args_error.is_none() {
-                            loop {
-                                let current_content = tool_msg.content.clone().unwrap_or_default();
-                                if !tool_result_has_error(&current_content) {
-                                    break;
-                                }
-                                match self.handle_invalid_apply_patch_format(
+                            match self
+                                .handle_tool_retry_loop(
                                     run_id.clone(),
                                     step as u32,
                                     tc,
-                                    tool_retry_count,
-                                    &current_content,
-                                    tool_msg.clone(),
-                                    &repeat_key,
+                                    tool_msg,
+                                    side_effects,
                                     plan_tool_allowed,
+                                    &repeat_key,
+                                    &mut tool_budget_usage,
                                     &mut invalid_patch_format_attempts,
-                                    &mut messages,
                                     &mut failed_repeat_counts,
+                                    &mut schema_repair_attempts,
+                                    &mut messages,
+                                    approval_mode_meta.clone(),
+                                    auto_scope_meta.clone(),
+                                    approval_key_version_meta.clone(),
+                                    tool_schema_hash_hex.clone(),
+                                    hooks_config_hash_hex.clone(),
+                                    planner_hash_hex.clone(),
+                                    decision_exec_target.clone(),
                                     started_at.clone(),
                                     observed_tool_calls.clone(),
                                     observed_tool_decisions.clone(),
@@ -1935,75 +1938,20 @@ impl<P: ModelProvider> Agent<P> {
                                     saw_token_usage,
                                     &total_token_usage,
                                     &taint_state,
-                                ) {
-                                    InvalidPatchFormatDecision::Continue => {}
-                                    InvalidPatchFormatDecision::RestartAgentStep => {
-                                        continue 'agent_steps;
-                                    }
-                                    InvalidPatchFormatDecision::Finalize(outcome) => {
-                                        return outcome;
-                                    }
+                                )
+                                .await
+                            {
+                                ToolRetryLoopOutcome::Completed {
+                                    tool_msg: next_msg,
+                                    tool_retry_count: next_count,
+                                } => {
+                                    tool_msg = next_msg;
+                                    tool_retry_count = next_count;
                                 }
-                                if let Some(error_code) = tool_result_error_code(&current_content) {
-                                    if is_repairable_error_code(error_code) && plan_tool_allowed {
-                                        match self.handle_schema_repair_attempt(
-                                            &run_id,
-                                            step as u32,
-                                            tc,
-                                            error_code,
-                                            tool_retry_count,
-                                            &current_content,
-                                            &tool_msg,
-                                            &repeat_key,
-                                            &mut messages,
-                                            &mut failed_repeat_counts,
-                                            &mut schema_repair_attempts,
-                                        ) {
-                                            SchemaRepairDecision::RestartAgentStep => {
-                                                continue 'agent_steps;
-                                            }
-                                            SchemaRepairDecision::Exhausted => {}
-                                        }
-                                    }
+                                ToolRetryLoopOutcome::RestartAgentStep => {
+                                    continue 'agent_steps;
                                 }
-                                match self
-                                    .handle_generic_retry_iteration(
-                                        run_id.clone(),
-                                        step as u32,
-                                        tc,
-                                        &current_content,
-                                        side_effects,
-                                        tool_retry_count,
-                                        &mut tool_budget_usage,
-                                        approval_mode_meta.clone(),
-                                        auto_scope_meta.clone(),
-                                        approval_key_version_meta.clone(),
-                                        tool_schema_hash_hex.clone(),
-                                        hooks_config_hash_hex.clone(),
-                                        planner_hash_hex.clone(),
-                                        decision_exec_target.clone(),
-                                        started_at.clone(),
-                                        messages.clone(),
-                                        observed_tool_calls.clone(),
-                                        observed_tool_decisions.clone(),
-                                        request_context_chars,
-                                        last_compaction_report.clone(),
-                                        hook_invocations.clone(),
-                                        provider_retry_count,
-                                        provider_error_count,
-                                        saw_token_usage,
-                                        &total_token_usage,
-                                        &taint_state,
-                                    )
-                                    .await
-                                {
-                                    RetryLoopDecision::Break => break,
-                                    RetryLoopDecision::ContinueWithToolMsg(next_msg, next_count) => {
-                                        tool_msg = next_msg;
-                                        tool_retry_count = next_count;
-                                    }
-                                    RetryLoopDecision::Finalize(outcome) => return outcome,
-                                }
+                                ToolRetryLoopOutcome::Finalize(outcome) => return outcome,
                             }
                         }
                         let hook_state = match self
