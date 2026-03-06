@@ -3,9 +3,9 @@ use serde_json::Value;
 use crate::target::{ExecTargetKind, ShellReq, TargetResult};
 use crate::types::SideEffects;
 
+use super::exec_support::{failed_exec, ToolExecution};
 use super::{
-    failed_exec, minimal_builtin_example, ToolErrorCode, ToolErrorDetail, ToolExecution,
-    ToolRuntime,
+    minimal_builtin_example, ToolErrorCode, ToolErrorDetail, ToolRuntime,
 };
 
 pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
@@ -66,7 +66,7 @@ pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
             out = annotate_shell_repair(repaired, repair_strategy);
         }
     }
-    super::target_to_exec(SideEffects::ShellExec, out)
+    super::exec_support::target_to_exec(SideEffects::ShellExec, out)
 }
 
 pub(super) fn classify_shell_target_error(content: &str, exit_code: Option<i32>) -> ToolErrorDetail {

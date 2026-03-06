@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::ValueEnum;
@@ -13,6 +13,7 @@ use crate::types::{Message, SideEffects, ToolCall, ToolDef};
 mod envelope;
 mod exec_fs;
 mod exec_shell;
+mod exec_support;
 mod exec_write;
 mod schema;
 
@@ -24,6 +25,7 @@ pub use schema::{
     compact_builtin_schema, invalid_args_detail, minimal_builtin_example,
     sorted_builtin_tool_names, validate_builtin_tool_args, validate_schema_args,
 };
+use exec_support::ToolExecution;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ToolArgsStrict {
@@ -158,15 +160,6 @@ pub struct ToolErrorDetail {
     pub minimal_example: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available_tools: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone)]
-struct ToolExecution {
-    ok: bool,
-    content: String,
-    truncated: bool,
-    error: Option<ToolErrorDetail>,
-    meta: ToolResultMeta,
 }
 
 pub fn tool_side_effects(tool_name: &str) -> SideEffects {
@@ -378,95 +371,6 @@ fn normalize_builtin_tool_args(tool_name: &str, args: &Value) -> Value {
     normalized.insert("args".to_string(), Value::Array(arg_list));
     normalized.remove("command");
     Value::Object(normalized)
-}
-
-fn has_git_segment(path: &Path) -> bool {
-    path.components().any(|c| match c {
-        std::path::Component::Normal(s) => s == ".git",
-        _ => false,
-    })
-}
-
-
-
-fn path_is_workdir_scoped(path: &str) -> bool {
-    let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        return false;
-    }
-    !p.components().any(|c| {
-        matches!(
-            c,
-            std::path::Component::ParentDir
-                | std::path::Component::RootDir
-                | std::path::Component::Prefix(_)
-        )
-    })
-}
-
-fn target_to_exec(side_effects: SideEffects, out: crate::target::TargetResult) -> ToolExecution {
-    let shell_error = if matches!(side_effects, SideEffects::ShellExec) && !out.ok {
-        Some(exec_shell::classify_shell_target_error(&out.content, out.exit_code))
-    } else {
-        None
-    };
-    ToolExecution {
-        ok: out.ok,
-        content: out.content,
-        truncated: out.truncated,
-        error: shell_error,
-        meta: ToolResultMeta {
-            side_effects,
-            bytes: out.bytes,
-            exit_code: out.exit_code,
-            stderr_truncated: out.stderr_truncated,
-            stdout_truncated: out.stdout_truncated,
-            source: "builtin".to_string(),
-            execution_target: match out.execution_target {
-                ExecTargetKind::Host => "host".to_string(),
-                ExecTargetKind::Docker => "docker".to_string(),
-            },
-            warnings: None,
-            warnings_max: None,
-            warnings_truncated: None,
-            docker: out.docker,
-        },
-    }
-}
-
-
-fn base_meta(rt: &ToolRuntime, side_effects: SideEffects) -> ToolResultMeta {
-    ToolResultMeta {
-        side_effects,
-        bytes: None,
-        exit_code: None,
-        stderr_truncated: None,
-        stdout_truncated: None,
-        source: "builtin".to_string(),
-        execution_target: match rt.exec_target_kind {
-            ExecTargetKind::Host => "host".to_string(),
-            ExecTargetKind::Docker => "docker".to_string(),
-        },
-        warnings: None,
-        warnings_max: None,
-        warnings_truncated: None,
-        docker: None,
-    }
-}
-
-fn failed_exec(
-    rt: &ToolRuntime,
-    side_effects: SideEffects,
-    content: String,
-    error: Option<ToolErrorDetail>,
-) -> ToolExecution {
-    ToolExecution {
-        ok: false,
-        content,
-        truncated: false,
-        error,
-        meta: base_meta(rt, side_effects),
-    }
 }
 
 #[cfg(test)]
