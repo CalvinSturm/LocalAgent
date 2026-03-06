@@ -207,16 +207,17 @@ Use a two-step pattern per area:
 ## Tracking
 - [ ] Phase 0 complete
 - [ ] Phase 1 complete
-- [ ] Phase 2 complete
+- [x] Phase 2 complete
 - [ ] Phase 3 complete
 - [ ] Phase 4 complete
 - [ ] Phase 5 complete
 
 ## Progress Update
 ### Current Status
-- Phase 2 is actively in progress.
-- `src/agent.rs` has been reduced from 4757 lines to approximately 2486 lines.
-- The `agent` runtime has already been split into focused helper modules under `src/agent/`.
+- Phase 2 is complete.
+- `src/agent.rs` has been reduced from 4757 lines to 1198 lines.
+- Phase 3 is now the active priority, starting with `src/tools.rs`.
+- The `agent` runtime has been split into focused helper modules under `src/agent/`.
 
 ### Completed Extractions In `src/agent`
 - `agent_types.rs`
@@ -236,26 +237,25 @@ Use a two-step pattern per area:
 
 ### What Has Been Stabilized
 - Outcome finalization paths have been consolidated behind helper methods.
-- Gate deny and approval-required paths have been partially extracted from the main loop.
+- Gate allow/deny/approval-required paths have been extracted from the main loop.
 - MCP drift handling has been moved out of the core loop.
-- Tool timeout, tool-result hook processing, taint update, retry event emission, and post-write verification now have dedicated helpers.
+- Tool timeout, malformed-call repair, failed-repeat guard, tool-result hook processing, taint update, retry event emission, and post-write verification now have dedicated helpers.
 - Full `cargo check` and `cargo test -q` have been run after each extraction slice and remain green.
 
-### Remaining Work In Phase 2
-- Extract the remaining `GateDecision::Allow` retry/repair state machine from `src/agent.rs`.
-- Further shrink the main `Agent::run` loop by moving the remaining tool-lifecycle control flow into helper/module boundaries.
-- Reassess whether any extracted helpers should be regrouped into a more explicit `tool_lifecycle` module to better match the original target layout.
-- Drive `src/agent.rs` materially lower from its current size before moving to the next major file.
+### Phase 2 Outcome
+- `src/agent.rs` is now below the phase target of 1200 lines.
+- The remaining code in `src/agent.rs` is primarily top-level orchestration and model-response handling rather than dense gate/tool execution state machines.
+- Follow-up cleanup inside `src/agent/` can happen later without blocking the next major split.
 
 ## Priority Update
 ### Immediate Priority
-1. Finish Phase 2 before starting another large-file split.
-2. Prioritize extracting the allow-branch retry/repair logic from `src/agent.rs`, since that is now the largest remaining concentration of control flow and branching risk.
-3. After that, do one cleanup pass on `src/agent.rs` to remove residual inline orchestration and confirm the final module boundaries still make sense.
-
-### Next Priority After Phase 2
 1. Start Phase 3 on `src/tools.rs`.
+2. Prioritize envelope/schema extraction first, then split filesystem execution paths, then shell-specific execution.
+3. Keep `execute_tool` stable during the first pass and move internals before reconsidering the top-level dispatch shape.
+
+### Next Priority After Phase 3
+1. Move to `src/agent_runtime.rs` and `src/learning.rs`.
 2. Keep the same pattern: mechanical extraction first, local cleanup second, tests after every slice.
 
 ### Deferred Priority
-- Phase 1 (`src/chat_tui_runtime.rs`) remains important, but it is not the current best next move while `src/agent.rs` is still only partially decomposed.
+- Phase 1 (`src/chat_tui_runtime.rs`) remains important, but the next highest-value move is to reduce `src/tools.rs` while `agent.rs` call sites are fresh and already stabilized.
