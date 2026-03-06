@@ -63,7 +63,8 @@ use run_events::apply_usage_totals;
 use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
 use tool_helpers::{
     failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
-    is_repairable_error_code, normalized_tool_path_from_args, SchemaRepairDecision,
+    is_repairable_error_code, normalized_tool_path_from_args, RetryLoopDecision,
+    SchemaRepairDecision,
 };
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
@@ -2021,57 +2022,15 @@ impl<P: ModelProvider> Agent<P> {
                                         }
                                     }
                                 }
-                                let class = classify_tool_failure(tc, &current_content, false);
-                                let retry_error_code =
-                                    tool_result_error_code(&current_content).map(|c| c.as_str());
-                                let max_retries = class.retry_limit_for(side_effects);
-                                if tool_retry_count >= max_retries {
-                                    self.emit_tool_retry_event(
-                                        &run_id,
+                                match self
+                                    .handle_generic_retry_iteration(
+                                        run_id.clone(),
                                         step as u32,
                                         tc,
+                                        &current_content,
+                                        side_effects,
                                         tool_retry_count,
-                                        max_retries,
-                                        class.as_str(),
-                                        "stop",
-                                        retry_error_code,
-                                    );
-                                    break;
-                                }
-                                self.emit_tool_retry_event(
-                                    &run_id,
-                                    step as u32,
-                                    tc,
-                                    tool_retry_count + 1,
-                                    max_retries,
-                                    class.as_str(),
-                                    "retry",
-                                    retry_error_code,
-                                );
-                                tool_retry_count = tool_retry_count.saturating_add(1);
-                                if let Some(reason) = check_and_consume_tool_budget(
-                                    &self.tool_call_budget,
-                                    &mut tool_budget_usage,
-                                    side_effects,
-                                ) {
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::ToolDecision,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "decision": "deny",
-                                            "reason": reason.clone(),
-                                            "source": "runtime_budget",
-                                            "side_effects": side_effects
-                                        }),
-                                    );
-                                    return self.finalize_runtime_budget_deny_with_end(
-                                        run_id,
-                                        step as u32,
-                                        tc,
-                                        reason,
+                                        &mut tool_budget_usage,
                                         approval_mode_meta.clone(),
                                         auto_scope_meta.clone(),
                                         approval_key_version_meta.clone(),
@@ -2079,51 +2038,28 @@ impl<P: ModelProvider> Agent<P> {
                                         hooks_config_hash_hex.clone(),
                                         planner_hash_hex.clone(),
                                         decision_exec_target.clone(),
-                                        started_at,
-                                        messages,
-                                        observed_tool_calls,
-                                        observed_tool_decisions,
+                                        started_at.clone(),
+                                        messages.clone(),
+                                        observed_tool_calls.clone(),
+                                        observed_tool_decisions.clone(),
                                         request_context_chars,
-                                        last_compaction_report,
-                                        hook_invocations,
+                                        last_compaction_report.clone(),
+                                        hook_invocations.clone(),
                                         provider_retry_count,
                                         provider_error_count,
                                         saw_token_usage,
                                         &total_token_usage,
                                         &taint_state,
-                                    );
-                                }
-                                if let Some(reason) = check_and_consume_mcp_budget(
-                                    &self.tool_call_budget,
-                                    &mut tool_budget_usage,
-                                    tc.name.starts_with("mcp."),
-                                ) {
-                                    return self.finalize_runtime_mcp_budget_exceeded_with_error(
-                                        run_id,
-                                        step as u32,
-                                        reason,
-                                        started_at,
-                                        messages,
-                                        observed_tool_calls,
-                                        observed_tool_decisions,
-                                        request_context_chars,
-                                        last_compaction_report,
-                                        hook_invocations,
-                                        provider_retry_count,
-                                        provider_error_count,
-                                        saw_token_usage,
-                                        &total_token_usage,
-                                        &taint_state,
-                                    );
-                                }
-                                tool_msg = self
-                                    .run_tool_with_timeout_and_emit_mcp_events(
-                                        &run_id,
-                                        step as u32,
-                                        tc,
-                                        "retry_await_result",
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    RetryLoopDecision::Break => break,
+                                    RetryLoopDecision::ContinueWithToolMsg(next_msg, next_count) => {
+                                        tool_msg = next_msg;
+                                        tool_retry_count = next_count;
+                                    }
+                                    RetryLoopDecision::Finalize(outcome) => return outcome,
+                                }
                             }
                         }
                         let hook_state = match self

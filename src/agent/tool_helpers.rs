@@ -59,6 +59,12 @@ pub(super) enum SchemaRepairDecision {
     Exhausted,
 }
 
+pub(super) enum RetryLoopDecision {
+    Break,
+    ContinueWithToolMsg(Message, u32),
+    Finalize(super::agent_types::AgentOutcome),
+}
+
 impl<P: ModelProvider> Agent<P> {
     pub(super) async fn run_tool_with_timeout_and_emit_mcp_events(
         &mut self,
@@ -419,5 +425,138 @@ impl<P: ModelProvider> Agent<P> {
         );
         self.emit_schema_repair_exhausted_event(run_id, step, tc, *attempts);
         SchemaRepairDecision::Exhausted
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn handle_generic_retry_iteration(
+        &mut self,
+        run_id: String,
+        step: u32,
+        tc: &ToolCall,
+        current_content: &str,
+        side_effects: crate::types::SideEffects,
+        tool_retry_count: u32,
+        tool_budget_usage: &mut crate::agent_budget::ToolCallBudgetUsage,
+        approval_mode_meta: Option<String>,
+        auto_scope_meta: Option<String>,
+        approval_key_version_meta: Option<String>,
+        tool_schema_hash_hex: Option<String>,
+        hooks_config_hash_hex: Option<String>,
+        planner_hash_hex: Option<String>,
+        decision_exec_target: Option<String>,
+        started_at: String,
+        messages: Vec<Message>,
+        observed_tool_calls: Vec<ToolCall>,
+        observed_tool_decisions: Vec<super::ToolDecisionRecord>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &crate::types::TokenUsage,
+        taint_state: &crate::taint::TaintState,
+    ) -> RetryLoopDecision {
+        let class = crate::agent_tool_exec::classify_tool_failure(tc, current_content, false);
+        let retry_error_code =
+            crate::agent_tool_exec::tool_result_error_code(current_content).map(|c| c.as_str());
+        let max_retries = class.retry_limit_for(side_effects);
+        if tool_retry_count >= max_retries {
+            self.emit_tool_retry_event(
+                &run_id,
+                step,
+                tc,
+                tool_retry_count,
+                max_retries,
+                class.as_str(),
+                "stop",
+                retry_error_code,
+            );
+            return RetryLoopDecision::Break;
+        }
+        let next_retry_count = tool_retry_count.saturating_add(1);
+        self.emit_tool_retry_event(
+            &run_id,
+            step,
+            tc,
+            next_retry_count,
+            max_retries,
+            class.as_str(),
+            "retry",
+            retry_error_code,
+        );
+        if let Some(reason) = crate::agent_budget::check_and_consume_tool_budget(
+            &self.tool_call_budget,
+            tool_budget_usage,
+            side_effects,
+        ) {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::ToolDecision,
+                serde_json::json!({
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "decision": "deny",
+                    "reason": reason.clone(),
+                    "source": "runtime_budget",
+                    "side_effects": side_effects
+                }),
+            );
+            return RetryLoopDecision::Finalize(self.finalize_runtime_budget_deny_with_end(
+                run_id,
+                step,
+                tc,
+                reason,
+                approval_mode_meta,
+                auto_scope_meta,
+                approval_key_version_meta,
+                tool_schema_hash_hex,
+                hooks_config_hash_hex,
+                planner_hash_hex,
+                decision_exec_target,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                request_context_chars,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ));
+        }
+        if let Some(reason) = crate::agent_budget::check_and_consume_mcp_budget(
+            &self.tool_call_budget,
+            tool_budget_usage,
+            tc.name.starts_with("mcp."),
+        ) {
+            return RetryLoopDecision::Finalize(
+                self.finalize_runtime_mcp_budget_exceeded_with_error(
+                    run_id,
+                    step,
+                    reason,
+                    started_at,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_decisions,
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ),
+            );
+        }
+        let tool_msg = self
+            .run_tool_with_timeout_and_emit_mcp_events(&run_id, step, tc, "retry_await_result")
+            .await;
+        RetryLoopDecision::ContinueWithToolMsg(tool_msg, next_retry_count)
     }
 }
