@@ -25,8 +25,7 @@ impl<P: ModelProvider> Agent<P> {
             }),
         );
 
-        let hard_timeout =
-            std::time::Duration::from_millis(MODEL_REQUEST_HARD_TIMEOUT_MS);
+        let hard_timeout = std::time::Duration::from_millis(MODEL_REQUEST_HARD_TIMEOUT_MS);
 
         let result = tokio::time::timeout(hard_timeout, async {
             if self.stream {

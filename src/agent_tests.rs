@@ -873,7 +873,7 @@ fn implementation_guard_requires_explicit_enforcement_signal() {
         name: "apply_patch".to_string(),
         path: Some("main.rs".to_string()),
         ok: true,
-            changed: None,
+        changed: None,
     }];
     let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
         "improve main.rs",

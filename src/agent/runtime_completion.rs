@@ -234,7 +234,10 @@ impl<P: ModelProvider> Agent<P> {
                         crate::agent_impl_guard::pending_post_write_verification_paths(
                             observed_tool_executions,
                         );
-                    for path in pending_post_write_paths.into_iter().take(MAX_POST_WRITE_VERIFY_PATHS) {
+                    for path in pending_post_write_paths
+                        .into_iter()
+                        .take(MAX_POST_WRITE_VERIFY_PATHS)
+                    {
                         match self
                             .verify_post_write_path(
                                 &run_id,
@@ -409,8 +412,15 @@ impl<P: ModelProvider> Agent<P> {
             crate::agent_impl_guard::pending_post_write_verification_paths(
                 observed_tool_executions,
             );
-        let verified_paths = pending_post_write_paths.iter().take(MAX_POST_WRITE_VERIFY_PATHS).cloned().collect::<Vec<_>>();
-        for path in pending_post_write_paths.into_iter().take(MAX_POST_WRITE_VERIFY_PATHS) {
+        let verified_paths = pending_post_write_paths
+            .iter()
+            .take(MAX_POST_WRITE_VERIFY_PATHS)
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in pending_post_write_paths
+            .into_iter()
+            .take(MAX_POST_WRITE_VERIFY_PATHS)
+        {
             match self
                 .verify_post_write_path(&run_id, step, &path, post_write_verify_timeout_ms)
                 .await

@@ -151,8 +151,10 @@ impl<P: ModelProvider> Agent<P> {
         let repeat_key = crate::agent::tool_helpers::failed_repeat_key(tc);
         let failed_repeat_count = failed_repeat_counts.get(&repeat_key).copied().unwrap_or(0);
         let name_repeat_key = format!("name::{}", tc.name);
-        let failed_repeat_name_count =
-            failed_repeat_counts.get(&name_repeat_key).copied().unwrap_or(0);
+        let failed_repeat_name_count = failed_repeat_counts
+            .get(&name_repeat_key)
+            .copied()
+            .unwrap_or(0);
         ToolCallPlanningContext {
             plan_allowed_tools,
             plan_tool_allowed,
