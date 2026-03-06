@@ -6,13 +6,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::target::{
-    DockerMeta, ExecTarget, ExecTargetKind, PatchReq, ReadReq, WriteReq,
+    DockerMeta, ExecTarget, ExecTargetKind,
 };
 use crate::types::{Message, SideEffects, ToolCall, ToolDef};
 
 mod envelope;
 mod exec_fs;
 mod exec_shell;
+mod exec_write;
 mod schema;
 
 pub use envelope::{
@@ -308,8 +309,8 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
         "glob" => exec_fs::run_glob(rt, &normalized_args).await,
         "grep" => exec_fs::run_grep(rt, &normalized_args).await,
         "shell" => exec_shell::run_shell(rt, &normalized_args).await,
-        "write_file" => run_write_file(rt, &normalized_args).await,
-        "apply_patch" => run_apply_patch(rt, &normalized_args).await,
+        "write_file" => exec_write::run_write_file(rt, &normalized_args).await,
+        "apply_patch" => exec_write::run_apply_patch(rt, &normalized_args).await,
         _ => ToolExecution {
             ok: false,
             content: format!("unknown tool: {}", tc.name),
@@ -401,133 +402,6 @@ fn path_is_workdir_scoped(path: &str) -> bool {
                 | std::path::Component::Prefix(_)
         )
     })
-}
-
-async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
-    if !rt.allow_write && !rt.unsafe_bypass_allow_flags {
-        return failed_exec(
-            rt,
-            SideEffects::FilesystemWrite,
-            "writes require --allow-write".to_string(),
-            Some(ToolErrorDetail {
-                code: ToolErrorCode::ToolDisabled,
-                message: "Write tools are disabled by runtime flags.".to_string(),
-                expected_schema: None,
-                received_args: Some(args.clone()),
-                minimal_example: minimal_builtin_example("write_file"),
-                available_tools: None,
-            }),
-        );
-    }
-    let path = args
-        .get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    if !path_is_workdir_scoped(path) && !rt.unsafe_bypass_allow_flags {
-        return failed_exec(
-            rt,
-            SideEffects::FilesystemWrite,
-            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
-            Some(ToolErrorDetail {
-                code: ToolErrorCode::ToolPathDenied,
-                message: "Path must stay within workdir.".to_string(),
-                expected_schema: None,
-                received_args: Some(args.clone()),
-                minimal_example: minimal_builtin_example("write_file"),
-                available_tools: None,
-            }),
-        );
-    }
-    let content = args
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let create_parents = args
-        .get("create_parents")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let overwrite_existing = args
-        .get("overwrite_existing")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !overwrite_existing {
-        let exists_probe = rt
-            .exec_target
-            .read_file(ReadReq {
-                workdir: rt.workdir.clone(),
-                path: path.to_string(),
-                max_read_bytes: 1,
-            })
-            .await;
-        if exists_probe.ok {
-            return failed_exec(
-                rt,
-                SideEffects::FilesystemWrite,
-                "write_file blocked for existing file; use apply_patch for in-place edits or set overwrite_existing=true for explicit full rewrite".to_string(),
-                None,
-            );
-        }
-    }
-    let out = rt
-        .exec_target
-        .write_file(WriteReq {
-            workdir: rt.workdir.clone(),
-            path: path.to_string(),
-            content: content.to_string(),
-            create_parents,
-        })
-        .await;
-    target_to_exec(SideEffects::FilesystemWrite, out)
-}
-
-async fn run_apply_patch(rt: &ToolRuntime, args: &Value) -> ToolExecution {
-    if !rt.allow_write && !rt.unsafe_bypass_allow_flags {
-        return failed_exec(
-            rt,
-            SideEffects::FilesystemWrite,
-            "writes require --allow-write".to_string(),
-            Some(ToolErrorDetail {
-                code: ToolErrorCode::ToolDisabled,
-                message: "Write tools are disabled by runtime flags.".to_string(),
-                expected_schema: None,
-                received_args: Some(args.clone()),
-                minimal_example: minimal_builtin_example("apply_patch"),
-                available_tools: None,
-            }),
-        );
-    }
-    let path = args
-        .get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    if !path_is_workdir_scoped(path) && !rt.unsafe_bypass_allow_flags {
-        return failed_exec(
-            rt,
-            SideEffects::FilesystemWrite,
-            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
-            Some(ToolErrorDetail {
-                code: ToolErrorCode::ToolPathDenied,
-                message: "Path must stay within workdir.".to_string(),
-                expected_schema: None,
-                received_args: Some(args.clone()),
-                minimal_example: minimal_builtin_example("apply_patch"),
-                available_tools: None,
-            }),
-        );
-    }
-    let patch_text = args
-        .get("patch")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let out = rt
-        .exec_target
-        .apply_patch(PatchReq {
-            workdir: rt.workdir.clone(),
-            path: path.to_string(),
-            patch: patch_text.to_string(),
-        })
-        .await;
-    target_to_exec(SideEffects::FilesystemWrite, out)
 }
 
 fn target_to_exec(side_effects: SideEffects, out: crate::target::TargetResult) -> ToolExecution {
