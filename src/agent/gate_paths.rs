@@ -14,6 +14,12 @@ pub(super) enum AllowToolCallDecision {
     Finalize(super::agent_types::AgentOutcome),
 }
 
+pub(super) enum GateNonAllowDecision {
+    ContinueToolLoop,
+    RestartAgentStep,
+    Finalize(super::agent_types::AgentOutcome),
+}
+
 impl<P: ModelProvider> Agent<P> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finalize_existing_write_file_guard_with_end(
@@ -432,6 +438,142 @@ impl<P: ModelProvider> Agent<P> {
             AllowedToolResultDecision::Finalize(outcome) => {
                 AllowToolCallDecision::Finalize(outcome)
             }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn handle_non_allow_gate_decision(
+        &mut self,
+        run_id: String,
+        step: u32,
+        tc: &ToolCall,
+        gate_decision: crate::gate::GateDecision,
+        invalid_args_error: Option<&String>,
+        approval_mode_meta: Option<String>,
+        auto_scope_meta: Option<String>,
+        approval_key_version_meta: Option<String>,
+        tool_schema_hash_hex: Option<String>,
+        hooks_config_hash_hex: Option<String>,
+        planner_hash_hex: Option<String>,
+        decision_exec_target: Option<String>,
+        started_at: String,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: Vec<ToolCall>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+    ) -> GateNonAllowDecision {
+        match gate_decision {
+            crate::gate::GateDecision::Deny {
+                reason,
+                approval_key,
+                source,
+                taint_enforced,
+                escalated,
+                escalation_reason,
+            } => GateNonAllowDecision::Finalize(self.finalize_gate_deny_with_end(
+                run_id,
+                step,
+                tc,
+                reason,
+                approval_key,
+                source,
+                taint_enforced,
+                escalated,
+                escalation_reason,
+                approval_mode_meta,
+                auto_scope_meta,
+                approval_key_version_meta,
+                tool_schema_hash_hex,
+                hooks_config_hash_hex,
+                planner_hash_hex,
+                decision_exec_target,
+                started_at,
+                messages.clone(),
+                observed_tool_calls,
+                observed_tool_decisions.clone(),
+                request_context_chars,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            )),
+            crate::gate::GateDecision::RequireApproval {
+                reason,
+                approval_id,
+                approval_key,
+                source,
+                taint_enforced,
+                escalated,
+                escalation_reason,
+            } => {
+                if let Some(err) = invalid_args_error {
+                    if self.handle_require_approval_invalid_args(
+                        &run_id,
+                        step,
+                        tc,
+                        err,
+                        source.clone(),
+                        taint_enforced,
+                        escalated,
+                        escalation_reason.clone(),
+                        approval_mode_meta.clone(),
+                        auto_scope_meta.clone(),
+                        approval_key_version_meta.clone(),
+                        tool_schema_hash_hex.clone(),
+                        hooks_config_hash_hex.clone(),
+                        planner_hash_hex.clone(),
+                        decision_exec_target.clone(),
+                        taint_state,
+                        messages,
+                        observed_tool_decisions,
+                    ) {
+                        return GateNonAllowDecision::RestartAgentStep;
+                    }
+                    return GateNonAllowDecision::ContinueToolLoop;
+                }
+                GateNonAllowDecision::Finalize(self.finalize_gate_require_approval_with_end(
+                    run_id,
+                    step,
+                    tc,
+                    reason,
+                    approval_id,
+                    approval_key,
+                    source,
+                    taint_enforced,
+                    escalated,
+                    escalation_reason,
+                    approval_mode_meta,
+                    auto_scope_meta,
+                    approval_key_version_meta,
+                    tool_schema_hash_hex,
+                    hooks_config_hash_hex,
+                    planner_hash_hex,
+                    decision_exec_target,
+                    started_at,
+                    messages.clone(),
+                    observed_tool_calls,
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ))
+            }
+            crate::gate::GateDecision::Allow { .. } => GateNonAllowDecision::ContinueToolLoop,
         }
     }
 

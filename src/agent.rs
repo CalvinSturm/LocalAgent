@@ -2,7 +2,6 @@ use crate::agent_budget::ToolCallBudgetUsage;
 use uuid::Uuid;
 
 use crate::agent_impl_guard::{
-    implementation_integrity_violation_with_tool_executions, pending_post_write_verification_paths,
     prompt_requires_tool_only, ToolExecutionRecord,
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
@@ -55,11 +54,13 @@ pub use agent_types::{
 
 pub(crate) use agent_types::WorkerStepStatus;
 use runtime_completion::{
-    runtime_completion_decision, RuntimeCompletionDecision, RuntimeCompletionInputs,
+    runtime_completion_decision, RuntimeCompletionAction, RuntimeCompletionInputs,
 };
+#[cfg(test)]
+pub(crate) use runtime_completion::RuntimeCompletionDecision;
 use run_events::apply_usage_totals;
 use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
-use gate_paths::AllowToolCallDecision;
+use gate_paths::{AllowToolCallDecision, GateNonAllowDecision};
 use mcp_drift::McpDriftDecision;
 use tool_helpers::{failed_repeat_key, injected_messages_enforce_implementation_integrity_guard};
 
@@ -917,245 +918,51 @@ impl<P: ModelProvider> Agent<P> {
                 blocked_attempt_count_next: blocked_runtime_completion_count.saturating_add(1),
             };
             let completion_decision = runtime_completion_decision(&completion_inputs);
-            match completion_decision {
-                RuntimeCompletionDecision::Continue {
-                    reason_code,
-                    corrective_instruction,
+            match self
+                .handle_runtime_completion_action(
+                    completion_decision,
+                    run_id.clone(),
+                    step as u32,
+                    started_at.clone(),
+                    user_prompt,
+                    last_user_output.as_ref(),
+                    assistant.content.as_deref(),
+                    active_plan_step_idx,
+                    enforce_implementation_integrity_guard,
+                    blocked_runtime_completion_count.saturating_add(1),
+                    &mut messages,
+                    observed_tool_calls.clone(),
+                    &mut observed_tool_executions,
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    &total_token_usage,
+                    &taint_state,
+                )
+                .await
+            {
+                RuntimeCompletionAction::ContinueStep {
+                    blocked_runtime_completion_count: next_count,
                 } => {
-                    blocked_runtime_completion_count =
-                        blocked_runtime_completion_count.saturating_add(1);
-                    let mut source = "runtime_completion_policy";
-                    let mut error_text = corrective_instruction.to_string();
-                    if reason_code == "pending_plan_step"
-                        && self.plan_enforcement_active()
-                    {
-                        if let Some(text) = self.pending_plan_step_text(active_plan_step_idx) {
-                            error_text = text;
-                            source = "plan_halt_guard";
-                        }
-                    }
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::Error,
-                        serde_json::json!({
-                            "error": error_text,
-                            "source": source,
-                            "reason_code": reason_code,
-                            "blocked_count": blocked_runtime_completion_count
-                        }),
-                    );
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "reason": reason_code,
-                            "blocked_count": blocked_runtime_completion_count
-                        }),
-                    );
-                    let corrective_message = if reason_code == "pending_plan_step"
-                        && self.plan_enforcement_active()
-                    {
-                        self.pending_plan_step_corrective_message(active_plan_step_idx)
-                            .unwrap_or_else(|| corrective_instruction.to_string())
-                    } else {
-                        corrective_instruction.to_string()
-                    };
-                    messages.push(Message {
-                        role: Role::Developer,
-                        content: Some(corrective_message),
-                        tool_call_id: None,
-                        tool_name: None,
-                        tool_calls: None,
-                    });
+                    blocked_runtime_completion_count = next_count;
                     continue;
                 }
-                RuntimeCompletionDecision::FinalizeError {
-                    reason,
-                    source,
-                    failure_class,
+                RuntimeCompletionAction::ContinueAgentStep {
+                    blocked_runtime_completion_count: next_count,
                 } => {
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::Error,
-                        serde_json::json!({
-                            "error": reason,
-                            "source": source,
-                            "failure_class": failure_class
-                        }),
-                    );
-                    return self.finalize_planner_error_with_end(
-                        step as u32,
-                        run_id,
-                        started_at,
-                        reason.to_string(),
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    );
+                    blocked_runtime_completion_count = next_count;
+                    continue 'agent_steps;
                 }
-                RuntimeCompletionDecision::FinalizeOk => {
-                    blocked_runtime_completion_count = 0;
-                    let (queue_delivered, queue_interrupted) = self
-                        .inject_turn_idle_operator_messages(&run_id, step as u32, &mut messages);
-                    if queue_interrupted || queue_delivered {
-                        continue 'agent_steps;
-                    }
-                    let final_output = self.final_output_for_completion(
-                        last_user_output.as_ref(),
-                        assistant.content.as_deref(),
-                    );
-                    if enforce_implementation_integrity_guard {
-                        let post_write_verify_timeout_ms =
-                            self.effective_post_write_verify_timeout_ms();
-                        let pending_post_write_paths =
-                            pending_post_write_verification_paths(&observed_tool_executions);
-                        for path in pending_post_write_paths {
-                            match self
-                                .verify_post_write_path(
-                                    &run_id,
-                                    step as u32,
-                                    &path,
-                                    post_write_verify_timeout_ms,
-                                )
-                                .await
-                            {
-                                Ok(record) => observed_tool_executions.push(record),
-                                Err(reason) => {
-                                self.emit_event(
-                                    &run_id,
-                                    step as u32,
-                                    EventKind::Error,
-                                    serde_json::json!({
-                                        "error": reason,
-                                        "source": "implementation_integrity_guard"
-                                    }),
-                                );
-                                return self.finalize_planner_error_with_end(
-                                    step as u32,
-                                    run_id,
-                                    started_at,
-                                    reason,
-                                    messages,
-                                    observed_tool_calls,
-                                    observed_tool_decisions,
-                                    request_context_chars,
-                                    last_compaction_report,
-                                    hook_invocations,
-                                    provider_retry_count,
-                                        provider_error_count,
-                                        saw_token_usage,
-                                        &total_token_usage,
-                                        &taint_state,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    if let Some(reason) = implementation_integrity_violation_with_tool_executions(
-                        user_prompt,
-                        &final_output,
-                        &observed_tool_calls,
-                        &observed_tool_executions,
-                        enforce_implementation_integrity_guard,
-                    ) {
-                        let saw_write_attempt = observed_tool_executions
-                            .iter()
-                            .any(|e| matches!(e.name.as_str(), "apply_patch" | "write_file"));
-                        if !saw_write_attempt
-                            && reason.contains("without an effective write")
-                            && blocked_runtime_completion_count < 2
-                        {
-                            blocked_runtime_completion_count =
-                                blocked_runtime_completion_count.saturating_add(1);
-                            let corrective_instruction = "Implementation task requires at least one effective write tool call. Use read_file + apply_patch (or write_file when creating a new file), then verify with read_file before finalizing.";
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::Error,
-                                serde_json::json!({
-                                    "error": corrective_instruction,
-                                    "source": "implementation_integrity_guard",
-                                    "reason_code": "implementation_requires_effective_write",
-                                    "blocked_count": blocked_runtime_completion_count
-                                }),
-                            );
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::StepBlocked,
-                                serde_json::json!({
-                                    "reason": "implementation_requires_effective_write",
-                                    "blocked_count": blocked_runtime_completion_count
-                                }),
-                            );
-                            messages.push(Message {
-                                role: Role::Developer,
-                                content: Some(corrective_instruction.to_string()),
-                                tool_call_id: None,
-                                tool_name: None,
-                                tool_calls: None,
-                            });
-                            continue 'agent_steps;
-                        }
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::Error,
-                            serde_json::json!({
-                                "error": reason,
-                                "source": "implementation_integrity_guard"
-                            }),
-                        );
-                        return self.finalize_planner_error_with_end(
-                            step as u32,
-                            run_id,
-                            started_at,
-                            reason,
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
-                    return self.finalize_ok_with_end(
-                        step as u32,
-                        run_id,
-                        started_at,
-                        final_output,
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    );
+                RuntimeCompletionAction::ProceedToTools {
+                    blocked_runtime_completion_count: next_count,
+                } => {
+                    blocked_runtime_completion_count = next_count;
                 }
-                RuntimeCompletionDecision::ExecuteTools => {
-                    blocked_runtime_completion_count = 0;
-                }
+                RuntimeCompletionAction::Finalize(outcome) => return outcome,
             }
 
             let mut successful_write_tool_ok_this_step = false;
@@ -1592,111 +1399,36 @@ impl<P: ModelProvider> Agent<P> {
                             AllowToolCallDecision::Finalize(outcome) => return outcome,
                         }
                     }
-                    GateDecision::Deny {
-                        reason,
-                        approval_key,
-                        source,
-                        taint_enforced,
-                        escalated,
-                        escalation_reason,
-                    } => {
-                        return self.finalize_gate_deny_with_end(
-                            run_id,
-                            step as u32,
-                            tc,
-                            reason,
-                            approval_key,
-                            source,
-                            taint_enforced,
-                            escalated,
-                            escalation_reason,
-                            approval_mode_meta.clone(),
-                            auto_scope_meta.clone(),
-                            approval_key_version_meta.clone(),
-                            tool_schema_hash_hex.clone(),
-                            hooks_config_hash_hex.clone(),
-                            planner_hash_hex.clone(),
-                            decision_exec_target.clone(),
-                            started_at,
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
-                    GateDecision::RequireApproval {
-                        reason,
-                        approval_id,
-                        approval_key,
-                        source,
-                        taint_enforced,
-                        escalated,
-                        escalation_reason,
-                    } => {
-                        if let Some(err) = &invalid_args_error {
-                            if self.handle_require_approval_invalid_args(
-                                &run_id,
-                                step as u32,
-                                tc,
-                                err,
-                                source.clone(),
-                                taint_enforced,
-                                escalated,
-                                escalation_reason.clone(),
-                                approval_mode_meta.clone(),
-                                auto_scope_meta.clone(),
-                                approval_key_version_meta.clone(),
-                                tool_schema_hash_hex.clone(),
-                                hooks_config_hash_hex.clone(),
-                                planner_hash_hex.clone(),
-                                decision_exec_target.clone(),
-                                &taint_state,
-                                &mut messages,
-                                &mut observed_tool_decisions,
-                            ) {
-                                continue 'agent_steps;
-                            }
-                            continue;
-                        }
-                        return self.finalize_gate_require_approval_with_end(
-                            run_id,
-                            step as u32,
-                            tc,
-                            reason,
-                            approval_id,
-                            approval_key,
-                            source,
-                            taint_enforced,
-                            escalated,
-                            escalation_reason,
-                            approval_mode_meta.clone(),
-                            auto_scope_meta.clone(),
-                            approval_key_version_meta.clone(),
-                            tool_schema_hash_hex,
-                            hooks_config_hash_hex,
-                            planner_hash_hex,
-                            decision_exec_target,
-                            started_at,
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
+                    gate_decision => match self.handle_non_allow_gate_decision(
+                        run_id.clone(),
+                        step as u32,
+                        tc,
+                        gate_decision,
+                        invalid_args_error.as_ref(),
+                        approval_mode_meta.clone(),
+                        auto_scope_meta.clone(),
+                        approval_key_version_meta.clone(),
+                        tool_schema_hash_hex.clone(),
+                        hooks_config_hash_hex.clone(),
+                        planner_hash_hex.clone(),
+                        decision_exec_target.clone(),
+                        started_at.clone(),
+                        &mut messages,
+                        observed_tool_calls.clone(),
+                        &mut observed_tool_decisions,
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.clone(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    ) {
+                        GateNonAllowDecision::ContinueToolLoop => continue,
+                        GateNonAllowDecision::RestartAgentStep => continue 'agent_steps,
+                        GateNonAllowDecision::Finalize(outcome) => return outcome,
+                    },
                 }
             }
 
