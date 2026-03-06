@@ -1,23 +1,17 @@
 use crate::agent_budget::ToolCallBudgetUsage;
 use uuid::Uuid;
-use crate::agent_impl_guard::{
-    prompt_requires_tool_only, ToolExecutionRecord,
-};
+use crate::agent_impl_guard::{prompt_requires_tool_only, ToolExecutionRecord};
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 #[cfg(test)]
 use crate::agent_tool_exec::{classify_tool_failure, tool_result_has_error};
 use crate::agent_utils::provider_name;
-use crate::compaction::{
-    context_size_chars, maybe_compact, CompactionReport, CompactionSettings,
-};
+use crate::compaction::{context_size_chars, maybe_compact, CompactionReport, CompactionSettings};
 use crate::events::{EventKind, EventSink};
 use crate::gate::{GateContext, GateDecision, ToolGate};
 use crate::hooks::protocol::{HookInvocationReport, PreModelCompactionPayload, PreModelPayload};
 use crate::hooks::runner::{make_pre_model_input, HookManager};
 use crate::mcp::registry::McpRegistry;
-use crate::operator_queue::{
-    PendingMessageQueue, QueueLimits, QueueSubmitRequest,
-};
+use crate::operator_queue::{PendingMessageQueue, QueueLimits, QueueSubmitRequest};
 use crate::providers::ModelProvider;
 use crate::taint::{TaintMode, TaintState, TaintToggle};
 use crate::tools::ToolRuntime;
@@ -39,15 +33,13 @@ mod run_setup;
 mod timeouts;
 mod tool_helpers;
 pub use agent_types::{
-    AgentExitReason, AgentOutcome, AgentTaintRecord, McpPinEnforcementMode,
-    McpRuntimeTraceEntry, PlanStepConstraint, PlanToolEnforcementMode, PolicyLoadedInfo,
-    ToolCallBudget, ToolDecisionRecord,
+    AgentExitReason, AgentOutcome, AgentTaintRecord, McpPinEnforcementMode, McpRuntimeTraceEntry,
+    PlanStepConstraint, PlanToolEnforcementMode, PolicyLoadedInfo, ToolCallBudget,
+    ToolDecisionRecord,
 };
 
 pub(crate) use agent_types::WorkerStepStatus;
-use runtime_completion::{
-    runtime_completion_decision, RuntimeCompletionAction, RuntimeCompletionInputs,
-};
+use runtime_completion::{runtime_completion_decision, RuntimeCompletionAction, RuntimeCompletionInputs};
 #[cfg(test)]
 pub(crate) use runtime_completion::RuntimeCompletionDecision;
 use run_events::apply_usage_totals;
