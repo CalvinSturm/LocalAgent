@@ -23,6 +23,56 @@ pub(super) fn apply_usage_totals(
 }
 
 impl<P: ModelProvider> Agent<P> {
+    pub(super) fn emit_tool_retry_event(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        tc: &ToolCall,
+        attempt: u32,
+        max_retries: u32,
+        failure_class: &str,
+        action: &str,
+        error_code: Option<&str>,
+    ) {
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::ToolRetry,
+            serde_json::json!({
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "attempt": attempt,
+                "max_retries": max_retries,
+                "failure_class": failure_class,
+                "action": action,
+                "error_code": error_code
+            }),
+        );
+    }
+
+    pub(super) fn emit_schema_repair_exhausted_event(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        tc: &ToolCall,
+        attempt: u32,
+    ) {
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::Error,
+            serde_json::json!({
+                "error": "schema repair attempts exhausted",
+                "source": "schema_repair",
+                "code": "TOOL_SCHEMA_REPAIR_EXHAUSTED",
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "attempt": attempt,
+                "max_attempts": super::MAX_SCHEMA_REPAIR_ATTEMPTS
+            }),
+        );
+    }
+
     pub(super) fn emit_tool_exec_start_events(&mut self, run_id: &str, step: u32, tc: &ToolCall) {
         self.emit_event(
             run_id,

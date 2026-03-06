@@ -2008,21 +2008,16 @@ impl<P: ModelProvider> Agent<P> {
                                             .and_modify(|n| *n = n.saturating_add(1))
                                             .or_insert(1);
                                         if *attempts <= MAX_SCHEMA_REPAIR_ATTEMPTS {
-                                            self.emit_event(
-                                                &run_id,
-                                                step as u32,
-                                                EventKind::ToolRetry,
-                                                serde_json::json!({
-                                                    "tool_call_id": tc.id,
-                                                    "name": tc.name,
-                                                    "attempt": *attempts,
-                                                    "max_retries": MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                                    "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                                    "failure_class": "E_SCHEMA",
-                                                    "action": "repair",
-                                                    "error_code": error_code.as_str()
-                                                }),
-                                            );
+                                        self.emit_tool_retry_event(
+                                            &run_id,
+                                            step as u32,
+                                            tc,
+                                            *attempts,
+                                            MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                            "E_SCHEMA",
+                                            "repair",
+                                            Some(error_code.as_str()),
+                                        );
                                             self.emit_event(
                                                 &run_id,
                                                 step as u32,
@@ -2055,34 +2050,21 @@ impl<P: ModelProvider> Agent<P> {
                                             ));
                                             continue 'agent_steps;
                                         }
-                                        self.emit_event(
+                                        self.emit_tool_retry_event(
                                             &run_id,
                                             step as u32,
-                                            EventKind::ToolRetry,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "attempt": *attempts,
-                                                "max_retries": MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                                "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                                "failure_class": "E_SCHEMA",
-                                                "action": "stop",
-                                                "error_code": error_code.as_str()
-                                            }),
+                                            tc,
+                                            *attempts,
+                                            MAX_SCHEMA_REPAIR_ATTEMPTS,
+                                            "E_SCHEMA",
+                                            "stop",
+                                            Some(error_code.as_str()),
                                         );
-                                        self.emit_event(
+                                        self.emit_schema_repair_exhausted_event(
                                             &run_id,
                                             step as u32,
-                                            EventKind::Error,
-                                            serde_json::json!({
-                                                "error": "schema repair attempts exhausted",
-                                                "source": "schema_repair",
-                                                "code": "TOOL_SCHEMA_REPAIR_EXHAUSTED",
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "attempt": *attempts,
-                                                "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS
-                                            }),
+                                            tc,
+                                            *attempts,
                                         );
                                     }
                                 }
@@ -2091,35 +2073,27 @@ impl<P: ModelProvider> Agent<P> {
                                     tool_result_error_code(&current_content).map(|c| c.as_str());
                                 let max_retries = class.retry_limit_for(side_effects);
                                 if tool_retry_count >= max_retries {
-                                    self.emit_event(
+                                    self.emit_tool_retry_event(
                                         &run_id,
                                         step as u32,
-                                        EventKind::ToolRetry,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "attempt": tool_retry_count,
-                                            "max_retries": max_retries,
-                                            "failure_class": class.as_str(),
-                                            "action": "stop",
-                                            "error_code": retry_error_code
-                                        }),
+                                        tc,
+                                        tool_retry_count,
+                                        max_retries,
+                                        class.as_str(),
+                                        "stop",
+                                        retry_error_code,
                                     );
                                     break;
                                 }
-                                self.emit_event(
+                                self.emit_tool_retry_event(
                                     &run_id,
                                     step as u32,
-                                    EventKind::ToolRetry,
-                                    serde_json::json!({
-                                        "tool_call_id": tc.id,
-                                        "name": tc.name,
-                                        "attempt": tool_retry_count + 1,
-                                        "max_retries": max_retries,
-                                        "failure_class": class.as_str(),
-                                        "action": "retry",
-                                        "error_code": retry_error_code
-                                    }),
+                                    tc,
+                                    tool_retry_count + 1,
+                                    max_retries,
+                                    class.as_str(),
+                                    "retry",
+                                    retry_error_code,
                                 );
                                 tool_retry_count = tool_retry_count.saturating_add(1);
                                 if let Some(reason) = check_and_consume_tool_budget(
