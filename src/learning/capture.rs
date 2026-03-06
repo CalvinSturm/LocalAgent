@@ -6,8 +6,8 @@ use super::{
     build_sensitivity_scan_bundle, detect_contains_paths, detect_contains_secrets_suspected,
     CaptureLearningInput, EvidenceKindV1, EvidenceRefV1, FieldTruncationV1, LearningCategoryV1,
     LearningSourceV1, ProposedMemoryV1, SensitivityFlagsV1, MAX_CHECK_TEXT_CHARS,
-    MAX_EVIDENCE_ITEMS, MAX_EVIDENCE_NOTE_CHARS, MAX_EVIDENCE_VALUE_CHARS,
-    MAX_GUIDANCE_TEXT_CHARS, MAX_TAG_CHARS, MAX_TAG_COUNT,
+    MAX_EVIDENCE_ITEMS, MAX_EVIDENCE_NOTE_CHARS, MAX_EVIDENCE_VALUE_CHARS, MAX_GUIDANCE_TEXT_CHARS,
+    MAX_TAG_CHARS, MAX_TAG_COUNT,
 };
 
 pub(super) fn parse_evidence_specs(

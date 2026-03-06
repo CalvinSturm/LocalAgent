@@ -4,9 +4,7 @@ use crate::target::{PatchReq, ReadReq, WriteReq};
 use crate::types::SideEffects;
 
 use super::exec_support::{failed_exec, path_is_workdir_scoped, target_to_exec, ToolExecution};
-use super::{
-    minimal_builtin_example, ToolErrorCode, ToolErrorDetail, ToolRuntime,
-};
+use super::{minimal_builtin_example, ToolErrorCode, ToolErrorDetail, ToolRuntime};
 
 pub(super) async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     if !rt.allow_write && !rt.unsafe_bypass_allow_flags {

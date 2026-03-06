@@ -18,8 +18,11 @@ pub(crate) fn handle_tui_outer_mouse_event(input: TuiOuterMouseInput<'_>) {
             input.transcript,
             input.streaming_assistant,
         );
-        *input.transcript_scroll =
-            crate::chat_runtime::adjust_transcript_scroll(*input.transcript_scroll, delta, max_scroll);
+        *input.transcript_scroll = crate::chat_runtime::adjust_transcript_scroll(
+            *input.transcript_scroll,
+            delta,
+            max_scroll,
+        );
         *input.follow_output = false;
     }
 }

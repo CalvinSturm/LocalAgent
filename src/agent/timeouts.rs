@@ -1,5 +1,7 @@
 use crate::providers::ModelProvider;
-use crate::tools::{envelope_to_message, to_tool_result_envelope, tool_side_effects, ToolResultMeta};
+use crate::tools::{
+    envelope_to_message, to_tool_result_envelope, tool_side_effects, ToolResultMeta,
+};
 use crate::types::{Message, ToolCall};
 
 use super::{Agent, DEFAULT_POST_WRITE_VERIFY_TIMEOUT_MS, DEFAULT_TOOL_EXEC_TIMEOUT_MS};

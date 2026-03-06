@@ -9,8 +9,7 @@ use crate::target::{ListReq, ReadReq};
 use crate::types::SideEffects;
 
 use super::exec_support::{
-    base_meta, failed_exec, has_git_segment, path_is_workdir_scoped, target_to_exec,
-    ToolExecution,
+    base_meta, failed_exec, has_git_segment, path_is_workdir_scoped, target_to_exec, ToolExecution,
 };
 use super::{
     invalid_args_detail, ToolErrorCode, ToolErrorDetail, ToolResultMeta, ToolRuntime,
@@ -129,7 +128,13 @@ pub(super) async fn run_glob(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     };
     let mut matches = files
         .into_iter()
-        .filter_map(|(rel, _)| if matcher.is_match(&rel) { Some(rel) } else { None })
+        .filter_map(|(rel, _)| {
+            if matcher.is_match(&rel) {
+                Some(rel)
+            } else {
+                None
+            }
+        })
         .collect::<Vec<_>>();
     matches.sort();
     let total = matches.len();

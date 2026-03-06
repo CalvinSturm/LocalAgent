@@ -13,7 +13,12 @@ pub(crate) fn clamp_cursor(s: &str, cursor: &mut usize) {
     *cursor = (*cursor).min(char_len(s));
 }
 
-pub(crate) fn insert_text_bounded(dst: &mut String, cursor: &mut usize, src: &str, max_chars: usize) {
+pub(crate) fn insert_text_bounded(
+    dst: &mut String,
+    cursor: &mut usize,
+    src: &str,
+    max_chars: usize,
+) {
     if src.is_empty() {
         return;
     }

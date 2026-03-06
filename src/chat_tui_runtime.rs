@@ -12,9 +12,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::chat_runtime;
-use crate::chat_tui::active_turn::{
-    drive_tui_active_turn_loop, TuiActiveTurnLoopInput,
-};
+use crate::chat_tui::active_turn::{drive_tui_active_turn_loop, TuiActiveTurnLoopInput};
 use crate::chat_tui::approvals::refresh_approvals_with_auto_open;
 use crate::chat_tui::event_dispatch::{
     handle_tui_outer_event_dispatch, TuiOuterEventDispatchInput, TuiOuterEventDispatchOutcome,
@@ -25,12 +23,9 @@ use crate::chat_tui::overlay::{
 };
 use crate::chat_tui::render_model::{build_tui_render_frame_input, TuiRenderFrameBuildInput};
 use crate::chat_tui::submit::{
-    handle_tui_enter_submit, TuiEnterSubmitInput, TuiEnterSubmitOutcome,
-    TuiSubmitLaunch,
+    handle_tui_enter_submit, TuiEnterSubmitInput, TuiEnterSubmitOutcome, TuiSubmitLaunch,
 };
-use crate::chat_tui::text::{
-    char_len,
-};
+use crate::chat_tui::text::char_len;
 use crate::chat_ui;
 use crate::mcp::registry::McpRegistry;
 use crate::provider_runtime;

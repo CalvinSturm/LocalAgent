@@ -1,7 +1,7 @@
 use crate::gate::GateEvent;
 use crate::providers::ModelProvider;
 use crate::taint::TaintState;
-use crate::types::{Message, ToolCall, TokenUsage};
+use crate::types::{Message, TokenUsage, ToolCall};
 
 use super::agent_types::ToolDecisionRecord;
 use super::Agent;

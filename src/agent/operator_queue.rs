@@ -1,7 +1,5 @@
 use crate::events::EventKind;
-use crate::operator_queue::{
-    DeliveryBoundary, QueueMessageKind, QueuedOperatorMessage,
-};
+use crate::operator_queue::{DeliveryBoundary, QueueMessageKind, QueuedOperatorMessage};
 use crate::providers::ModelProvider;
 use crate::types::{Message, Role};
 

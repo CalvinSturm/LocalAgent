@@ -74,6 +74,41 @@ pub(super) struct RunCliFingerprintBuildInput<'a> {
     pub(super) activated_packs: &'a [crate::packs::ActivatedPack],
 }
 
+pub(super) struct FinalizeRunArtifactsInput<'a> {
+    pub(super) event_sink: &'a mut Option<Box<dyn crate::events::EventSink>>,
+    pub(super) args: &'a RunArgs,
+    pub(super) paths: &'a store::StatePaths,
+    pub(super) provider_kind: ProviderKind,
+    pub(super) base_url: &'a str,
+    pub(super) worker_model: &'a str,
+    pub(super) planner_model: &'a str,
+    pub(super) planner_strict_effective: bool,
+    pub(super) effective_plan_tool_enforcement: crate::agent::PlanToolEnforcementMode,
+    pub(super) resolved_settings: &'a session::RunSettingResolution,
+    pub(super) hooks_config_path: &'a std::path::Path,
+    pub(super) mcp_config_path: &'a std::path::Path,
+    pub(super) tool_catalog: &'a [store::ToolCatalogEntry],
+    pub(super) mcp_tool_snapshot: &'a [store::McpToolSnapshotEntry],
+    pub(super) mcp_tool_catalog_hash_hex: &'a Option<String>,
+    pub(super) policy_source: String,
+    pub(super) policy_hash_hex: Option<String>,
+    pub(super) policy_version: Option<u32>,
+    pub(super) includes_resolved: Vec<String>,
+    pub(super) mcp_allowlist: Option<crate::trust::policy::McpAllowSummary>,
+    pub(super) tool_schema_hash_hex_map: std::collections::BTreeMap<String, String>,
+    pub(super) hooks_config_hash_hex: Option<String>,
+    pub(super) instruction_resolution: &'a crate::instructions::InstructionResolution,
+    pub(super) project_guidance_resolution:
+        Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
+    pub(super) repo_map_resolution: Option<&'a crate::repo_map::ResolvedRepoMap>,
+    pub(super) activated_packs: &'a [crate::packs::ActivatedPack],
+    pub(super) outcome: &'a agent::AgentOutcome,
+    pub(super) planner_record: Option<PlannerRunRecord>,
+    pub(super) worker_record: Option<WorkerRunRecord>,
+    pub(super) mcp_runtime_trace: Vec<crate::agent::McpRuntimeTraceEntry>,
+    pub(super) mcp_pin_snapshot: Option<store::McpPinSnapshotRecord>,
+}
+
 pub(super) fn write_run_artifact_with_warning(
     input: RunArtifactWriteInput,
 ) -> Option<std::path::PathBuf> {
@@ -198,7 +233,10 @@ pub(super) fn build_and_emit_repro_snapshot(
             tool_schema_hash_hex_map: input.tool_schema_hash_hex_map.clone(),
             tool_catalog: input.tool_catalog.to_vec(),
             exec_target: format!("{:?}", input.args.exec_target).to_lowercase(),
-            docker: if matches!(input.args.exec_target, crate::target::ExecTargetKind::Docker) {
+            docker: if matches!(
+                input.args.exec_target,
+                crate::target::ExecTargetKind::Docker
+            ) {
                 Some(repro::ReproDocker {
                     image: input.args.docker_image.clone(),
                     workdir: input.args.docker_workdir.clone(),
@@ -275,4 +313,91 @@ pub(super) fn build_run_cli_config_fingerprint_bundle(
     );
     let cfg_hash = config_hash_hex(&config_fingerprint)?;
     Ok((cli_config, config_fingerprint, cfg_hash))
+}
+
+pub(super) fn finalize_run_artifacts(
+    input: FinalizeRunArtifactsInput<'_>,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let worker_record = input.worker_record.or_else(|| {
+        Some(WorkerRunRecord {
+            model: input.worker_model.to_string(),
+            injected_planner_hash_hex: input
+                .planner_record
+                .as_ref()
+                .map(|p| p.plan_hash_hex.clone()),
+            step_result_valid: None,
+            step_result_json: None,
+            step_result_error: None,
+        })
+    });
+    let (cli_config, config_fingerprint, config_hash_hex) =
+        build_run_cli_config_fingerprint_bundle(RunCliFingerprintBuildInput {
+            provider_kind: input.provider_kind,
+            base_url: input.base_url,
+            worker_model: input.worker_model,
+            args: input.args,
+            paths: input.paths,
+            resolved_settings: input.resolved_settings,
+            hooks_config_path: input.hooks_config_path,
+            mcp_config_path: input.mcp_config_path,
+            tool_catalog: input.tool_catalog,
+            mcp_tool_snapshot: input.mcp_tool_snapshot,
+            mcp_tool_catalog_hash_hex: input.mcp_tool_catalog_hash_hex,
+            policy_version: input.policy_version,
+            includes_resolved: &input.includes_resolved,
+            mcp_allowlist: &input.mcp_allowlist,
+            mode: input.args.mode,
+            planner_model: Some(input.planner_model),
+            worker_model_override: Some(input.worker_model),
+            planner_max_steps: Some(input.args.planner_max_steps),
+            planner_output: Some(format!("{:?}", input.args.planner_output).to_lowercase()),
+            planner_strict: Some(input.planner_strict_effective),
+            enforce_plan_tools: Some(
+                format!("{:?}", input.effective_plan_tool_enforcement).to_lowercase(),
+            ),
+            instruction_resolution: input.instruction_resolution,
+            project_guidance_resolution: input.project_guidance_resolution,
+            repo_map_resolution: input.repo_map_resolution,
+            activated_packs: input.activated_packs,
+        })?;
+    let repro_record = build_and_emit_repro_snapshot(
+        input.event_sink,
+        ReproSnapshotBuildInput {
+            args: input.args,
+            provider_kind: input.provider_kind,
+            base_url: input.base_url,
+            worker_model: input.worker_model,
+            resolved_settings: input.resolved_settings,
+            policy_hash_hex: &input.policy_hash_hex,
+            includes_resolved: &input.includes_resolved,
+            hooks_config_hash_hex: &input.hooks_config_hash_hex,
+            tool_schema_hash_hex_map: &input.tool_schema_hash_hex_map,
+            tool_catalog: input.tool_catalog,
+            config_hash_hex: &config_hash_hex,
+            run_id: &input.outcome.run_id,
+        },
+    )?;
+    *input.event_sink = None;
+    Ok(write_run_artifact_with_warning(RunArtifactWriteInput {
+        paths: input.paths.clone(),
+        cli_config,
+        policy_info: store::PolicyRecordInfo {
+            source: input.policy_source,
+            hash_hex: input.policy_hash_hex,
+            version: input.policy_version,
+            includes_resolved: input.includes_resolved,
+            mcp_allowlist: input.mcp_allowlist,
+        },
+        config_hash_hex,
+        outcome: input.outcome.clone(),
+        mode: input.args.mode,
+        planner_record: input.planner_record,
+        worker_record,
+        tool_schema_hash_hex_map: input.tool_schema_hash_hex_map,
+        hooks_config_hash_hex: input.hooks_config_hash_hex,
+        config_fingerprint: Some(config_fingerprint),
+        repro_record,
+        mcp_runtime_trace: input.mcp_runtime_trace,
+        mcp_pin_snapshot: input.mcp_pin_snapshot,
+    }))
 }

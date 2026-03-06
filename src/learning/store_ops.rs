@@ -34,7 +34,10 @@ pub(crate) fn update_learning_status(
     write_learning_entry(state_dir, entry)
 }
 
-pub(crate) fn write_learning_entry(state_dir: &Path, entry: &LearningEntryV1) -> anyhow::Result<()> {
+pub(crate) fn write_learning_entry(
+    state_dir: &Path,
+    entry: &LearningEntryV1,
+) -> anyhow::Result<()> {
     let path = learning_entry_path(state_dir, &entry.id);
     store::write_json_atomic(&path, entry)
         .with_context(|| format!("failed to write learning entry {}", path.display()))

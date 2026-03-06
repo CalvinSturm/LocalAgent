@@ -4,9 +4,7 @@ use crate::target::{ExecTargetKind, ShellReq, TargetResult};
 use crate::types::SideEffects;
 
 use super::exec_support::{failed_exec, ToolExecution};
-use super::{
-    minimal_builtin_example, ToolErrorCode, ToolErrorDetail, ToolRuntime,
-};
+use super::{minimal_builtin_example, ToolErrorCode, ToolErrorDetail, ToolRuntime};
 
 pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     let shell_allowed =
@@ -69,7 +67,10 @@ pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     super::exec_support::target_to_exec(SideEffects::ShellExec, out)
 }
 
-pub(super) fn classify_shell_target_error(content: &str, exit_code: Option<i32>) -> ToolErrorDetail {
+pub(super) fn classify_shell_target_error(
+    content: &str,
+    exit_code: Option<i32>,
+) -> ToolErrorDetail {
     let lower = content.to_ascii_lowercase();
     let spawn_failed = lower.contains("shell execution failed:");
     let not_found = lower.contains("program not found")
@@ -110,7 +111,10 @@ pub(super) fn classify_shell_target_error(content: &str, exit_code: Option<i32>)
 
 fn shell_status_code_from_content(content: &str) -> Option<i32> {
     let parsed = serde_json::from_str::<Value>(content).ok()?;
-    parsed.get("status").and_then(|v| v.as_i64()).map(|n| n as i32)
+    parsed
+        .get("status")
+        .and_then(|v| v.as_i64())
+        .map(|n| n as i32)
 }
 
 fn shell_spawn_not_found(content: &str) -> bool {

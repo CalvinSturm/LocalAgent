@@ -2,9 +2,7 @@ use serde_json::json;
 
 use crate::types::{Message, Role, ToolCall};
 
-use super::{
-    invalid_args_detail, tool_side_effects, ToolResultEnvelope, ToolResultMeta,
-};
+use super::{invalid_args_detail, tool_side_effects, ToolResultEnvelope, ToolResultMeta};
 
 pub fn to_tool_result_envelope(
     tc: &ToolCall,

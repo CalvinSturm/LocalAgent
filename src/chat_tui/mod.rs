@@ -1,5 +1,5 @@
-pub(crate) mod approvals;
 pub(crate) mod active_turn;
+pub(crate) mod approvals;
 pub(crate) mod event_dispatch;
 pub(crate) mod key_dispatch;
 pub(crate) mod overlay;

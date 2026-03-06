@@ -3,15 +3,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+use super::support::{
+    ensure_trailing_newline, normalize_newlines, require_force_for_sensitive_promotion,
+    truncate_utf8_chars, validate_promote_pack_id, validate_promote_slug, write_text_atomic,
+};
 use super::{
     compute_file_sha256_hex, emit_learning_promoted_event, emit_learning_promoted_event_for_check,
     learning_agents_target_path, learning_category_str, learning_check_path,
     learning_pack_target_path, load_learning_entry, update_learning_status, LearningEntryV1,
     LearningPromoteError, LearningStatusV1, LEARNED_GUIDANCE_MANAGED_SECTION_MARKER,
-};
-use super::support::{
-    ensure_trailing_newline, normalize_newlines, require_force_for_sensitive_promotion,
-    truncate_utf8_chars, validate_promote_pack_id, validate_promote_slug, write_text_atomic,
 };
 
 #[derive(Debug, Clone)]
@@ -189,7 +189,11 @@ fn build_generated_check_from_learning(
     entry: &LearningEntryV1,
     slug: &str,
 ) -> crate::checks::schema::CheckFrontmatter {
-    let summary_one_line = entry.summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let summary_one_line = entry
+        .summary
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let description = if summary_one_line.is_empty() {
         format!("Learned check candidate from learning {}", entry.id)
     } else {

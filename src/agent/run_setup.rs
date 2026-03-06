@@ -31,26 +31,24 @@ impl<P: ModelProvider> Agent<P> {
         Option<String>,
         Option<String>,
     ) {
-        let approval_mode_meta = if matches!(
-            self.gate_ctx.approval_mode,
-            crate::gate::ApprovalMode::Auto
-        ) {
-            Some("auto".to_string())
-        } else {
-            None
-        };
-        let auto_scope_meta = if matches!(self.gate_ctx.approval_mode, crate::gate::ApprovalMode::Auto)
-        {
-            Some(
-                match self.gate_ctx.auto_approve_scope {
-                    crate::gate::AutoApproveScope::Run => "run",
-                    crate::gate::AutoApproveScope::Session => "session",
-                }
-                .to_string(),
-            )
-        } else {
-            None
-        };
+        let approval_mode_meta =
+            if matches!(self.gate_ctx.approval_mode, crate::gate::ApprovalMode::Auto) {
+                Some("auto".to_string())
+            } else {
+                None
+            };
+        let auto_scope_meta =
+            if matches!(self.gate_ctx.approval_mode, crate::gate::ApprovalMode::Auto) {
+                Some(
+                    match self.gate_ctx.auto_approve_scope {
+                        crate::gate::AutoApproveScope::Run => "run",
+                        crate::gate::AutoApproveScope::Session => "session",
+                    }
+                    .to_string(),
+                )
+            } else {
+                None
+            };
         let approval_key_version_meta =
             Some(self.gate_ctx.approval_key_version.as_str().to_string());
         let tool_schema_hash_hex = self.gate_ctx.tool_schema_hashes.get(&tc.name).cloned();
@@ -97,8 +95,13 @@ impl<P: ModelProvider> Agent<P> {
         }
     }
 
-    pub(super) fn current_plan_constraint(&self, active_plan_step_idx: usize) -> Option<PlanStepConstraint> {
-        self.plan_step_constraints.get(active_plan_step_idx).cloned()
+    pub(super) fn current_plan_constraint(
+        &self,
+        active_plan_step_idx: usize,
+    ) -> Option<PlanStepConstraint> {
+        self.plan_step_constraints
+            .get(active_plan_step_idx)
+            .cloned()
     }
 
     pub(super) fn current_plan_step_id_or_unknown(&self, active_plan_step_idx: usize) -> String {
@@ -107,7 +110,11 @@ impl<P: ModelProvider> Agent<P> {
             .unwrap_or_else(|| "unknown".to_string())
     }
 
-    pub(super) fn is_plan_tool_allowed(&self, active_plan_step_idx: usize, tool_name: &str) -> bool {
+    pub(super) fn is_plan_tool_allowed(
+        &self,
+        active_plan_step_idx: usize,
+        tool_name: &str,
+    ) -> bool {
         if !self.plan_enforcement_active() {
             return true;
         }
@@ -291,7 +298,9 @@ Fallback when native tool calls are unavailable:\n\
         }
     }
 
-    pub(super) fn compute_run_preflight_caches(&self) -> (Option<String>, Option<String>, BTreeSet<String>) {
+    pub(super) fn compute_run_preflight_caches(
+        &self,
+    ) -> (Option<String>, Option<String>, BTreeSet<String>) {
         let expected_mcp_catalog_hash_hex = self
             .mcp_registry
             .as_ref()

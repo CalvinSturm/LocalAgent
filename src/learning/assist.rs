@@ -1,9 +1,9 @@
+use super::capture::parse_learning_category_str;
+use super::{learning_category_str, redact_and_bound_terminal_output, AssistCaptureInputCanonical};
 use super::{
     AssistCaptureMetaV1, AssistedCaptureDraft, AssistedCapturePreview, CaptureLearningInput,
     LEARN_ASSIST_PROMPT_VERSION_V1, LEARN_SHOW_MAX_BYTES,
 };
-use super::{learning_category_str, redact_and_bound_terminal_output, AssistCaptureInputCanonical};
-use super::capture::parse_learning_category_str;
 
 pub fn build_assist_capture_input_canonical(
     input: &CaptureLearningInput,

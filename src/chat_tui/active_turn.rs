@@ -12,11 +12,11 @@ use crate::chat_tui::approvals::{refresh_approvals_with_auto_open, ActiveQueueRo
 use crate::chat_tui::event_dispatch::TuiOuterKeyDispatchInput;
 use crate::chat_tui::key_dispatch::handle_tui_outer_key_dispatch;
 use crate::chat_tui::overlay::LearnOverlayState;
-use crate::chat_tui::render_model::{
-    build_learn_overlay_render_model_with_cursor,
-};
+use crate::chat_tui::render_model::build_learn_overlay_render_model_with_cursor;
 use crate::chat_tui::submit::TuiRunFuture;
-use crate::chat_tui::text::{char_len, delete_char_before_cursor, insert_text_bounded, render_with_optional_caret};
+use crate::chat_tui::text::{
+    char_len, delete_char_before_cursor, insert_text_bounded, render_with_optional_caret,
+};
 use crate::chat_tui::transcript::push_assistant_transcript_entry;
 use crate::chat_ui;
 use crate::chat_view_utils;
@@ -75,7 +75,9 @@ pub(crate) struct TuiActiveTurnLoopInput<'a> {
     pub(crate) learn_overlay_cursor: &'a mut usize,
 }
 
-pub(crate) async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>) -> anyhow::Result<()> {
+pub(crate) async fn drive_tui_active_turn_loop(
+    input: TuiActiveTurnLoopInput<'_>,
+) -> anyhow::Result<()> {
     let TuiActiveTurnLoopInput {
         terminal,
         mut fut,
@@ -785,4 +787,3 @@ pub(crate) async fn drive_tui_active_turn_loop(input: TuiActiveTurnLoopInput<'_>
 
     Ok(())
 }
-

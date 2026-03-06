@@ -22,10 +22,8 @@ mod launch;
 mod planner_phase;
 mod setup;
 use finalize::{
-    build_and_emit_repro_snapshot, build_run_cli_config_fingerprint_bundle,
-    finalize_ui_and_session_state, normalize_and_record_worker_step_result,
-    write_run_artifact_with_warning, ReproSnapshotBuildInput, RunArtifactWriteInput,
-    RunCliFingerprintBuildInput,
+    finalize_run_artifacts, finalize_ui_and_session_state, normalize_and_record_worker_step_result,
+    FinalizeRunArtifactsInput,
 };
 use guard::maybe_append_implementation_guard_message;
 use launch::{build_mcp_pin_snapshot, emit_startup_runtime_events, prepare_runtime_launch};
@@ -361,85 +359,39 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         &outcome,
     );
 
-    if worker_record.is_none() {
-        worker_record = Some(WorkerRunRecord {
-            model: worker_model.clone(),
-            injected_planner_hash_hex: planner_record.as_ref().map(|p| p.plan_hash_hex.clone()),
-            step_result_valid: None,
-            step_result_json: None,
-            step_result_error: None,
-        });
-    }
-    let (cli_config, config_fingerprint, config_hash_hex) =
-        build_run_cli_config_fingerprint_bundle(RunCliFingerprintBuildInput {
-            provider_kind,
-            base_url,
-            worker_model: &worker_model,
-            args: &args,
-            paths,
-            resolved_settings: &resolved_settings,
-            hooks_config_path: &hooks_config_path,
-            mcp_config_path: &mcp_config_path,
-            tool_catalog: &tool_catalog,
-            mcp_tool_snapshot: &mcp_tool_snapshot,
-            mcp_tool_catalog_hash_hex: &mcp_tool_catalog_hash_hex,
-            policy_version,
-            includes_resolved: &includes_resolved,
-            mcp_allowlist: &mcp_allowlist,
-            mode: args.mode,
-            planner_model: Some(&planner_model),
-            worker_model_override: Some(&worker_model),
-            planner_max_steps: Some(args.planner_max_steps),
-            planner_output: Some(format!("{:?}", args.planner_output).to_lowercase()),
-            planner_strict: Some(planner_strict_effective),
-            enforce_plan_tools: Some(
-                format!("{:?}", effective_plan_tool_enforcement).to_lowercase(),
-            ),
-            instruction_resolution: &instruction_resolution,
-            project_guidance_resolution: project_guidance_resolution.as_ref(),
-            repo_map_resolution: repo_map_resolution.as_ref(),
-            activated_packs: &activated_packs,
-        })?;
-    let repro_record = build_and_emit_repro_snapshot(
-        &mut agent.event_sink,
-        ReproSnapshotBuildInput {
-            args: &args,
-            provider_kind,
-            base_url,
-            worker_model: &worker_model,
-            resolved_settings: &resolved_settings,
-            policy_hash_hex: &policy_hash_hex,
-            includes_resolved: &includes_resolved,
-            hooks_config_hash_hex: &hooks_config_hash_hex,
-            tool_schema_hash_hex_map: &tool_schema_hash_hex_map,
-            tool_catalog: &tool_catalog,
-            config_hash_hex: &config_hash_hex,
-            run_id: &outcome.run_id,
-        },
-    )?;
-    agent.event_sink = None;
-    let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
-        paths: paths.clone(),
-        cli_config,
-        policy_info: store::PolicyRecordInfo {
-            source: policy_source,
-            hash_hex: policy_hash_hex,
-            version: policy_version,
-            includes_resolved,
-            mcp_allowlist,
-        },
-        config_hash_hex,
-        outcome: outcome.clone(),
-        mode: args.mode,
-        planner_record,
-        worker_record,
+    let run_artifact_path = finalize_run_artifacts(FinalizeRunArtifactsInput {
+        event_sink: &mut agent.event_sink,
+        args: &args,
+        paths,
+        provider_kind,
+        base_url,
+        worker_model: &worker_model,
+        planner_model: &planner_model,
+        planner_strict_effective,
+        effective_plan_tool_enforcement,
+        resolved_settings: &resolved_settings,
+        hooks_config_path: &hooks_config_path,
+        mcp_config_path: &mcp_config_path,
+        tool_catalog: &tool_catalog,
+        mcp_tool_snapshot: &mcp_tool_snapshot,
+        mcp_tool_catalog_hash_hex: &mcp_tool_catalog_hash_hex,
+        policy_source,
+        policy_hash_hex,
+        policy_version,
+        includes_resolved,
+        mcp_allowlist,
         tool_schema_hash_hex_map,
         hooks_config_hash_hex,
-        config_fingerprint: Some(config_fingerprint.clone()),
-        repro_record,
+        instruction_resolution: &instruction_resolution,
+        project_guidance_resolution: project_guidance_resolution.as_ref(),
+        repo_map_resolution: repo_map_resolution.as_ref(),
+        activated_packs: &activated_packs,
+        outcome: &outcome,
+        planner_record,
+        worker_record,
         mcp_runtime_trace: agent.mcp_runtime_trace.clone(),
         mcp_pin_snapshot,
-    });
+    })?;
 
     if !suppress_stdout_stream {
         if args.tui {

@@ -238,7 +238,9 @@ pub(super) fn build_context_augmentations(
     })
 }
 
-pub(super) fn build_ui_runtime_setup(input: UiRuntimeSetupInput<'_>) -> anyhow::Result<UiRuntimeSetup> {
+pub(super) fn build_ui_runtime_setup(
+    input: UiRuntimeSetupInput<'_>,
+) -> anyhow::Result<UiRuntimeSetup> {
     let (ui_tx, ui_rx) = if input.args.tui {
         let (tx, rx) = std::sync::mpsc::channel();
         (Some(tx), Some(rx))

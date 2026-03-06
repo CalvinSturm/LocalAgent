@@ -5,6 +5,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Context};
 use uuid::Uuid;
 
+#[path = "runner_artifacts.rs"]
+mod runner_artifacts;
 #[path = "runner_output.rs"]
 mod runner_output;
 #[path = "runner_rows.rs"]
@@ -23,14 +25,15 @@ pub use crate::eval::types::{
 };
 use crate::mcp::registry::list_servers;
 use crate::store::{provider_to_string, resolve_state_paths, StatePaths};
+use runner_artifacts::write_synthetic_error_artifact;
 use runner_output::{finalize_and_write_eval_results, print_row, push_row};
 use runner_rows::{
     build_eval_run_error_row, build_eval_timeout_row, missing_capability_reason,
     missing_required_tool_reason, skipped_row,
 };
+use runner_runtime::run_single;
 #[cfg(test)]
 use runner_runtime::run_task_verifier;
-use runner_runtime::{run_single, write_synthetic_error_artifact};
 
 #[cfg(test)]
 fn finalize_summary(results: &mut EvalResults) {

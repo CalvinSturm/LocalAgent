@@ -1,7 +1,7 @@
 use super::{
-    has_any_sensitivity, learning_category_str, preview_text,
-    redact_and_bound_terminal_output, ArchiveLearningResult, LearningEntryV1, LearningStatusV1,
-    LEARN_SHOW_MAX_BYTES, LIST_SUMMARY_PREVIEW_CHARS,
+    has_any_sensitivity, learning_category_str, preview_text, redact_and_bound_terminal_output,
+    ArchiveLearningResult, LearningEntryV1, LearningStatusV1, LEARN_SHOW_MAX_BYTES,
+    LIST_SUMMARY_PREVIEW_CHARS,
 };
 
 pub fn render_archive_confirmation(out: &ArchiveLearningResult) -> String {
