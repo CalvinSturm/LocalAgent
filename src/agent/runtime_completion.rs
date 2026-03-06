@@ -1,4 +1,10 @@
 use super::PlanToolEnforcementMode;
+use crate::agent_impl_guard::ToolExecutionRecord;
+use crate::providers::ModelProvider;
+use crate::taint::TaintState;
+use crate::types::{Message, ToolCall, TokenUsage};
+
+use super::{Agent, ToolDecisionRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RuntimeCompletionDecision {
@@ -77,4 +83,89 @@ pub(super) fn runtime_completion_decision(
         };
     }
     RuntimeCompletionDecision::FinalizeOk
+}
+
+impl<P: ModelProvider> Agent<P> {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn finalize_verified_write_step_or_error(
+        &mut self,
+        run_id: String,
+        step: u32,
+        started_at: String,
+        user_prompt: &str,
+        observed_tool_calls: Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: Vec<ToolDecisionRecord>,
+        messages: Vec<Message>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+        enforce_implementation_integrity_guard: bool,
+    ) -> super::agent_types::AgentOutcome {
+        let post_write_verify_timeout_ms = self.effective_post_write_verify_timeout_ms();
+        let pending_post_write_paths =
+            crate::agent_impl_guard::pending_post_write_verification_paths(observed_tool_executions);
+        let verified_paths = pending_post_write_paths.iter().cloned().collect::<Vec<_>>();
+        for path in pending_post_write_paths {
+            match self
+                .verify_post_write_path(&run_id, step, &path, post_write_verify_timeout_ms)
+                .await
+            {
+                Ok(record) => observed_tool_executions.push(record),
+                Err(reason) => {
+                    self.emit_event(
+                        &run_id,
+                        step,
+                        crate::events::EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "implementation_integrity_guard"
+                        }),
+                    );
+                    return self.finalize_planner_error_with_end(
+                        step,
+                        run_id,
+                        started_at,
+                        reason,
+                        messages,
+                        observed_tool_calls,
+                        observed_tool_decisions,
+                        request_context_chars,
+                        last_compaction_report,
+                        hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    );
+                }
+            }
+        }
+        self.finalize_verified_write_completion(
+            step,
+            run_id,
+            started_at,
+            user_prompt,
+            verified_paths,
+            observed_tool_calls,
+            observed_tool_executions,
+            observed_tool_decisions,
+            messages,
+            request_context_chars,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            enforce_implementation_integrity_guard,
+        )
+    }
 }

@@ -5,8 +5,14 @@ use crate::tools::tool_side_effects;
 use crate::types::{Message, ToolCall, TokenUsage};
 
 use super::agent_types::ToolDecisionRecord;
-use super::tool_helpers::normalized_tool_path_from_args;
+use super::tool_helpers::{AllowedToolResultDecision, ToolRetryLoopOutcome, normalized_tool_path_from_args};
 use super::Agent;
+
+pub(super) enum AllowToolCallDecision {
+    Continue,
+    RestartAgentStep,
+    Finalize(super::agent_types::AgentOutcome),
+}
 
 impl<P: ModelProvider> Agent<P> {
     #[allow(clippy::too_many_arguments)]
@@ -170,6 +176,263 @@ impl<P: ModelProvider> Agent<P> {
             }),
         );
         messages.push(tool_msg);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn handle_gate_allow_tool_call(
+        &mut self,
+        run_id: String,
+        step: u32,
+        tc: &ToolCall,
+        approval_id: Option<String>,
+        approval_key: Option<String>,
+        reason: Option<String>,
+        source: Option<String>,
+        taint_enforced: bool,
+        escalated: bool,
+        escalation_reason: Option<String>,
+        invalid_args_error: Option<String>,
+        plan_tool_allowed: bool,
+        repeat_key: &str,
+        approval_mode_meta: Option<String>,
+        auto_scope_meta: Option<String>,
+        approval_key_version_meta: Option<String>,
+        tool_schema_hash_hex: Option<String>,
+        hooks_config_hash_hex: Option<String>,
+        planner_hash_hex: Option<String>,
+        decision_exec_target: Option<String>,
+        started_at: String,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: Vec<ToolCall>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        observed_tool_executions: &mut Vec<crate::agent_impl_guard::ToolExecutionRecord>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: &mut Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &mut TaintState,
+        tool_budget_usage: &mut crate::agent_budget::ToolCallBudgetUsage,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        successful_write_tool_ok_this_step: &mut bool,
+    ) -> AllowToolCallDecision {
+        let side_effects = tool_side_effects(&tc.name);
+        if let Some(reason) = crate::agent_budget::check_and_consume_tool_budget(
+            &self.tool_call_budget,
+            tool_budget_usage,
+            side_effects,
+        ) {
+            self.emit_event(
+                &run_id,
+                step,
+                crate::events::EventKind::ToolDecision,
+                serde_json::json!({
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "decision": "deny",
+                    "reason": reason.clone(),
+                    "source": "runtime_budget",
+                    "side_effects": side_effects,
+                    "budget": {
+                        "max_total_tool_calls": self.tool_call_budget.max_total_tool_calls,
+                        "max_mcp_calls": self.tool_call_budget.max_mcp_calls,
+                        "max_filesystem_read_calls": self.tool_call_budget.max_filesystem_read_calls,
+                        "max_filesystem_write_calls": self.tool_call_budget.max_filesystem_write_calls,
+                        "max_shell_calls": self.tool_call_budget.max_shell_calls,
+                        "max_network_calls": self.tool_call_budget.max_network_calls,
+                        "max_browser_calls": self.tool_call_budget.max_browser_calls
+                    }
+                }),
+            );
+            return AllowToolCallDecision::Finalize(self.finalize_runtime_budget_deny_with_end(
+                run_id,
+                step,
+                tc,
+                reason,
+                approval_mode_meta,
+                auto_scope_meta,
+                approval_key_version_meta,
+                tool_schema_hash_hex,
+                hooks_config_hash_hex,
+                planner_hash_hex,
+                decision_exec_target,
+                started_at,
+                messages.clone(),
+                observed_tool_calls,
+                observed_tool_decisions.clone(),
+                request_context_chars,
+                last_compaction_report,
+                hook_invocations.clone(),
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ));
+        }
+        if let Some(reason) = crate::agent_budget::check_and_consume_mcp_budget(
+            &self.tool_call_budget,
+            tool_budget_usage,
+            tc.name.starts_with("mcp."),
+        ) {
+            return AllowToolCallDecision::Finalize(
+                self.finalize_runtime_mcp_budget_exceeded_with_tool_decision(
+                    run_id,
+                    step,
+                    tc,
+                    reason,
+                    side_effects,
+                    started_at,
+                    messages.clone(),
+                    observed_tool_calls,
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ),
+            );
+        }
+        self.emit_event(
+            &run_id,
+            step,
+            crate::events::EventKind::ToolDecision,
+            serde_json::json!({
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "decision": "allow",
+                "approval_id": approval_id.clone(),
+                "approval_key": approval_key.clone(),
+                "reason": reason.clone(),
+                "source": source.clone(),
+                "approval_key_version": approval_key_version_meta.clone(),
+                "tool_schema_hash_hex": tool_schema_hash_hex.clone(),
+                "hooks_config_hash_hex": hooks_config_hash_hex.clone(),
+                "planner_hash_hex": planner_hash_hex.clone(),
+                "exec_target": decision_exec_target.clone(),
+                "taint_overall": taint_state.overall_str(),
+                "taint_enforced": taint_enforced,
+                "escalated": escalated,
+                "escalation_reason": escalation_reason.clone(),
+                "side_effects": tool_side_effects(&tc.name),
+                "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
+            }),
+        );
+        self.emit_tool_exec_start_events(&run_id, step, tc);
+        let mut tool_msg = if let Some(err) = &invalid_args_error {
+            crate::agent_tool_exec::make_invalid_args_tool_message(tc, err, self.tool_rt.exec_target_kind)
+        } else {
+            self.run_tool_with_timeout_and_emit_mcp_events(&run_id, step, tc, "await_result")
+                .await
+        };
+        let mut tool_retry_count = 0u32;
+        if invalid_args_error.is_none() {
+            match self
+                .handle_tool_retry_loop(
+                    run_id.clone(),
+                    step,
+                    tc,
+                    tool_msg,
+                    side_effects,
+                    plan_tool_allowed,
+                    repeat_key,
+                    tool_budget_usage,
+                    invalid_patch_format_attempts,
+                    failed_repeat_counts,
+                    schema_repair_attempts,
+                    messages,
+                    approval_mode_meta.clone(),
+                    auto_scope_meta.clone(),
+                    approval_key_version_meta.clone(),
+                    tool_schema_hash_hex.clone(),
+                    hooks_config_hash_hex.clone(),
+                    planner_hash_hex.clone(),
+                    decision_exec_target.clone(),
+                    started_at.clone(),
+                    observed_tool_calls.clone(),
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                )
+                .await
+            {
+                ToolRetryLoopOutcome::Completed {
+                    tool_msg: next_msg,
+                    tool_retry_count: next_count,
+                } => {
+                    tool_msg = next_msg;
+                    tool_retry_count = next_count;
+                }
+                ToolRetryLoopOutcome::RestartAgentStep => {
+                    return AllowToolCallDecision::RestartAgentStep;
+                }
+                ToolRetryLoopOutcome::Finalize(outcome) => {
+                    return AllowToolCallDecision::Finalize(outcome);
+                }
+            }
+        }
+        match self
+            .finalize_allowed_tool_result(
+                run_id,
+                step,
+                tc,
+                tool_msg,
+                tool_retry_count,
+                invalid_args_error.is_some(),
+                approval_id,
+                approval_key,
+                reason,
+                source,
+                taint_enforced,
+                escalated,
+                escalation_reason,
+                approval_mode_meta,
+                auto_scope_meta,
+                approval_key_version_meta,
+                tool_schema_hash_hex,
+                hooks_config_hash_hex,
+                planner_hash_hex,
+                decision_exec_target,
+                repeat_key,
+                started_at,
+                request_context_chars,
+                last_compaction_report,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                hook_invocations,
+                taint_state,
+                failed_repeat_counts,
+                invalid_patch_format_attempts,
+                successful_write_tool_ok_this_step,
+                messages,
+                observed_tool_decisions,
+                observed_tool_executions,
+                observed_tool_calls,
+            )
+            .await
+        {
+            AllowedToolResultDecision::Continue => AllowToolCallDecision::Continue,
+            AllowedToolResultDecision::RestartAgentStep => AllowToolCallDecision::RestartAgentStep,
+            AllowedToolResultDecision::Finalize(outcome) => {
+                AllowToolCallDecision::Finalize(outcome)
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

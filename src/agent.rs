@@ -1,6 +1,4 @@
-use crate::agent_budget::{
-    check_and_consume_mcp_budget, check_and_consume_tool_budget, ToolCallBudgetUsage,
-};
+use crate::agent_budget::ToolCallBudgetUsage;
 use uuid::Uuid;
 
 use crate::agent_impl_guard::{
@@ -61,10 +59,9 @@ use runtime_completion::{
 };
 use run_events::apply_usage_totals;
 use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
-use tool_helpers::{
-    failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
-    AllowedToolResultDecision, ToolRetryLoopOutcome,
-};
+use gate_paths::AllowToolCallDecision;
+use mcp_drift::McpDriftDecision;
+use tool_helpers::{failed_repeat_key, injected_messages_enforce_implementation_integrity_guard};
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     sanitize_user_visible_output_impl(raw)
@@ -1164,271 +1161,30 @@ impl<P: ModelProvider> Agent<P> {
             let mut successful_write_tool_ok_this_step = false;
             for tc in &resp.tool_calls {
                 self.record_detected_tool_call(&run_id, step as u32, tc, &mut observed_tool_calls);
-                if tc.name.starts_with("mcp.") {
-                    if matches!(self.mcp_pin_enforcement, McpPinEnforcementMode::Off) {
-                        // Drift probing disabled by configuration.
-                    } else if let (Some(registry), Some(expected_hash)) = (
-                        self.mcp_registry.as_ref(),
+                match self
+                    .check_mcp_drift_for_tool_call(
+                        run_id.clone(),
+                        step as u32,
+                        tc,
                         expected_mcp_catalog_hash_hex.as_ref(),
-                    ) {
-                        let live_catalog = registry.live_tool_catalog_hash_hex().await;
-                        let live_docs = if expected_mcp_docs_hash_hex.is_some() {
-                            Some(registry.live_tool_docs_hash_hex().await)
-                        } else {
-                            None
-                        };
-                        match (live_catalog, live_docs) {
-                            (Ok(actual_hash), Some(Ok(actual_docs_hash))) => {
-                                let expected_docs_hash =
-                                    expected_mcp_docs_hash_hex.as_deref().unwrap_or_default();
-                                let catalog_drift = actual_hash != *expected_hash;
-                                let docs_drift = actual_docs_hash != expected_docs_hash;
-                                if !catalog_drift && !docs_drift {
-                                    // No drift.
-                                } else {
-                                    let mut codes = Vec::new();
-                                    if catalog_drift {
-                                        codes.push("MCP_CATALOG_DRIFT");
-                                    }
-                                    if docs_drift {
-                                        codes.push("MCP_DOCS_DRIFT");
-                                    }
-                                    let primary_code =
-                                        codes.first().copied().unwrap_or("MCP_CATALOG_DRIFT");
-                                    let reason = if catalog_drift && docs_drift {
-                                        format!(
-                                            "MCP drift detected: catalog hash changed (expected {}, got {}) and docs hash changed (expected {}, got {})",
-                                            expected_hash, actual_hash, expected_docs_hash, actual_docs_hash
-                                        )
-                                    } else if catalog_drift {
-                                        format!(
-                                            "MCP_CATALOG_DRIFT detected: tool catalog hash changed during run (expected {}, got {})",
-                                            expected_hash, actual_hash
-                                        )
-                                    } else {
-                                        format!(
-                                            "MCP_DOCS_DRIFT detected: tool docs hash changed during run (expected {}, got {})",
-                                            expected_docs_hash, actual_docs_hash
-                                        )
-                                    };
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::McpDrift,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "expected_hash_hex": expected_hash,
-                                            "actual_hash_hex": actual_hash,
-                                            "catalog_hash_expected": expected_hash,
-                                            "catalog_hash_live": actual_hash,
-                                            "catalog_drift": catalog_drift,
-                                            "docs_hash_expected": expected_docs_hash,
-                                            "docs_hash_live": actual_docs_hash,
-                                            "docs_drift": docs_drift,
-                                            "enforcement": format!("{:?}", self.mcp_pin_enforcement).to_lowercase(),
-                                            "codes": codes,
-                                            "primary_code": primary_code
-                                        }),
-                                    );
-                                    if matches!(
-                                        self.mcp_pin_enforcement,
-                                        McpPinEnforcementMode::Hard
-                                    ) {
-                                        return self.finalize_mcp_drift_hard_deny_with_end(
-                                            run_id,
-                                            step as u32,
-                                            tc,
-                                            reason,
-                                            "mcp_drift",
-                                            started_at,
-                                            messages,
-                                            observed_tool_calls,
-                                            observed_tool_decisions,
-                                            request_context_chars,
-                                            last_compaction_report,
-                                            hook_invocations,
-                                            provider_retry_count,
-                                            provider_error_count,
-                                            saw_token_usage,
-                                            &total_token_usage,
-                                            &taint_state,
-                                        );
-                                    }
-                                    self.record_mcp_drift_warn_decision(
-                                        &run_id,
-                                        step as u32,
-                                        tc,
-                                        reason,
-                                        &taint_state,
-                                        &mut observed_tool_decisions,
-                                    );
-                                }
-                            }
-                            (Ok(actual_hash), Some(Err(e))) => {
-                                let reason = format!(
-                                    "MCP_DRIFT verification failed: unable to probe live docs hash ({e})"
-                                );
-                                self.emit_event(
-                                    &run_id,
-                                    step as u32,
-                                    EventKind::McpDrift,
-                                    serde_json::json!({
-                                        "tool_call_id": tc.id,
-                                        "name": tc.name,
-                                        "expected_hash_hex": expected_hash,
-                                        "actual_hash_hex": actual_hash,
-                                        "catalog_hash_expected": expected_hash,
-                                        "catalog_hash_live": actual_hash,
-                                        "catalog_drift": false,
-                                        "docs_hash_expected": expected_mcp_docs_hash_hex,
-                                        "docs_probe_error": e.to_string(),
-                                        "docs_drift": false,
-                                        "enforcement": format!("{:?}", self.mcp_pin_enforcement).to_lowercase(),
-                                        "codes": ["MCP_DOCS_DRIFT_PROBE_FAILED"],
-                                        "primary_code": "MCP_DOCS_DRIFT_PROBE_FAILED"
-                                    }),
-                                );
-                                if matches!(self.mcp_pin_enforcement, McpPinEnforcementMode::Hard) {
-                                    return self.finalize_mcp_drift_hard_deny_with_end(
-                                        run_id,
-                                        step as u32,
-                                        tc,
-                                        reason,
-                                        "mcp_drift",
-                                        started_at,
-                                        messages,
-                                        observed_tool_calls,
-                                        observed_tool_decisions,
-                                        request_context_chars,
-                                        last_compaction_report,
-                                        hook_invocations,
-                                        provider_retry_count,
-                                        provider_error_count,
-                                        saw_token_usage,
-                                        &total_token_usage,
-                                        &taint_state,
-                                    );
-                                }
-                                self.record_mcp_drift_warn_decision(
-                                    &run_id,
-                                    step as u32,
-                                    tc,
-                                    reason,
-                                    &taint_state,
-                                    &mut observed_tool_decisions,
-                                );
-                            }
-                            (Ok(actual_hash), None) => {
-                                if actual_hash != *expected_hash {
-                                    let reason = format!(
-                                        "MCP_CATALOG_DRIFT detected: tool catalog hash changed during run (expected {}, got {})",
-                                        expected_hash, actual_hash
-                                    );
-                                    self.emit_event(
-                                        &run_id,
-                                        step as u32,
-                                        EventKind::McpDrift,
-                                        serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "name": tc.name,
-                                            "expected_hash_hex": expected_hash,
-                                            "actual_hash_hex": actual_hash,
-                                            "catalog_hash_expected": expected_hash,
-                                            "catalog_hash_live": actual_hash,
-                                            "catalog_drift": true,
-                                            "docs_drift": false,
-                                            "enforcement": format!("{:?}", self.mcp_pin_enforcement).to_lowercase(),
-                                            "codes": ["MCP_CATALOG_DRIFT"],
-                                            "primary_code": "MCP_CATALOG_DRIFT"
-                                        }),
-                                    );
-                                    if matches!(
-                                        self.mcp_pin_enforcement,
-                                        McpPinEnforcementMode::Hard
-                                    ) {
-                                        return self.finalize_mcp_drift_hard_deny_with_end(
-                                            run_id,
-                                            step as u32,
-                                            tc,
-                                            reason,
-                                            "mcp_drift",
-                                            started_at,
-                                            messages,
-                                            observed_tool_calls,
-                                            observed_tool_decisions,
-                                            request_context_chars,
-                                            last_compaction_report,
-                                            hook_invocations,
-                                            provider_retry_count,
-                                            provider_error_count,
-                                            saw_token_usage,
-                                            &total_token_usage,
-                                            &taint_state,
-                                        );
-                                    }
-                                    self.record_mcp_drift_warn_decision(
-                                        &run_id,
-                                        step as u32,
-                                        tc,
-                                        reason,
-                                        &taint_state,
-                                        &mut observed_tool_decisions,
-                                    );
-                                }
-                            }
-                            (Err(e), _) => {
-                                let reason = format!(
-                                    "MCP_DRIFT verification failed: unable to probe live tool catalog ({e})"
-                                );
-                                self.emit_event(
-                                    &run_id,
-                                    step as u32,
-                                    EventKind::McpDrift,
-                                    serde_json::json!({
-                                        "tool_call_id": tc.id,
-                                        "name": tc.name,
-                                        "expected_hash_hex": expected_hash,
-                                        "catalog_hash_expected": expected_hash,
-                                        "catalog_probe_error": e.to_string(),
-                                        "enforcement": format!("{:?}", self.mcp_pin_enforcement).to_lowercase(),
-                                        "codes": ["MCP_CATALOG_DRIFT_PROBE_FAILED"],
-                                        "primary_code": "MCP_CATALOG_DRIFT_PROBE_FAILED",
-                                        "error": e.to_string()
-                                    }),
-                                );
-                                if matches!(self.mcp_pin_enforcement, McpPinEnforcementMode::Hard) {
-                                    return self.finalize_mcp_drift_hard_deny_with_end(
-                                        run_id,
-                                        step as u32,
-                                        tc,
-                                        reason,
-                                        "mcp_drift_probe_failed",
-                                        started_at,
-                                        messages,
-                                        observed_tool_calls,
-                                        observed_tool_decisions,
-                                        request_context_chars,
-                                        last_compaction_report,
-                                        hook_invocations,
-                                        provider_retry_count,
-                                        provider_error_count,
-                                        saw_token_usage,
-                                        &total_token_usage,
-                                        &taint_state,
-                                    );
-                                }
-                                self.record_mcp_drift_warn_decision(
-                                    &run_id,
-                                    step as u32,
-                                    tc,
-                                    reason,
-                                    &taint_state,
-                                    &mut observed_tool_decisions,
-                                );
-                            }
-                        }
-                    }
+                        expected_mcp_docs_hash_hex.as_ref(),
+                        started_at.clone(),
+                        messages.clone(),
+                        observed_tool_calls.clone(),
+                        &mut observed_tool_decisions,
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.clone(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    )
+                    .await
+                {
+                    McpDriftDecision::Continue => {}
+                    McpDriftDecision::Finalize(outcome) => return outcome,
                 }
                 let (plan_allowed_tools, plan_tool_allowed) = self
                     .plan_allowed_tools_and_decision(active_plan_step_idx, &tc.name);
@@ -1788,187 +1544,21 @@ impl<P: ModelProvider> Agent<P> {
                         escalated,
                         escalation_reason,
                     } => {
-                        let side_effects = tool_side_effects(&tc.name);
-                        if let Some(reason) = check_and_consume_tool_budget(
-                            &self.tool_call_budget,
-                            &mut tool_budget_usage,
-                            side_effects,
-                        ) {
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::ToolDecision,
-                                serde_json::json!({
-                                    "tool_call_id": tc.id,
-                                    "name": tc.name,
-                                    "decision": "deny",
-                                    "reason": reason.clone(),
-                                    "source": "runtime_budget",
-                                    "side_effects": side_effects,
-                                    "budget": {
-                                        "max_total_tool_calls": self.tool_call_budget.max_total_tool_calls,
-                                        "max_mcp_calls": self.tool_call_budget.max_mcp_calls,
-                                        "max_filesystem_read_calls": self.tool_call_budget.max_filesystem_read_calls,
-                                        "max_filesystem_write_calls": self.tool_call_budget.max_filesystem_write_calls,
-                                        "max_shell_calls": self.tool_call_budget.max_shell_calls,
-                                        "max_network_calls": self.tool_call_budget.max_network_calls,
-                                        "max_browser_calls": self.tool_call_budget.max_browser_calls
-                                    }
-                                }),
-                            );
-                            return self.finalize_runtime_budget_deny_with_end(
-                                run_id,
-                                step as u32,
-                                tc,
-                                reason,
-                                approval_mode_meta.clone(),
-                                auto_scope_meta.clone(),
-                                approval_key_version_meta.clone(),
-                                tool_schema_hash_hex.clone(),
-                                hooks_config_hash_hex.clone(),
-                                planner_hash_hex.clone(),
-                                decision_exec_target.clone(),
-                                started_at,
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
-                                request_context_chars,
-                                last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &taint_state,
-                            );
-                        }
-                        if let Some(reason) = check_and_consume_mcp_budget(
-                            &self.tool_call_budget,
-                            &mut tool_budget_usage,
-                            tc.name.starts_with("mcp."),
-                        ) {
-                            return self.finalize_runtime_mcp_budget_exceeded_with_tool_decision(
-                                run_id,
-                                step as u32,
-                                tc,
-                                reason,
-                                side_effects,
-                                started_at,
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
-                                request_context_chars,
-                                last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &taint_state,
-                            );
-                        }
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::ToolDecision,
-                            serde_json::json!({
-                                "tool_call_id": tc.id,
-                                "name": tc.name,
-                                "decision": "allow",
-                                "approval_id": approval_id.clone(),
-                                "approval_key": approval_key.clone(),
-                                "reason": reason.clone(),
-                                "source": source.clone(),
-                                "approval_key_version": approval_key_version_meta.clone(),
-                                "tool_schema_hash_hex": tool_schema_hash_hex.clone(),
-                                "hooks_config_hash_hex": hooks_config_hash_hex.clone(),
-                                "planner_hash_hex": planner_hash_hex.clone(),
-                                "exec_target": decision_exec_target.clone(),
-                                "taint_overall": taint_state.overall_str(),
-                                "taint_enforced": taint_enforced,
-                                "escalated": escalated,
-                                "escalation_reason": escalation_reason.clone(),
-                                "side_effects": tool_side_effects(&tc.name),
-                                "tool_args_strict": if self.tool_rt.tool_args_strict.is_enabled() { "on" } else { "off" }
-                            }),
-                        );
-                        self.emit_tool_exec_start_events(&run_id, step as u32, tc);
-                        let mut tool_msg = if let Some(err) = &invalid_args_error {
-                            make_invalid_args_tool_message(tc, err, self.tool_rt.exec_target_kind)
-                        } else {
-                            self.run_tool_with_timeout_and_emit_mcp_events(
-                                &run_id,
-                                step as u32,
-                                tc,
-                                "await_result",
-                            )
-                            .await
-                        };
-                        let mut tool_retry_count = 0u32;
-                        if invalid_args_error.is_none() {
-                            match self
-                                .handle_tool_retry_loop(
-                                    run_id.clone(),
-                                    step as u32,
-                                    tc,
-                                    tool_msg,
-                                    side_effects,
-                                    plan_tool_allowed,
-                                    &repeat_key,
-                                    &mut tool_budget_usage,
-                                    &mut invalid_patch_format_attempts,
-                                    &mut failed_repeat_counts,
-                                    &mut schema_repair_attempts,
-                                    &mut messages,
-                                    approval_mode_meta.clone(),
-                                    auto_scope_meta.clone(),
-                                    approval_key_version_meta.clone(),
-                                    tool_schema_hash_hex.clone(),
-                                    hooks_config_hash_hex.clone(),
-                                    planner_hash_hex.clone(),
-                                    decision_exec_target.clone(),
-                                    started_at.clone(),
-                                    observed_tool_calls.clone(),
-                                    observed_tool_decisions.clone(),
-                                    request_context_chars,
-                                    last_compaction_report.clone(),
-                                    hook_invocations.clone(),
-                                    provider_retry_count,
-                                    provider_error_count,
-                                    saw_token_usage,
-                                    &total_token_usage,
-                                    &taint_state,
-                                )
-                                .await
-                            {
-                                ToolRetryLoopOutcome::Completed {
-                                    tool_msg: next_msg,
-                                    tool_retry_count: next_count,
-                                } => {
-                                    tool_msg = next_msg;
-                                    tool_retry_count = next_count;
-                                }
-                                ToolRetryLoopOutcome::RestartAgentStep => {
-                                    continue 'agent_steps;
-                                }
-                                ToolRetryLoopOutcome::Finalize(outcome) => return outcome,
-                            }
-                        }
                         match self
-                            .finalize_allowed_tool_result(
+                            .handle_gate_allow_tool_call(
                                 run_id.clone(),
                                 step as u32,
                                 tc,
-                                tool_msg,
-                                tool_retry_count,
-                                invalid_args_error.is_some(),
                                 approval_id,
                                 approval_key,
-                                reason.clone(),
-                                source.clone(),
+                                reason,
+                                source,
                                 taint_enforced,
                                 escalated,
-                                escalation_reason.clone(),
+                                escalation_reason,
+                                invalid_args_error.clone(),
+                                plan_tool_allowed,
+                                &repeat_key,
                                 approval_mode_meta.clone(),
                                 auto_scope_meta.clone(),
                                 approval_key_version_meta.clone(),
@@ -1976,33 +1566,30 @@ impl<P: ModelProvider> Agent<P> {
                                 hooks_config_hash_hex.clone(),
                                 planner_hash_hex.clone(),
                                 decision_exec_target.clone(),
-                                &repeat_key,
                                 started_at.clone(),
+                                &mut messages,
+                                observed_tool_calls.clone(),
+                                &mut observed_tool_decisions,
+                                &mut observed_tool_executions,
                                 request_context_chars,
                                 last_compaction_report.clone(),
+                                &mut hook_invocations,
                                 provider_retry_count,
                                 provider_error_count,
                                 saw_token_usage,
                                 &total_token_usage,
-                                &mut hook_invocations,
                                 &mut taint_state,
+                                &mut tool_budget_usage,
                                 &mut failed_repeat_counts,
                                 &mut invalid_patch_format_attempts,
+                                &mut schema_repair_attempts,
                                 &mut successful_write_tool_ok_this_step,
-                                &mut messages,
-                                &mut observed_tool_decisions,
-                                &mut observed_tool_executions,
-                                observed_tool_calls.clone(),
                             )
                             .await
                         {
-                            AllowedToolResultDecision::Continue => {}
-                            AllowedToolResultDecision::RestartAgentStep => {
-                                continue 'agent_steps;
-                            }
-                            AllowedToolResultDecision::Finalize(outcome) => {
-                                return outcome;
-                            }
+                            AllowToolCallDecision::Continue => {}
+                            AllowToolCallDecision::RestartAgentStep => continue 'agent_steps,
+                            AllowToolCallDecision::Finalize(outcome) => return outcome,
                         }
                     }
                     GateDecision::Deny {
@@ -2114,59 +1701,13 @@ impl<P: ModelProvider> Agent<P> {
             }
 
             if enforce_implementation_integrity_guard && successful_write_tool_ok_this_step {
-                let post_write_verify_timeout_ms = self.effective_post_write_verify_timeout_ms();
-                let pending_post_write_paths =
-                    pending_post_write_verification_paths(&observed_tool_executions);
-                let verified_paths = pending_post_write_paths.iter().cloned().collect::<Vec<_>>();
-                for path in pending_post_write_paths {
-                    match self
-                        .verify_post_write_path(
-                            &run_id,
-                            step as u32,
-                            &path,
-                            post_write_verify_timeout_ms,
-                        )
-                        .await
-                    {
-                        Ok(record) => observed_tool_executions.push(record),
-                        Err(reason) => {
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::Error,
-                            serde_json::json!({
-                                "error": reason,
-                                "source": "implementation_integrity_guard"
-                            }),
-                        );
-                        return self.finalize_planner_error_with_end(
-                            step as u32,
-                            run_id,
-                            started_at,
-                            reason,
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
-                    }
-                }
-                return self.finalize_verified_write_completion(
-                    step as u32,
+                return self.finalize_verified_write_step_or_error(
                     run_id,
+                    step as u32,
                     started_at,
                     user_prompt,
-                    verified_paths,
                     observed_tool_calls,
-                    &observed_tool_executions,
+                    &mut observed_tool_executions,
                     observed_tool_decisions,
                     messages,
                     request_context_chars,
@@ -2178,7 +1719,8 @@ impl<P: ModelProvider> Agent<P> {
                     &total_token_usage,
                     &taint_state,
                     enforce_implementation_integrity_guard,
-                );
+                )
+                .await;
             }
         }
 
