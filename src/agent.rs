@@ -63,7 +63,7 @@ use run_events::apply_usage_totals;
 use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
 use tool_helpers::{
     failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
-    is_repairable_error_code, normalized_tool_path_from_args,
+    is_repairable_error_code, normalized_tool_path_from_args, SchemaRepairDecision,
 };
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
@@ -2001,71 +2001,24 @@ impl<P: ModelProvider> Agent<P> {
                                 }
                                 if let Some(error_code) = tool_result_error_code(&current_content) {
                                     if is_repairable_error_code(error_code) && plan_tool_allowed {
-                                        let repair_key =
-                                            format!("{}|{}", tc.name, error_code.as_str());
-                                        let attempts = schema_repair_attempts
-                                            .entry(repair_key)
-                                            .and_modify(|n| *n = n.saturating_add(1))
-                                            .or_insert(1);
-                                        if *attempts <= MAX_SCHEMA_REPAIR_ATTEMPTS {
-                                        self.emit_tool_retry_event(
+                                        match self.handle_schema_repair_attempt(
                                             &run_id,
                                             step as u32,
                                             tc,
-                                            *attempts,
-                                            MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                            "E_SCHEMA",
-                                            "repair",
-                                            Some(error_code.as_str()),
-                                        );
-                                            self.emit_event(
-                                                &run_id,
-                                                step as u32,
-                                                EventKind::ToolExecEnd,
-                                                serde_json::json!({
-                                                    "tool_call_id": tc.id,
-                                                    "name": tc.name,
-                                                    "ok": false,
-                                                    "truncated": infer_truncated_flag(&current_content),
-                                                    "retry_count": tool_retry_count,
-                                                    "failure_class": "E_SCHEMA",
-                                                    "error_code": error_code.as_str()
-                                                }),
-                                            );
-                                            messages.push(tool_msg);
-                                            if self.inject_post_tool_operator_messages(
-                                                &run_id,
-                                                step as u32,
-                                                &mut messages,
-                                            ) {
+                                            error_code,
+                                            tool_retry_count,
+                                            &current_content,
+                                            &tool_msg,
+                                            &repeat_key,
+                                            &mut messages,
+                                            &mut failed_repeat_counts,
+                                            &mut schema_repair_attempts,
+                                        ) {
+                                            SchemaRepairDecision::RestartAgentStep => {
                                                 continue 'agent_steps;
                                             }
-                                            let n = failed_repeat_counts
-                                                .entry(repeat_key.clone())
-                                                .or_insert(0);
-                                            *n = n.saturating_add(1);
-                                            messages.push(schema_repair_instruction_message(
-                                                tc,
-                                                error_code.as_str(),
-                                            ));
-                                            continue 'agent_steps;
+                                            SchemaRepairDecision::Exhausted => {}
                                         }
-                                        self.emit_tool_retry_event(
-                                            &run_id,
-                                            step as u32,
-                                            tc,
-                                            *attempts,
-                                            MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                            "E_SCHEMA",
-                                            "stop",
-                                            Some(error_code.as_str()),
-                                        );
-                                        self.emit_schema_repair_exhausted_event(
-                                            &run_id,
-                                            step as u32,
-                                            tc,
-                                            *attempts,
-                                        );
                                     }
                                 }
                                 let class = classify_tool_failure(tc, &current_content, false);

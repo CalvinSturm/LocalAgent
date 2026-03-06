@@ -54,6 +54,11 @@ pub(super) struct ToolResultHookState {
     pub final_truncated: bool,
 }
 
+pub(super) enum SchemaRepairDecision {
+    RestartAgentStep,
+    Exhausted,
+}
+
 impl<P: ModelProvider> Agent<P> {
     pub(super) async fn run_tool_with_timeout_and_emit_mcp_events(
         &mut self,
@@ -341,5 +346,78 @@ impl<P: ModelProvider> Agent<P> {
             path: Some(path.to_string()),
             ok: true,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn handle_schema_repair_attempt(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        tc: &ToolCall,
+        error_code: ToolErrorCode,
+        tool_retry_count: u32,
+        current_content: &str,
+        tool_msg: &Message,
+        repeat_key: &str,
+        messages: &mut Vec<Message>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+    ) -> SchemaRepairDecision {
+        let repair_key = format!("{}|{}", tc.name, error_code.as_str());
+        let attempts = schema_repair_attempts
+            .entry(repair_key)
+            .and_modify(|n| *n = n.saturating_add(1))
+            .or_insert(1);
+        if *attempts <= super::MAX_SCHEMA_REPAIR_ATTEMPTS {
+            self.emit_tool_retry_event(
+                run_id,
+                step,
+                tc,
+                *attempts,
+                super::MAX_SCHEMA_REPAIR_ATTEMPTS,
+                "E_SCHEMA",
+                "repair",
+                Some(error_code.as_str()),
+            );
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::ToolExecEnd,
+                serde_json::json!({
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "ok": false,
+                    "truncated": crate::agent_tool_exec::infer_truncated_flag(current_content),
+                    "retry_count": tool_retry_count,
+                    "failure_class": "E_SCHEMA",
+                    "error_code": error_code.as_str()
+                }),
+            );
+            messages.push(tool_msg.clone());
+            if self.inject_post_tool_operator_messages(run_id, step, messages) {
+                return SchemaRepairDecision::RestartAgentStep;
+            }
+            let n = failed_repeat_counts
+                .entry(repeat_key.to_string())
+                .or_insert(0);
+            *n = n.saturating_add(1);
+            messages.push(crate::agent_tool_exec::schema_repair_instruction_message(
+                tc,
+                error_code.as_str(),
+            ));
+            return SchemaRepairDecision::RestartAgentStep;
+        }
+        self.emit_tool_retry_event(
+            run_id,
+            step,
+            tc,
+            *attempts,
+            super::MAX_SCHEMA_REPAIR_ATTEMPTS,
+            "E_SCHEMA",
+            "stop",
+            Some(error_code.as_str()),
+        );
+        self.emit_schema_repair_exhausted_event(run_id, step, tc, *attempts);
+        SchemaRepairDecision::Exhausted
     }
 }
