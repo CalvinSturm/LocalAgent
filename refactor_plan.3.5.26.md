@@ -210,7 +210,7 @@ Use a two-step pattern per area:
 - [x] Phase 2 complete
 - [x] Phase 3 complete
 - [x] Phase 4 complete
-- [ ] Phase 5 complete
+- [x] Phase 5 complete
 
 ## Progress Update
 ### Workspace Status Note
@@ -234,7 +234,8 @@ Use a two-step pattern per area:
 - `src/eval/runner.rs` is 698 lines in the current workspace.
 - `src/tui/state.rs` has been reduced from 1651 lines to 146 lines.
 - `src/gate.rs` has been reduced from 1240 lines to 562 lines.
-- Remaining oversized Phase 5 target is `src/chat_ui.rs` at 1185 lines.
+- `src/chat_ui.rs` has been reduced from 1185 lines to 670 lines.
+- All runtime-heavy Phase 5 targets are now below the size target.
 
 ### Completed Extractions In `src/agent`
 - `agent_types.rs`
@@ -291,9 +292,9 @@ Use a two-step pattern per area:
 
 ## Priority Update
 ### Immediate Priority
-1. Continue Phase 5 on `src/chat_ui.rs`.
-2. Keep the same pattern: mechanical extraction first, local cleanup second, tests after every slice.
-3. After `src/chat_ui.rs`, reassess whether Phase 5 can be closed or if any follow-up cleanup should be split into a separate pass.
+1. Phase 5 runtime-heavy splits are complete.
+2. Reassess whether the remaining large test files should be split now or handled as a separate cleanup pass.
+3. Keep any further refactors mechanical and review-sized.
 
 ### Phase 4 Progress
 #### Completed Extractions In `src/agent_runtime`
@@ -338,8 +339,8 @@ Use a two-step pattern per area:
 - A future `src/tools/mod.rs` rename remains optional stylistic cleanup only if a broader module-layout pass justifies it.
 
 ### Next Priority After Phase 4
-1. Move to `src/chat_ui.rs`, the largest remaining oversized Phase 5 target at 1185 lines.
-2. After `src/chat_ui.rs`, reassess remaining test-file follow-up work separately from the runtime-heavy Phase 5 splits.
+1. Runtime-heavy Phase 5 splits are complete across `eval/runner.rs`, `tui/state.rs`, `gate.rs`, and `chat_ui.rs`.
+2. Any remaining test-file breakup should be treated as separate follow-up work rather than a blocker for the runtime refactor.
 3. Keep the same pattern: mechanical extraction first, local cleanup second, tests after every slice.
 
 ### Deferred Priority
