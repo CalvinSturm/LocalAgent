@@ -59,6 +59,7 @@ fn contains_tool_wrapper_markers(text: &str) -> bool {
 }
 const MAX_SCHEMA_REPAIR_ATTEMPTS: u32 = 2;
 const MAX_FAILED_REPEAT_PER_KEY: u32 = 3;
+const MAX_FAILED_REPEAT_PER_TOOL_NAME: u32 = 5;
 const DEFAULT_POST_WRITE_VERIFY_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_TOOL_EXEC_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG: &str =
@@ -128,6 +129,7 @@ impl<P: ModelProvider> Agent<P> {
         let mut taint_state = TaintState::new();
         let mut active_plan_step_idx: usize = 0;
         let mut blocked_runtime_completion_count: u32 = 0;
+        let mut operator_delivery_count: u32 = 0;
         let mut blocked_control_envelope_count: u32 = 0;
         let mut blocked_tool_only_count: u32 = 0;
         let mut tool_only_phase_active = prompt_requires_tool_only(user_prompt);
@@ -910,6 +912,7 @@ impl<P: ModelProvider> Agent<P> {
                     active_plan_step_idx,
                     enforce_implementation_integrity_guard,
                     blocked_runtime_completion_count.saturating_add(1),
+                    operator_delivery_count,
                     &mut messages,
                     observed_tool_calls.clone(),
                     &mut observed_tool_executions,
@@ -933,8 +936,10 @@ impl<P: ModelProvider> Agent<P> {
                 }
                 RuntimeCompletionAction::ContinueAgentStep {
                     blocked_runtime_completion_count: next_count,
+                    operator_delivery_count: next_op_count,
                 } => {
                     blocked_runtime_completion_count = next_count;
+                    operator_delivery_count = next_op_count;
                     continue 'agent_steps;
                 }
                 RuntimeCompletionAction::ProceedToTools {
@@ -983,6 +988,7 @@ impl<P: ModelProvider> Agent<P> {
                     step as u32,
                     tc,
                     planning_ctx.failed_repeat_count,
+                    planning_ctx.failed_repeat_name_count,
                     &planning_ctx.repeat_key,
                     started_at.clone(),
                     messages.clone(),

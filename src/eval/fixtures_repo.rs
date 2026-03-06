@@ -67,9 +67,76 @@ pub fn cli_bugfix_fixtures() -> Vec<Fixture> {
     ]
 }
 
+pub fn inspect_before_edit_fixtures() -> Vec<Fixture> {
+    vec![
+        Fixture::WriteFile {
+            path: "Cargo.toml".to_string(),
+            content:
+                "[package]\nname = \"inspect_before_edit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                    .to_string(),
+        },
+        Fixture::WriteFile {
+            path: "src/main.rs".to_string(),
+            content:
+                "mod messages;\n\nfn main() {\n    println!(\"{}\", messages::greeting());\n}\n"
+                    .to_string(),
+        },
+        Fixture::WriteFile {
+            path: "src/messages.rs".to_string(),
+            content: "pub fn greeting() -> &'static str {\n    \"helo\"\n}\n".to_string(),
+        },
+        Fixture::WriteFile {
+            path: "src/unused.rs".to_string(),
+            content: "pub const NOISE: &str = \"ignore me\";\n".to_string(),
+        },
+        Fixture::WriteFile {
+            path: "README.md".to_string(),
+            content: "# Inspect-before-edit fixture\n\nFind the real greeting definition before editing.\n"
+                .to_string(),
+        },
+    ]
+}
+
+pub fn recovery_bugfix_fixtures() -> Vec<Fixture> {
+    vec![
+        Fixture::WriteFile {
+            path: "Cargo.toml".to_string(),
+            content:
+                "[package]\nname = \"recovery_bugfix\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                    .to_string(),
+        },
+        Fixture::WriteFile {
+            path: "src/main.rs".to_string(),
+            content: "fn main() {\n    let _ = recovery_bugfix::parse_count(\"7\");\n}\n"
+                .to_string(),
+        },
+        Fixture::WriteFile {
+            path: "src/lib.rs".to_string(),
+            content: "pub mod parser;\n\npub use parser::parse_count;\n".to_string(),
+        },
+        Fixture::WriteFile {
+            path: "src/parser.rs".to_string(),
+            content: "pub fn parse_count(input: &str) -> Result<u32, String> {\n    if input.chars().all(|c| c.is_ascii_digit()) {\n        input.parse::<u32>().map_err(|e| e.to_string())\n    } else {\n        Err(\"invalid number\".to_string())\n    }\n}\n"
+                .to_string(),
+        },
+        Fixture::WriteFile {
+            path: "tests/regression.rs".to_string(),
+            content: "use recovery_bugfix::parse_count;\n\n#[test]\nfn parses_simple_count() {\n    assert_eq!(parse_count(\"12\").unwrap(), 12);\n}\n\n#[test]\nfn parses_spaced_count() {\n    assert_eq!(parse_count(\" 12 \").unwrap(), 12);\n}\n"
+                .to_string(),
+        },
+        Fixture::WriteFile {
+            path: "README.md".to_string(),
+            content: "# Recovery bugfix fixture\n\nThe parser lives in src/parser.rs.\n".to_string(),
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cli_bugfix_fixtures, workspace_refactor_fixtures};
+    use super::{
+        cli_bugfix_fixtures, inspect_before_edit_fixtures, recovery_bugfix_fixtures,
+        workspace_refactor_fixtures,
+    };
 
     #[test]
     fn workspace_fixture_is_deterministic_and_large_enough() {
@@ -85,5 +152,19 @@ mod tests {
         let f = cli_bugfix_fixtures();
         let has_tests = f.iter().any(|fx| matches!(fx, crate::eval::tasks::Fixture::WriteFile { path, content } if path == "tests/regression.rs" && content.contains("parses_spaced_count")));
         assert!(has_tests);
+    }
+
+    #[test]
+    fn inspect_before_edit_fixture_contains_messages_file() {
+        let f = inspect_before_edit_fixtures();
+        let has_target = f.iter().any(|fx| matches!(fx, crate::eval::tasks::Fixture::WriteFile { path, content } if path == "src/messages.rs" && content.contains("\"helo\"")));
+        assert!(has_target);
+    }
+
+    #[test]
+    fn recovery_bugfix_fixture_places_parser_in_nested_file() {
+        let f = recovery_bugfix_fixtures();
+        let has_parser = f.iter().any(|fx| matches!(fx, crate::eval::tasks::Fixture::WriteFile { path, content } if path == "src/parser.rs" && content.contains("parse_count")));
+        assert!(has_parser);
     }
 }

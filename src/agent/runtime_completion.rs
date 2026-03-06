@@ -27,6 +27,7 @@ pub(super) enum RuntimeCompletionAction {
     },
     ContinueAgentStep {
         blocked_runtime_completion_count: u32,
+        operator_delivery_count: u32,
     },
     ProceedToTools {
         blocked_runtime_completion_count: u32,
@@ -113,6 +114,7 @@ impl<P: ModelProvider> Agent<P> {
         active_plan_step_idx: usize,
         enforce_implementation_integrity_guard: bool,
         blocked_runtime_completion_count: u32,
+        operator_delivery_count: u32,
         messages: &mut Vec<Message>,
         observed_tool_calls: Vec<ToolCall>,
         observed_tool_executions: &mut Vec<ToolExecutionRecord>,
@@ -211,24 +213,28 @@ impl<P: ModelProvider> Agent<P> {
                 )))
             }
             RuntimeCompletionDecision::FinalizeOk => {
-                let blocked_runtime_completion_count = 0;
-                let (queue_delivered, queue_interrupted) =
-                    self.inject_turn_idle_operator_messages(&run_id, step, messages);
-                if queue_interrupted || queue_delivered {
-                    return RuntimeCompletionAction::ContinueAgentStep {
-                        blocked_runtime_completion_count,
-                    };
+                const MAX_OPERATOR_DELIVERIES_PER_STEP: u32 = 3;
+                if operator_delivery_count < MAX_OPERATOR_DELIVERIES_PER_STEP {
+                    let (queue_delivered, queue_interrupted) =
+                        self.inject_turn_idle_operator_messages(&run_id, step, messages);
+                    if queue_interrupted || queue_delivered {
+                        return RuntimeCompletionAction::ContinueAgentStep {
+                            blocked_runtime_completion_count: 0,
+                            operator_delivery_count: operator_delivery_count + 1,
+                        };
+                    }
                 }
                 let final_output =
                     self.final_output_for_completion(last_user_output_raw, assistant_content);
                 if enforce_implementation_integrity_guard {
+                    const MAX_POST_WRITE_VERIFY_PATHS: usize = 10;
                     let post_write_verify_timeout_ms =
                         self.effective_post_write_verify_timeout_ms();
                     let pending_post_write_paths =
                         crate::agent_impl_guard::pending_post_write_verification_paths(
                             observed_tool_executions,
                         );
-                    for path in pending_post_write_paths {
+                    for path in pending_post_write_paths.into_iter().take(MAX_POST_WRITE_VERIFY_PATHS) {
                         match self
                             .verify_post_write_path(
                                 &run_id,
@@ -281,10 +287,10 @@ impl<P: ModelProvider> Agent<P> {
                         enforce_implementation_integrity_guard,
                     )
                 {
-                    let saw_write_attempt = observed_tool_executions
+                    let saw_successful_write = observed_tool_executions
                         .iter()
-                        .any(|e| matches!(e.name.as_str(), "apply_patch" | "write_file"));
-                    if !saw_write_attempt
+                        .any(|e| e.ok && matches!(e.name.as_str(), "apply_patch" | "write_file"));
+                    if !saw_successful_write
                         && reason.contains("without an effective write")
                         && blocked_runtime_completion_count < 2
                     {
@@ -320,6 +326,7 @@ impl<P: ModelProvider> Agent<P> {
                         });
                         return RuntimeCompletionAction::ContinueAgentStep {
                             blocked_runtime_completion_count,
+                            operator_delivery_count,
                         };
                     }
                     self.emit_event(
@@ -396,13 +403,14 @@ impl<P: ModelProvider> Agent<P> {
         taint_state: &TaintState,
         enforce_implementation_integrity_guard: bool,
     ) -> super::agent_types::AgentOutcome {
+        const MAX_POST_WRITE_VERIFY_PATHS: usize = 10;
         let post_write_verify_timeout_ms = self.effective_post_write_verify_timeout_ms();
         let pending_post_write_paths =
             crate::agent_impl_guard::pending_post_write_verification_paths(
                 observed_tool_executions,
             );
-        let verified_paths = pending_post_write_paths.iter().cloned().collect::<Vec<_>>();
-        for path in pending_post_write_paths {
+        let verified_paths = pending_post_write_paths.iter().take(MAX_POST_WRITE_VERIFY_PATHS).cloned().collect::<Vec<_>>();
+        for path in pending_post_write_paths.into_iter().take(MAX_POST_WRITE_VERIFY_PATHS) {
             match self
                 .verify_post_write_path(&run_id, step, &path, post_write_verify_timeout_ms)
                 .await

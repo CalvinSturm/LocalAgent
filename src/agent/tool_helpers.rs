@@ -452,6 +452,7 @@ impl<P: ModelProvider> Agent<P> {
         step: u32,
         tc: &ToolCall,
         failed_repeat_count: u32,
+        failed_repeat_name_count: u32,
         repeat_key: &str,
         started_at: String,
         messages: Vec<Message>,
@@ -466,7 +467,9 @@ impl<P: ModelProvider> Agent<P> {
         total_token_usage: &crate::types::TokenUsage,
         taint_state: &crate::taint::TaintState,
     ) -> FailedRepeatGuardDecision {
-        if failed_repeat_count < super::MAX_FAILED_REPEAT_PER_KEY {
+        if failed_repeat_count < super::MAX_FAILED_REPEAT_PER_KEY
+            && failed_repeat_name_count < super::MAX_FAILED_REPEAT_PER_TOOL_NAME
+        {
             return FailedRepeatGuardDecision::Continue;
         }
         let reason = format!(
@@ -629,6 +632,7 @@ impl<P: ModelProvider> Agent<P> {
             name: "read_file".to_string(),
             path: Some(path.to_string()),
             ok: true,
+            changed: None,
         })
     }
 
@@ -687,6 +691,9 @@ impl<P: ModelProvider> Agent<P> {
                 .entry(repeat_key.to_string())
                 .or_insert(0);
             *n = n.saturating_add(1);
+            let name_key = format!("name::{}", tc.name);
+            let nn = failed_repeat_counts.entry(name_key).or_insert(0);
+            *nn = nn.saturating_add(1);
             messages.push(crate::agent_tool_exec::schema_repair_instruction_message(
                 tc,
                 error_code.as_str(),
@@ -769,6 +776,9 @@ impl<P: ModelProvider> Agent<P> {
                 .entry(repeat_key.to_string())
                 .or_insert(0);
             *n = n.saturating_add(1);
+            let name_key = format!("name::{}", tc.name);
+            let nn = failed_repeat_counts.entry(name_key).or_insert(0);
+            *nn = nn.saturating_add(1);
             messages.push(crate::agent_tool_exec::schema_repair_instruction_message(
                 tc,
                 "invalid patch format",
@@ -1006,9 +1016,15 @@ impl<P: ModelProvider> Agent<P> {
     ) -> ToolRetryLoopOutcome {
         let mut tool_msg = initial_tool_msg;
         let mut tool_retry_count = 0u32;
+        let mut total_retry_attempts = 0u32;
+        const MAX_TOTAL_RETRY_ATTEMPTS: u32 = 4;
         loop {
             let current_content = tool_msg.content.clone().unwrap_or_default();
             if !tool_result_has_error(&current_content) {
+                break;
+            }
+            total_retry_attempts = total_retry_attempts.saturating_add(1);
+            if total_retry_attempts > MAX_TOTAL_RETRY_ATTEMPTS {
                 break;
             }
             match self.handle_invalid_apply_patch_format(
@@ -1194,10 +1210,16 @@ impl<P: ModelProvider> Agent<P> {
         let content = tool_msg.content.clone().unwrap_or_default();
         let final_ok = !tool_result_has_error(&content);
         let final_error_code = crate::agent_tool_exec::tool_result_error_code(&content);
+        let changed_flag = if matches!(tc.name.as_str(), "apply_patch" | "write_file") {
+            crate::agent_tool_exec::tool_result_changed_flag(&content)
+        } else {
+            None
+        };
         observed_tool_executions.push(crate::agent_impl_guard::ToolExecutionRecord {
             name: tc.name.clone(),
             path: normalized_tool_path_from_args(tc),
             ok: final_ok,
+            changed: changed_flag,
         });
         let final_failure_class = if tool_result_has_error(&content) {
             Some(crate::agent_tool_exec::classify_tool_failure(

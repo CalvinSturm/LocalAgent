@@ -89,7 +89,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         &mut effective_args,
         runtime_flags::parse_capability_explicit_flags(),
     );
-    let args = effective_args;
+    let mut args = effective_args;
     let workdir = std::fs::canonicalize(&args.workdir)
         .with_context(|| format!("failed to resolve workdir: {}", args.workdir.display()))?;
     let exec_target = build_exec_target(&args)?;
@@ -172,6 +172,10 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
     .await?;
     if let Some(note) = &prep.qualification_fallback_note {
         eprintln!("WARN: {note}");
+    }
+    if prep.write_disabled_by_qualification {
+        args.allow_write = false;
+        gate_ctx.allow_write = false;
     }
 
     let mcp_pin_enforcement = format!("{:?}", args.mcp_pin_enforcement).to_lowercase();

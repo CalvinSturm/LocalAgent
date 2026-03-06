@@ -5,6 +5,9 @@ pub(crate) struct ToolExecutionRecord {
     pub name: String,
     pub path: Option<String>,
     pub ok: bool,
+    /// For write tools: whether the tool actually changed the file.
+    /// `None` means unknown (assume changed if ok). `Some(false)` means no-op.
+    pub changed: Option<bool>,
 }
 
 #[cfg(test)]
@@ -23,6 +26,7 @@ pub(crate) fn implementation_integrity_violation(
                 .and_then(|v| v.as_str())
                 .map(normalize_tool_path),
             ok: true,
+            changed: None,
         })
         .collect::<Vec<_>>();
     implementation_integrity_violation_with_tool_executions(
@@ -63,7 +67,10 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
             continue;
         }
         if matches!(execution.name.as_str(), "apply_patch" | "write_file") {
-            saw_effective_write = true;
+            let actually_changed = execution.changed.unwrap_or(true);
+            if actually_changed {
+                saw_effective_write = true;
+            }
         }
         match execution.name.as_str() {
             "read_file" => {

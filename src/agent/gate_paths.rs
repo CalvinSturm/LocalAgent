@@ -177,6 +177,9 @@ impl<P: ModelProvider> Agent<P> {
                 .entry(repeat_key.to_string())
                 .or_insert(0);
             *n = n.saturating_add(1);
+            let name_key = format!("name::{}", tc.name);
+            let nn = failed_repeat_counts.entry(name_key).or_insert(0);
+            *nn = nn.saturating_add(1);
         }
         self.emit_event(
             run_id,

@@ -175,7 +175,30 @@ impl Default for NoGate {
 }
 
 impl ToolGate for NoGate {
-    fn decide(&mut self, _ctx: &GateContext, _call: &ToolCall) -> GateDecision {
+    fn decide(&mut self, ctx: &GateContext, call: &ToolCall) -> GateDecision {
+        if call.name == "shell" && !ctx.allow_shell && !ctx.unsafe_bypass_allow_flags {
+            return GateDecision::Deny {
+                reason: "shell requires --allow-shell".to_string(),
+                approval_key: None,
+                source: Some("hard_gate".to_string()),
+                taint_enforced: false,
+                escalated: false,
+                escalation_reason: None,
+            };
+        }
+        if (call.name == "write_file" || call.name == "apply_patch")
+            && !ctx.allow_write
+            && !ctx.unsafe_bypass_allow_flags
+        {
+            return GateDecision::Deny {
+                reason: "writes require --allow-write".to_string(),
+                approval_key: None,
+                source: Some("hard_gate".to_string()),
+                taint_enforced: false,
+                escalated: false,
+                escalation_reason: None,
+            };
+        }
         GateDecision::Allow {
             approval_id: None,
             approval_key: None,

@@ -1,7 +1,10 @@
 use clap::ValueEnum;
 
 use crate::eval::assert::Assertion;
-use crate::eval::fixtures_repo::{cli_bugfix_fixtures, workspace_refactor_fixtures};
+use crate::eval::fixtures_repo::{
+    cli_bugfix_fixtures, inspect_before_edit_fixtures, recovery_bugfix_fixtures,
+    workspace_refactor_fixtures,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EvalPack {
@@ -79,7 +82,8 @@ fn coding_tasks() -> Vec<EvalTask> {
     vec![
         EvalTask {
             id: "C1".to_string(),
-            prompt: "Create a new file at src/hello.txt containing exactly hello followed by a newline. Use the write_file tool. Then respond with a brief confirmation.".to_string(),
+            prompt: "Create `src/hello.txt` containing exactly `hello` followed by a newline. Use the write_file tool. Then reply with exactly `done: src/hello.txt`."
+                .to_string(),
             required_tools: vec!["write_file".to_string()],
             assertions: vec![
                 Assertion::FileExists {
@@ -91,6 +95,9 @@ fn coding_tasks() -> Vec<EvalTask> {
                 },
                 Assertion::ToolUsed {
                     name: "write_file".to_string(),
+                },
+                Assertion::OutputContains {
+                    substring: "done: src/hello.txt".to_string(),
                 },
             ],
             fixtures: vec![Fixture::CreateDir {
@@ -108,7 +115,8 @@ fn coding_tasks() -> Vec<EvalTask> {
         },
         EvalTask {
             id: "C2".to_string(),
-            prompt: "Edit main.rs by using apply_patch so that fn answer() returns 2 instead of 1. Do not rewrite the whole file with write_file. Then confirm done.".to_string(),
+            prompt: "Edit `main.rs` using apply_patch so that `fn answer() -> i32` returns `2` instead of `1`. Do not use write_file. Then reply with exactly `patched answer()`."
+                .to_string(),
             required_tools: vec!["apply_patch".to_string()],
             assertions: vec![
                 Assertion::FileContains {
@@ -117,6 +125,12 @@ fn coding_tasks() -> Vec<EvalTask> {
                 },
                 Assertion::ToolUsed {
                     name: "apply_patch".to_string(),
+                },
+                Assertion::ToolNotUsed {
+                    pattern: "write_file".to_string(),
+                },
+                Assertion::OutputContains {
+                    substring: "patched answer()".to_string(),
                 },
             ],
             fixtures: vec![Fixture::WriteFile {
@@ -135,15 +149,30 @@ fn coding_tasks() -> Vec<EvalTask> {
         },
         EvalTask {
             id: "C3".to_string(),
-            prompt: "In this crate, fix the parsing bug so all tests pass, then run cargo test and summarize the result.".to_string(),
-            required_tools: vec!["write_file".to_string(), "shell".to_string()],
+            prompt: "Inspect this crate, fix the parser bug causing spaced numbers to fail, run `cargo test`, and reply with exactly `tests ok` only if the tests pass."
+                .to_string(),
+            required_tools: vec![
+                "read_file".to_string(),
+                "apply_patch".to_string(),
+                "shell".to_string(),
+            ],
             assertions: vec![
-                Assertion::OutputContains {
-                    substring: "test".to_string(),
+                Assertion::ToolUsedGlob {
+                    pattern: "read_file".to_string(),
+                },
+                Assertion::ToolUsed {
+                    name: "apply_patch".to_string(),
                 },
                 Assertion::ToolArgContains {
                     tool: "shell".to_string(),
-                    substring: "cargo".to_string(),
+                    substring: "cargo test".to_string(),
+                },
+                Assertion::FileContains {
+                    path: "src/lib.rs".to_string(),
+                    substring: "trim()".to_string(),
+                },
+                Assertion::OutputContains {
+                    substring: "tests ok".to_string(),
                 },
             ],
             fixtures: cli_bugfix_fixtures(),
@@ -164,28 +193,69 @@ fn coding_tasks() -> Vec<EvalTask> {
         },
         EvalTask {
             id: "C4".to_string(),
-            prompt: "You are in a Rust workspace fixture. Fix the failing test, refactor libcore::combine signature from two i32 args to one tuple argument across both crates, and update README with a short line starting with 'Refactor note:'. Prefer apply_patch for edits. After edits, run cargo test and report success."
+            prompt: "Find where the greeting string is defined, change `helo` to `hello`, and reply with exactly `edited: src/messages.rs`. Inspect the code before editing."
                 .to_string(),
             required_tools: vec![
+                "list_dir".to_string(),
+                "read_file".to_string(),
                 "apply_patch".to_string(),
-                "write_file".to_string(),
+            ],
+            assertions: vec![
+                Assertion::ToolUsedGlob {
+                    pattern: "read_file".to_string(),
+                },
+                Assertion::ToolUsed {
+                    name: "apply_patch".to_string(),
+                },
+                Assertion::FileContains {
+                    path: "src/messages.rs".to_string(),
+                    substring: "\"hello\"".to_string(),
+                },
+                Assertion::OutputContains {
+                    substring: "edited: src/messages.rs".to_string(),
+                },
+            ],
+            fixtures: inspect_before_edit_fixtures(),
+            needs_write: true,
+            needs_playwright: false,
+            optional: false,
+            required_capabilities: RequiredCapabilities {
+                needs_write_tools: true,
+                needs_shell: false,
+                needs_mcp: false,
+            },
+            verifier: None,
+        },
+        EvalTask {
+            id: "C5".to_string(),
+            prompt: "Update the parser so it trims whitespace before parsing. If a path guess or command fails, inspect the repo and recover. Run `cargo test` and reply with exactly `verified fix` only if tests pass."
+                .to_string(),
+            required_tools: vec![
+                "list_dir".to_string(),
+                "read_file".to_string(),
+                "apply_patch".to_string(),
                 "shell".to_string(),
             ],
             assertions: vec![
-                Assertion::FileContains {
-                    path: "crates/libcore/src/lib.rs".to_string(),
-                    substring: "combine(pair: (i32, i32))".to_string(),
+                Assertion::ToolUsedGlob {
+                    pattern: "read_file".to_string(),
+                },
+                Assertion::ToolUsed {
+                    name: "apply_patch".to_string(),
+                },
+                Assertion::ToolArgContains {
+                    tool: "shell".to_string(),
+                    substring: "cargo test".to_string(),
                 },
                 Assertion::FileContains {
-                    path: "crates/app/src/main.rs".to_string(),
-                    substring: "combine((10, 5))".to_string(),
+                    path: "src/parser.rs".to_string(),
+                    substring: "input.trim()".to_string(),
                 },
-                Assertion::FileContains {
-                    path: "README.md".to_string(),
-                    substring: "Refactor note:".to_string(),
+                Assertion::OutputContains {
+                    substring: "verified fix".to_string(),
                 },
             ],
-            fixtures: workspace_refactor_fixtures(),
+            fixtures: recovery_bugfix_fixtures(),
             needs_write: true,
             needs_playwright: false,
             optional: false,
@@ -202,10 +272,14 @@ fn coding_tasks() -> Vec<EvalTask> {
             }),
         },
         EvalTask {
-            id: "C5".to_string(),
-            prompt: "Fix the parsing bug in this CLI fixture and add one additional regression test named parses_spaced_count_extra in tests/regression.rs. Keep the behavior deterministic and then summarize what changed."
+            id: "CS1".to_string(),
+            prompt: "Fix the parsing bug in this CLI fixture and add one additional regression test named `parses_spaced_count_extra` in `tests/regression.rs`. Keep the behavior deterministic, run `cargo test`, and summarize what changed."
                 .to_string(),
-            required_tools: vec!["write_file".to_string(), "apply_patch".to_string()],
+            required_tools: vec![
+                "read_file".to_string(),
+                "apply_patch".to_string(),
+                "shell".to_string(),
+            ],
             assertions: vec![
                 Assertion::FileContains {
                     path: "tests/regression.rs".to_string(),
@@ -215,11 +289,54 @@ fn coding_tasks() -> Vec<EvalTask> {
                     path: "src/lib.rs".to_string(),
                     substring: "trim()".to_string(),
                 },
+                Assertion::ToolArgContains {
+                    tool: "shell".to_string(),
+                    substring: "cargo test".to_string(),
+                },
             ],
             fixtures: cli_bugfix_fixtures(),
             needs_write: true,
             needs_playwright: false,
-            optional: false,
+            optional: true,
+            required_capabilities: RequiredCapabilities {
+                needs_write_tools: true,
+                needs_shell: true,
+                needs_mcp: false,
+            },
+            verifier: Some(VerifierSpec {
+                command: "cargo".to_string(),
+                args: vec!["test".to_string()],
+                cwd: ".".to_string(),
+                summary_success_contains: "test result: ok".to_string(),
+            }),
+        },
+        EvalTask {
+            id: "CS2".to_string(),
+            prompt: "In this Rust workspace fixture, refactor `libcore::combine` from two `i32` arguments to one tuple argument across both crates, update call sites, run `cargo test`, and report success."
+                .to_string(),
+            required_tools: vec![
+                "read_file".to_string(),
+                "apply_patch".to_string(),
+                "shell".to_string(),
+            ],
+            assertions: vec![
+                Assertion::FileContains {
+                    path: "crates/libcore/src/lib.rs".to_string(),
+                    substring: "combine(pair: (i32, i32))".to_string(),
+                },
+                Assertion::FileContains {
+                    path: "crates/app/src/main.rs".to_string(),
+                    substring: "combine((10, 5))".to_string(),
+                },
+                Assertion::ToolArgContains {
+                    tool: "shell".to_string(),
+                    substring: "cargo test".to_string(),
+                },
+            ],
+            fixtures: workspace_refactor_fixtures(),
+            needs_write: true,
+            needs_playwright: false,
+            optional: true,
             required_capabilities: RequiredCapabilities {
                 needs_write_tools: true,
                 needs_shell: true,
@@ -406,15 +523,17 @@ mod tests {
         assert!(ids.contains(&"C3".to_string()));
         assert!(ids.contains(&"C4".to_string()));
         assert!(ids.contains(&"C5".to_string()));
+        assert!(ids.contains(&"CS1".to_string()));
+        assert!(ids.contains(&"CS2".to_string()));
     }
 
     #[test]
-    fn c4_has_required_flags_metadata() {
-        let c4 = tasks_for_pack(EvalPack::Coding)
+    fn cs2_has_required_flags_metadata() {
+        let cs2 = tasks_for_pack(EvalPack::Coding)
             .into_iter()
-            .find(|t| t.id == "C4")
-            .expect("c4");
-        let flags = c4.required_flags();
+            .find(|t| t.id == "CS2")
+            .expect("cs2");
+        let flags = cs2.required_flags();
         assert!(flags.contains(&"--enable-write-tools".to_string()));
         assert!(flags.contains(&"--allow-write".to_string()));
         assert!(flags.contains(&"--allow-shell".to_string()));

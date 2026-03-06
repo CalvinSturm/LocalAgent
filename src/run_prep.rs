@@ -21,6 +21,9 @@ pub(crate) struct PreparedTools {
     pub mcp_startup_live_docs_hash_hex: Option<String>,
     pub mcp_snapshot_pinned: bool,
     pub qualification_fallback_note: Option<String>,
+    /// When true, orchestrator qualification failed and write tools were removed.
+    /// Callers must disable `allow_write` on ToolRuntime and GateContext.
+    pub write_disabled_by_qualification: bool,
 }
 
 pub(crate) struct PrepareToolsInput<'a, P: ModelProvider> {
@@ -135,6 +138,8 @@ pub(crate) async fn prepare_tools_and_qualification<P: ModelProvider>(
         _ => false,
     };
 
+    let write_disabled_by_qualification = qualification_fallback_note.is_some();
+
     Ok(PreparedTools {
         all_tools,
         mcp_tool_snapshot,
@@ -145,5 +150,6 @@ pub(crate) async fn prepare_tools_and_qualification<P: ModelProvider>(
         mcp_startup_live_docs_hash_hex,
         mcp_snapshot_pinned,
         qualification_fallback_note,
+        write_disabled_by_qualification,
     })
 }

@@ -14,6 +14,7 @@ pub(super) struct ToolCallPlanningContext {
     pub(super) plan_step_id: String,
     pub(super) repeat_key: String,
     pub(super) failed_repeat_count: u32,
+    pub(super) failed_repeat_name_count: u32,
 }
 
 impl<P: ModelProvider> Agent<P> {
@@ -149,12 +150,16 @@ impl<P: ModelProvider> Agent<P> {
         let plan_step_id = self.current_plan_step_id_or_unknown(active_plan_step_idx);
         let repeat_key = crate::agent::tool_helpers::failed_repeat_key(tc);
         let failed_repeat_count = failed_repeat_counts.get(&repeat_key).copied().unwrap_or(0);
+        let name_repeat_key = format!("name::{}", tc.name);
+        let failed_repeat_name_count =
+            failed_repeat_counts.get(&name_repeat_key).copied().unwrap_or(0);
         ToolCallPlanningContext {
             plan_allowed_tools,
             plan_tool_allowed,
             plan_step_id,
             repeat_key,
             failed_repeat_count,
+            failed_repeat_name_count,
         }
     }
 
