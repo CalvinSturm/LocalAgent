@@ -249,12 +249,15 @@ Use a two-step pattern per area:
 - `src/eval/runner_output.rs`
 - `src/eval/runner_rows.rs`
 - `src/eval/runner_runtime.rs`
+- `src/eval/runner_artifacts.rs`
 
 ### Current Eval State
 - `src/eval/runner.rs` now acts as the eval orchestration facade and local test host.
 - Row-building and skip/capability helpers live in `src/eval/runner_rows.rs`.
-- Single-run execution, verifier execution, gate/provider wiring, and eval run artifact persistence live in `src/eval/runner_runtime.rs`.
+- Single-run execution, verifier execution, and gate/provider wiring live in `src/eval/runner_runtime.rs`.
+- Eval artifact persistence and synthetic error artifact writing live in `src/eval/runner_artifacts.rs`.
 - `src/eval/runner.rs` is reduced to 752 lines, below the phase target.
+- The eval runner slice is now fully under the size target across `runner.rs`, `runner_rows.rs`, `runner_runtime.rs`, and `runner_artifacts.rs`.
 
 ### Validation Status
 - `cargo fmt --check` passes.
@@ -263,7 +266,7 @@ Use a two-step pattern per area:
 
 ### Notes
 - The `clippy` cleanup required follow-up fixes in extracted `src/agent/*` helper modules introduced earlier in the refactor, but no user-facing behavior changes were made.
-- The remaining optional eval follow-up is to split artifact persistence from `runner_runtime.rs` only if a smaller file boundary is still desired; it is no longer required for the phase target.
+- The optional eval artifact split is complete; no additional eval runner breakup is currently required for the phase target.
 
 ### Phase 2 Outcome
 - `src/agent.rs` is now below the phase target of 1200 lines.
