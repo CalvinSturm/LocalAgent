@@ -59,6 +59,12 @@ pub(super) enum SchemaRepairDecision {
     Exhausted,
 }
 
+pub(super) enum InvalidPatchFormatDecision {
+    Continue,
+    RestartAgentStep,
+    Finalize(super::agent_types::AgentOutcome),
+}
+
 pub(super) enum RetryLoopDecision {
     Break,
     ContinueWithToolMsg(Message, u32),
@@ -425,6 +431,128 @@ impl<P: ModelProvider> Agent<P> {
         );
         self.emit_schema_repair_exhausted_event(run_id, step, tc, *attempts);
         SchemaRepairDecision::Exhausted
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn handle_invalid_apply_patch_format(
+        &mut self,
+        run_id: String,
+        step: u32,
+        tc: &ToolCall,
+        tool_retry_count: u32,
+        current_content: &str,
+        tool_msg: Message,
+        repeat_key: &str,
+        plan_tool_allowed: bool,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        messages: &mut Vec<Message>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        started_at: String,
+        observed_tool_calls: Vec<ToolCall>,
+        observed_tool_decisions: Vec<super::ToolDecisionRecord>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &crate::types::TokenUsage,
+        taint_state: &crate::taint::TaintState,
+    ) -> InvalidPatchFormatDecision {
+        if !crate::agent_tool_exec::is_apply_patch_invalid_format_error(tc, current_content) {
+            return InvalidPatchFormatDecision::Continue;
+        }
+
+        let attempts = invalid_patch_format_attempts
+            .entry(repeat_key.to_string())
+            .and_modify(|n| *n = n.saturating_add(1))
+            .or_insert(1);
+        let invalid_patch_attempt = *attempts;
+
+        if invalid_patch_attempt < 2 && plan_tool_allowed {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::ToolExecEnd,
+                serde_json::json!({
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "ok": false,
+                    "truncated": crate::agent_tool_exec::infer_truncated_flag(current_content),
+                    "retry_count": tool_retry_count,
+                    "failure_class": "E_SCHEMA",
+                    "error_code": "tool_args_invalid",
+                    "attempt": invalid_patch_attempt
+                }),
+            );
+            messages.push(tool_msg);
+            if self.inject_post_tool_operator_messages(&run_id, step, messages) {
+                return InvalidPatchFormatDecision::RestartAgentStep;
+            }
+            let n = failed_repeat_counts
+                .entry(repeat_key.to_string())
+                .or_insert(0);
+            *n = n.saturating_add(1);
+            messages.push(crate::agent_tool_exec::schema_repair_instruction_message(
+                tc,
+                "invalid patch format",
+            ));
+            return InvalidPatchFormatDecision::RestartAgentStep;
+        }
+
+        if invalid_patch_attempt >= 2 {
+            let reason =
+                "MODEL_TOOL_PROTOCOL_VIOLATION: repeated invalid patch format for apply_patch"
+                    .to_string();
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::ToolExecEnd,
+                serde_json::json!({
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "ok": false,
+                    "truncated": crate::agent_tool_exec::infer_truncated_flag(current_content),
+                    "retry_count": tool_retry_count,
+                    "failure_class": "E_PROTOCOL_PATCH_FORMAT",
+                    "attempt": invalid_patch_attempt
+                }),
+            );
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::Error,
+                serde_json::json!({
+                    "error": reason,
+                    "source": "tool_protocol_guard",
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "failure_class": "E_PROTOCOL_PATCH_FORMAT",
+                    "attempt": invalid_patch_attempt
+                }),
+            );
+            return InvalidPatchFormatDecision::Finalize(
+                self.finalize_planner_error_with_output_with_end(
+                    step,
+                    run_id,
+                    started_at,
+                    reason,
+                    messages.clone(),
+                    observed_tool_calls,
+                    observed_tool_decisions,
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ),
+            );
+        }
+
+        InvalidPatchFormatDecision::Continue
     }
 
     #[allow(clippy::too_many_arguments)]

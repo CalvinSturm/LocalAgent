@@ -9,7 +9,7 @@ use crate::agent_impl_guard::{
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 use crate::agent_tool_exec::{
-    classify_tool_failure, infer_truncated_flag, is_apply_patch_invalid_format_error,
+    classify_tool_failure,
     make_invalid_args_tool_message, schema_repair_instruction_message, tool_result_error_code,
     tool_result_has_error,
 };
@@ -63,8 +63,8 @@ use run_events::apply_usage_totals;
 use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
 use tool_helpers::{
     failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
-    is_repairable_error_code, normalized_tool_path_from_args, RetryLoopDecision,
-    SchemaRepairDecision,
+    is_repairable_error_code, normalized_tool_path_from_args, InvalidPatchFormatDecision,
+    RetryLoopDecision, SchemaRepairDecision,
 };
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
@@ -1912,92 +1912,36 @@ impl<P: ModelProvider> Agent<P> {
                                 if !tool_result_has_error(&current_content) {
                                     break;
                                 }
-                                if is_apply_patch_invalid_format_error(tc, &current_content) {
-                                    let attempts = invalid_patch_format_attempts
-                                        .entry(repeat_key.clone())
-                                        .and_modify(|n| *n = n.saturating_add(1))
-                                        .or_insert(1);
-                                    let invalid_patch_attempt = *attempts;
-                                    if invalid_patch_attempt < 2 && plan_tool_allowed {
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::ToolExecEnd,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "ok": false,
-                                                "truncated": infer_truncated_flag(&current_content),
-                                                "retry_count": tool_retry_count,
-                                                "failure_class": "E_SCHEMA",
-                                                "error_code": "tool_args_invalid",
-                                                "attempt": invalid_patch_attempt
-                                            }),
-                                        );
-                                        messages.push(tool_msg);
-                                        if self.inject_post_tool_operator_messages(
-                                            &run_id,
-                                            step as u32,
-                                            &mut messages,
-                                        ) {
-                                            continue 'agent_steps;
-                                        }
-                                        let n = failed_repeat_counts
-                                            .entry(repeat_key.clone())
-                                            .or_insert(0);
-                                        *n = n.saturating_add(1);
-                                        messages.push(schema_repair_instruction_message(
-                                            tc,
-                                            "invalid patch format",
-                                        ));
+                                match self.handle_invalid_apply_patch_format(
+                                    run_id.clone(),
+                                    step as u32,
+                                    tc,
+                                    tool_retry_count,
+                                    &current_content,
+                                    tool_msg.clone(),
+                                    &repeat_key,
+                                    plan_tool_allowed,
+                                    &mut invalid_patch_format_attempts,
+                                    &mut messages,
+                                    &mut failed_repeat_counts,
+                                    started_at.clone(),
+                                    observed_tool_calls.clone(),
+                                    observed_tool_decisions.clone(),
+                                    request_context_chars,
+                                    last_compaction_report.clone(),
+                                    hook_invocations.clone(),
+                                    provider_retry_count,
+                                    provider_error_count,
+                                    saw_token_usage,
+                                    &total_token_usage,
+                                    &taint_state,
+                                ) {
+                                    InvalidPatchFormatDecision::Continue => {}
+                                    InvalidPatchFormatDecision::RestartAgentStep => {
                                         continue 'agent_steps;
                                     }
-                                    if invalid_patch_attempt >= 2 {
-                                        let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: repeated invalid patch format for apply_patch".to_string();
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::ToolExecEnd,
-                                            serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "ok": false,
-                                                "truncated": infer_truncated_flag(&current_content),
-                                                "retry_count": tool_retry_count,
-                                                "failure_class": "E_PROTOCOL_PATCH_FORMAT",
-                                                "attempt": invalid_patch_attempt
-                                            }),
-                                        );
-                                        self.emit_event(
-                                            &run_id,
-                                            step as u32,
-                                            EventKind::Error,
-                                            serde_json::json!({
-                                                "error": reason,
-                                                "source": "tool_protocol_guard",
-                                                "tool_call_id": tc.id,
-                                                "name": tc.name,
-                                                "failure_class": "E_PROTOCOL_PATCH_FORMAT",
-                                                "attempt": invalid_patch_attempt
-                                            }),
-                                        );
-                                        return self.finalize_planner_error_with_output_with_end(
-                                            step as u32,
-                                            run_id,
-                                            started_at,
-                                            reason,
-                                            messages,
-                                            observed_tool_calls,
-                                            observed_tool_decisions,
-                                            request_context_chars,
-                                            last_compaction_report,
-                                            hook_invocations,
-                                            provider_retry_count,
-                                            provider_error_count,
-                                            saw_token_usage,
-                                            &total_token_usage,
-                                            &taint_state,
-                                        );
+                                    InvalidPatchFormatDecision::Finalize(outcome) => {
+                                        return outcome;
                                     }
                                 }
                                 if let Some(error_code) = tool_result_error_code(&current_content) {
