@@ -540,10 +540,9 @@ No explicit global operator-approval gating for source-code edits was found insi
 
 ## Risks and Tech Debt (Evidence-Based)
 1. Monolithic files increase change risk and review complexity.
-- `agent_runtime.rs`, `tools.rs`, and `chat_tui_runtime.rs` are very large orchestration files.
-- * `Evidence: src/agent_runtime.rs#run_agent_with_ui`
-- * `Evidence: src/tools.rs#execute_tool`
-- * `Evidence: src/chat_tui_runtime.rs#run_chat_tui`
+- The runtime-heavy files were split, but large test files still concentrate review risk and make targeted changes slower.
+- * `Evidence: src/agent_tests.rs`
+- * `Evidence: tests/mcp_impl_regression.rs`
 
 2. Behavior duplication between eval/runtime gate-building paths.
 - Similar trust gate construction exists in runtime and eval modules.
@@ -587,10 +586,13 @@ Curated file index:
 - `src/main.rs`: process entrypoint and tokio runtime bootstrap.
 - `src/cli_args.rs`: clap command/flag schema.
 - `src/cli_dispatch.rs`: top-level command routing.
-- `src/agent_runtime.rs`: run orchestration and artifact finalization.
+- `src/agent_runtime.rs`: run orchestration facade and artifact finalization entrypoints.
+- `src/agent_runtime/*`: setup/launch/planner/finalize helper modules.
 - `src/agent.rs`: core agent loop and tool-call lifecycle.
-- `src/tools.rs`: built-in tool definitions/validation/execution.
-- `src/gate.rs`: trust/no-gate decision implementations.
+- `src/tools.rs`: built-in tools facade and `execute_tool` dispatcher.
+- `src/tools/*`: tool catalog/schema/envelope/exec helper modules.
+- `src/gate.rs`: trust/no-gate decision implementations and public approval-key surface.
+- `src/gate/helpers.rs`: internal approval-key and exec-target helper functions.
 - `src/trust/policy.rs`: policy parse/eval/includes/allowlists.
 - `src/mcp/registry.rs`: MCP config load, tool import, tool calls.
 - `src/store.rs` + `src/store/io.rs`: state path resolution and run record IO.
@@ -598,6 +600,8 @@ Curated file index:
 - `src/cli_dispatch_checks.rs`: check run orchestration.
 - `src/tasks_graph_runtime.rs`: DAG task run executor.
 - `src/chat_tui_runtime.rs`: interactive TUI chat runtime.
+- `src/chat_ui.rs`: chat screen rendering facade.
+- `src/chat_ui/overlay.rs`: learn overlay types and overlay rendering.
 
 Key symbol index:
 - `main` in `src/main.rs`

@@ -2,7 +2,7 @@
 
 Status: Active  
 Owner: LocalAgent maintainers  
-Last reviewed: 2026-02-27
+Last reviewed: 2026-03-06
 
 This document maps LocalAgent runtime flow after the CLI/runtime modularization refactor.
 
@@ -62,8 +62,10 @@ Use it to answer:
 ### Runtime orchestration
 
 - `src/agent_runtime.rs`
-  - Main runtime orchestration for provider + tools + session + run artifact writing
+  - Main runtime orchestration facade for provider + tools + session + run artifact writing
   - Integrates gate, hooks, MCP registry, TUI/event sinks, planner/worker paths
+- `src/agent_runtime/*`
+  - Focused runtime helpers for setup, launch, planner phase, guard logic, and finalize paths
 - `src/agent.rs`
   - Core agent loop behavior, tool-call execution lifecycle, protocol enforcement, retries
 - `src/chat_runtime.rs`
@@ -113,7 +115,9 @@ Use it to answer:
 ### Trust / policy / approvals / audit
 
 - `src/gate.rs`
-  - `ToolGate` trait, `NoGate`, `TrustGate`, gate decisions, approval keying
+  - `ToolGate` trait, `NoGate`, `TrustGate`, gate decisions, and public approval-key helpers
+- `src/gate/helpers.rs`
+  - Approval-key hashing, workdir normalization, and exec-target argument shaping
 - `src/trust/policy.rs`
   - Policy parsing/evaluation/includes/MCP allowlist logic
 - `src/trust/approvals.rs`
@@ -126,7 +130,9 @@ Use it to answer:
 ### Tools / MCP
 
 - `src/tools.rs`
-  - Built-in tool schemas, exposure, validation, execution
+  - Thin built-in tools facade and top-level `execute_tool` dispatcher
+- `src/tools/*`
+  - Tool catalog, schema handling, envelopes, exec support, and per-side-effect execution helpers
 - `src/mcp/registry.rs`
   - MCP config loading, client startup, tool import, tool invocation, catalog hashing
 - `src/mcp/client.rs`
@@ -151,7 +157,9 @@ Use it to answer:
 - `src/tui/*`
   - TUI state, tail parsing, rendering/event sink integration
 - `src/chat_ui.rs`
-  - Chat screen rendering composition
+  - Chat screen rendering facade and side-pane composition
+- `src/chat_ui/overlay.rs`
+  - Learn overlay rendering model, overlay tabs, and overlay-specific rendering helpers
 - `src/chat_view_utils.rs`
   - Shared banner/header/footer view helpers (including version/cwd display)
 
@@ -199,7 +207,7 @@ Use it to answer:
 1. Runtime builds optional UI event sink (`src/runtime_wiring.rs`)
 2. Events stream into TUI state (`src/tui/*`)
 3. Chat TUI runtime loop (`src/chat_tui_runtime.rs`) drives input + refresh
-4. Renderers (`src/chat_ui.rs`, `src/chat_view_utils.rs`) draw panels/footer/banner/status
+4. Renderers (`src/chat_ui.rs`, `src/chat_ui/overlay.rs`, `src/chat_view_utils.rs`) draw panels/footer/banner/status
 
 ## Where To Change X
 
@@ -209,18 +217,18 @@ Use it to answer:
 | Change startup setup screen UX / keybindings / warnings | `src/startup_bootstrap.rs` |
 | Change provider auto-detection behavior/messages | `src/startup_detect.rs` |
 | Change provider resolution/runtime creation | `src/provider_runtime.rs`, `src/providers/*` |
-| Change built-in tool schemas or execution | `src/tools.rs` |
+| Change built-in tool schemas or execution | `src/tools.rs`, `src/tools/*` |
 | Change MCP server loading/tool import/call routing | `src/mcp/registry.rs`, `src/mcp/client.rs` |
-| Change trust decisions (allow/deny/approval) | `src/gate.rs`, `src/trust/policy.rs` |
+| Change trust decisions (allow/deny/approval) | `src/gate.rs`, `src/gate/helpers.rs`, `src/trust/policy.rs` |
 | Change approval storage/TTL/max-uses behavior | `src/trust/approvals.rs` |
 | Change audit logging | `src/trust/audit.rs` |
 | Change event streaming/log sinks | `src/runtime_wiring.rs`, `src/events.rs`, `src/runtime_events.rs` |
 | Change run artifact schema/layout | `src/store.rs` |
 | Change config fingerprint contents | `src/runtime_paths.rs`, `src/store.rs` |
 | Change orchestrator qualification/read-only fallback | `src/qualification.rs`, `src/run_prep.rs` |
-| Change planner/worker mode orchestration | `src/agent_runtime.rs`, `src/planner_runtime.rs`, `src/agent.rs` |
+| Change planner/worker mode orchestration | `src/agent_runtime.rs`, `src/agent_runtime/*`, `src/planner_runtime.rs`, `src/agent.rs` |
 | Change task graph execution/artifacts | `src/tasks_graph_runtime.rs`, `src/taskgraph.rs` |
-| Change TUI chat screen rendering/footer/banner | `src/chat_ui.rs`, `src/chat_view_utils.rs`, `src/tui/*` |
+| Change TUI chat screen rendering/footer/banner | `src/chat_ui.rs`, `src/chat_ui/overlay.rs`, `src/chat_view_utils.rs`, `src/tui/*` |
 | Change session persistence/settings precedence | `src/session.rs`, `src/runtime_flags.rs` |
 | Change repro record/bundle behavior | `src/repro.rs` |
 
