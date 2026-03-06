@@ -5,8 +5,8 @@ use crate::events::EventKind;
 use crate::providers::http::{message_short, ProviderError};
 use crate::providers::ModelProvider;
 use crate::tools::tool_side_effects;
-use crate::types::ToolCall;
 use crate::types::TokenUsage;
+use crate::types::ToolCall;
 
 use super::Agent;
 
@@ -16,10 +16,12 @@ pub(super) fn apply_usage_totals(
     total_token_usage: &mut TokenUsage,
 ) {
     *saw_token_usage = true;
-    total_token_usage.prompt_tokens = add_opt_u32(total_token_usage.prompt_tokens, usage.prompt_tokens);
+    total_token_usage.prompt_tokens =
+        add_opt_u32(total_token_usage.prompt_tokens, usage.prompt_tokens);
     total_token_usage.completion_tokens =
         add_opt_u32(total_token_usage.completion_tokens, usage.completion_tokens);
-    total_token_usage.total_tokens = add_opt_u32(total_token_usage.total_tokens, usage.total_tokens);
+    total_token_usage.total_tokens =
+        add_opt_u32(total_token_usage.total_tokens, usage.total_tokens);
 }
 
 impl<P: ModelProvider> Agent<P> {
@@ -28,11 +30,7 @@ impl<P: ModelProvider> Agent<P> {
         run_id: &str,
         step: u32,
         tc: &ToolCall,
-        attempt: u32,
-        max_retries: u32,
-        failure_class: &str,
-        action: &str,
-        error_code: Option<&str>,
+        event: ToolRetryEvent<'_>,
     ) {
         self.emit_event(
             run_id,
@@ -41,11 +39,11 @@ impl<P: ModelProvider> Agent<P> {
             serde_json::json!({
                 "tool_call_id": tc.id,
                 "name": tc.name,
-                "attempt": attempt,
-                "max_retries": max_retries,
-                "failure_class": failure_class,
-                "action": action,
-                "error_code": error_code
+                "attempt": event.attempt,
+                "max_retries": event.max_retries,
+                "failure_class": event.failure_class,
+                "action": event.action,
+                "error_code": event.error_code
             }),
         );
     }
@@ -141,4 +139,12 @@ impl<P: ModelProvider> Agent<P> {
             );
         }
     }
+}
+
+pub(super) struct ToolRetryEvent<'a> {
+    pub(super) attempt: u32,
+    pub(super) max_retries: u32,
+    pub(super) failure_class: &'a str,
+    pub(super) action: &'a str,
+    pub(super) error_code: Option<&'a str>,
 }

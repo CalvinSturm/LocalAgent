@@ -1,5 +1,4 @@
 use crate::agent_budget::ToolCallBudgetUsage;
-use uuid::Uuid;
 use crate::agent_impl_guard::{prompt_requires_tool_only, ToolExecutionRecord};
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 #[cfg(test)]
@@ -17,6 +16,7 @@ use crate::taint::{TaintMode, TaintState, TaintToggle};
 use crate::tools::ToolRuntime;
 use crate::trust::policy::Policy;
 use crate::types::{Message, Role, TokenUsage, ToolDef};
+use uuid::Uuid;
 
 mod agent_types;
 mod budget_guard;
@@ -25,11 +25,11 @@ mod mcp_drift;
 mod model_io;
 mod operator_queue;
 mod response_normalization;
-mod runtime_completion;
 mod run_control;
 mod run_events;
 mod run_finalize;
 mod run_setup;
+mod runtime_completion;
 mod timeouts;
 mod tool_helpers;
 pub use agent_types::{
@@ -39,13 +39,15 @@ pub use agent_types::{
 };
 
 pub(crate) use agent_types::WorkerStepStatus;
-use runtime_completion::{runtime_completion_decision, RuntimeCompletionAction, RuntimeCompletionInputs};
-#[cfg(test)]
-pub(crate) use runtime_completion::RuntimeCompletionDecision;
-use run_events::apply_usage_totals;
-use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
 use gate_paths::{AllowToolCallDecision, GateNonAllowDecision, PlanConstraintDecision};
 use mcp_drift::McpDriftDecision;
+use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
+use run_events::apply_usage_totals;
+#[cfg(test)]
+pub(crate) use runtime_completion::RuntimeCompletionDecision;
+use runtime_completion::{
+    runtime_completion_decision, RuntimeCompletionAction, RuntimeCompletionInputs,
+};
 use tool_helpers::injected_messages_enforce_implementation_integrity_guard;
 use tool_helpers::{FailedRepeatGuardDecision, MalformedToolCallDecision};
 pub fn sanitize_user_visible_output(raw: &str) -> String {
@@ -940,7 +942,7 @@ impl<P: ModelProvider> Agent<P> {
                 } => {
                     blocked_runtime_completion_count = next_count;
                 }
-                RuntimeCompletionAction::Finalize(outcome) => return outcome,
+                RuntimeCompletionAction::Finalize(outcome) => return *outcome,
             }
 
             let mut successful_write_tool_ok_this_step = false;
@@ -969,7 +971,7 @@ impl<P: ModelProvider> Agent<P> {
                     .await
                 {
                     McpDriftDecision::Continue => {}
-                    McpDriftDecision::Finalize(outcome) => return outcome,
+                    McpDriftDecision::Finalize(outcome) => return *outcome,
                 }
                 let planning_ctx = self.build_tool_call_planning_context(
                     active_plan_step_idx,
@@ -996,7 +998,7 @@ impl<P: ModelProvider> Agent<P> {
                     &taint_state,
                 ) {
                     FailedRepeatGuardDecision::Continue => {}
-                    FailedRepeatGuardDecision::Finalize(outcome) => return outcome,
+                    FailedRepeatGuardDecision::Finalize(outcome) => return *outcome,
                 }
                 let invalid_args_error = match self.handle_malformed_tool_call(
                     run_id.clone(),
@@ -1022,7 +1024,7 @@ impl<P: ModelProvider> Agent<P> {
                         invalid_args_error
                     }
                     MalformedToolCallDecision::RestartAgentStep => continue 'agent_steps,
-                    MalformedToolCallDecision::Finalize(outcome) => return outcome,
+                    MalformedToolCallDecision::Finalize(outcome) => return *outcome,
                 };
                 let (
                     approval_mode_meta,
@@ -1064,7 +1066,7 @@ impl<P: ModelProvider> Agent<P> {
                         PlanConstraintDecision::Continue => {}
                         PlanConstraintDecision::ContinueToolLoop => continue,
                         PlanConstraintDecision::RestartAgentStep => continue 'agent_steps,
-                        PlanConstraintDecision::Finalize(outcome) => return outcome,
+                        PlanConstraintDecision::Finalize(outcome) => return *outcome,
                     }
                 }
                 match self.gate.decide(&self.gate_ctx, tc) {
@@ -1122,7 +1124,7 @@ impl<P: ModelProvider> Agent<P> {
                         {
                             AllowToolCallDecision::Continue => {}
                             AllowToolCallDecision::RestartAgentStep => continue 'agent_steps,
-                            AllowToolCallDecision::Finalize(outcome) => return outcome,
+                            AllowToolCallDecision::Finalize(outcome) => return *outcome,
                         }
                     }
                     gate_decision => match self.handle_non_allow_gate_decision(
@@ -1153,32 +1155,33 @@ impl<P: ModelProvider> Agent<P> {
                     ) {
                         GateNonAllowDecision::ContinueToolLoop => continue,
                         GateNonAllowDecision::RestartAgentStep => continue 'agent_steps,
-                        GateNonAllowDecision::Finalize(outcome) => return outcome,
+                        GateNonAllowDecision::Finalize(outcome) => return *outcome,
                     },
                 }
             }
 
             if enforce_implementation_integrity_guard && successful_write_tool_ok_this_step {
-                return self.finalize_verified_write_step_or_error(
-                    run_id,
-                    step as u32,
-                    started_at,
-                    user_prompt,
-                    observed_tool_calls,
-                    &mut observed_tool_executions,
-                    observed_tool_decisions,
-                    messages,
-                    request_context_chars,
-                    last_compaction_report,
-                    hook_invocations,
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    &total_token_usage,
-                    &taint_state,
-                    enforce_implementation_integrity_guard,
-                )
-                .await;
+                return self
+                    .finalize_verified_write_step_or_error(
+                        run_id,
+                        step as u32,
+                        started_at,
+                        user_prompt,
+                        observed_tool_calls,
+                        &mut observed_tool_executions,
+                        observed_tool_decisions,
+                        messages,
+                        request_context_chars,
+                        last_compaction_report,
+                        hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                        enforce_implementation_integrity_guard,
+                    )
+                    .await;
             }
         }
 

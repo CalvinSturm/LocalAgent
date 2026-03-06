@@ -2,7 +2,7 @@ use super::PlanToolEnforcementMode;
 use crate::agent_impl_guard::ToolExecutionRecord;
 use crate::providers::ModelProvider;
 use crate::taint::TaintState;
-use crate::types::{Message, ToolCall, TokenUsage};
+use crate::types::{Message, TokenUsage, ToolCall};
 
 use super::{Agent, ToolDecisionRecord};
 
@@ -31,7 +31,7 @@ pub(super) enum RuntimeCompletionAction {
     ProceedToTools {
         blocked_runtime_completion_count: u32,
     },
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 pub(super) struct RuntimeCompletionInputs {
@@ -57,7 +57,8 @@ pub(super) fn runtime_completion_decision(
     {
         if inputs.blocked_attempt_count_next >= 2 {
             return RuntimeCompletionDecision::FinalizeError {
-                reason: "model repeatedly attempted to halt before completing required planner steps",
+                reason:
+                    "model repeatedly attempted to halt before completing required planner steps",
                 source: "runtime_completion_policy",
                 failure_class: "E_RUNTIME_COMPLETION_PENDING_PLAN",
             };
@@ -158,14 +159,13 @@ impl<P: ModelProvider> Agent<P> {
                         "blocked_count": blocked_runtime_completion_count
                     }),
                 );
-                let corrective_message = if reason_code == "pending_plan_step"
-                    && self.plan_enforcement_active()
-                {
-                    self.pending_plan_step_corrective_message(active_plan_step_idx)
-                        .unwrap_or_else(|| corrective_instruction.to_string())
-                } else {
-                    corrective_instruction.to_string()
-                };
+                let corrective_message =
+                    if reason_code == "pending_plan_step" && self.plan_enforcement_active() {
+                        self.pending_plan_step_corrective_message(active_plan_step_idx)
+                            .unwrap_or_else(|| corrective_instruction.to_string())
+                    } else {
+                        corrective_instruction.to_string()
+                    };
                 messages.push(Message {
                     role: crate::types::Role::Developer,
                     content: Some(corrective_message),
@@ -192,7 +192,7 @@ impl<P: ModelProvider> Agent<P> {
                         "failure_class": failure_class
                     }),
                 );
-                RuntimeCompletionAction::Finalize(self.finalize_planner_error_with_end(
+                RuntimeCompletionAction::Finalize(Box::new(self.finalize_planner_error_with_end(
                     step,
                     run_id,
                     started_at,
@@ -208,7 +208,7 @@ impl<P: ModelProvider> Agent<P> {
                     saw_token_usage,
                     total_token_usage,
                     taint_state,
-                ))
+                )))
             }
             RuntimeCompletionDecision::FinalizeOk => {
                 let blocked_runtime_completion_count = 0;
@@ -230,7 +230,12 @@ impl<P: ModelProvider> Agent<P> {
                         );
                     for path in pending_post_write_paths {
                         match self
-                            .verify_post_write_path(&run_id, step, &path, post_write_verify_timeout_ms)
+                            .verify_post_write_path(
+                                &run_id,
+                                step,
+                                &path,
+                                post_write_verify_timeout_ms,
+                            )
                             .await
                         {
                             Ok(record) => observed_tool_executions.push(record),
@@ -244,7 +249,7 @@ impl<P: ModelProvider> Agent<P> {
                                         "source": "implementation_integrity_guard"
                                     }),
                                 );
-                                return RuntimeCompletionAction::Finalize(
+                                return RuntimeCompletionAction::Finalize(Box::new(
                                     self.finalize_planner_error_with_end(
                                         step,
                                         run_id,
@@ -262,7 +267,7 @@ impl<P: ModelProvider> Agent<P> {
                                         total_token_usage,
                                         taint_state,
                                     ),
-                                );
+                                ));
                             }
                         }
                     }
@@ -326,25 +331,27 @@ impl<P: ModelProvider> Agent<P> {
                             "source": "implementation_integrity_guard"
                         }),
                     );
-                    return RuntimeCompletionAction::Finalize(self.finalize_planner_error_with_end(
-                        step,
-                        run_id,
-                        started_at,
-                        reason,
-                        messages.clone(),
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
+                    return RuntimeCompletionAction::Finalize(Box::new(
+                        self.finalize_planner_error_with_end(
+                            step,
+                            run_id,
+                            started_at,
+                            reason,
+                            messages.clone(),
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ),
                     ));
                 }
-                RuntimeCompletionAction::Finalize(self.finalize_ok_with_end(
+                RuntimeCompletionAction::Finalize(Box::new(self.finalize_ok_with_end(
                     step,
                     run_id,
                     started_at,
@@ -360,7 +367,7 @@ impl<P: ModelProvider> Agent<P> {
                     saw_token_usage,
                     total_token_usage,
                     taint_state,
-                ))
+                )))
             }
             RuntimeCompletionDecision::ExecuteTools => RuntimeCompletionAction::ProceedToTools {
                 blocked_runtime_completion_count: 0,
@@ -391,7 +398,9 @@ impl<P: ModelProvider> Agent<P> {
     ) -> super::agent_types::AgentOutcome {
         let post_write_verify_timeout_ms = self.effective_post_write_verify_timeout_ms();
         let pending_post_write_paths =
-            crate::agent_impl_guard::pending_post_write_verification_paths(observed_tool_executions);
+            crate::agent_impl_guard::pending_post_write_verification_paths(
+                observed_tool_executions,
+            );
         let verified_paths = pending_post_write_paths.iter().cloned().collect::<Vec<_>>();
         for path in pending_post_write_paths {
             match self

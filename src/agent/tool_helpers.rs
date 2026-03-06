@@ -1,15 +1,16 @@
 use crate::agent_impl_guard::normalize_tool_path;
 use crate::agent_taint_helpers::compute_taint_spans_for_tool;
 use crate::agent_tool_exec::{run_tool_once, tool_result_has_error};
+use crate::agent_utils::provider_name;
 use crate::agent_utils::sha256_hex;
 use crate::events::EventKind;
 use crate::hooks::protocol::{HookInvocationReport, ToolResultPayload};
 use crate::hooks::runner::make_tool_result_input;
 use crate::providers::ModelProvider;
-use crate::agent_utils::provider_name;
 use crate::tools::ToolErrorCode;
 use crate::types::{Message, Role, ToolCall};
 
+use super::run_events::ToolRetryEvent;
 use super::Agent;
 use super::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG;
 
@@ -24,8 +25,8 @@ pub(super) fn is_repairable_error_code(code: ToolErrorCode) -> bool {
 }
 
 pub(super) fn failed_repeat_key(tc: &ToolCall) -> String {
-    let canonical_args =
-        crate::trust::approvals::canonical_json(&tc.arguments).unwrap_or_else(|_| "null".to_string());
+    let canonical_args = crate::trust::approvals::canonical_json(&tc.arguments)
+        .unwrap_or_else(|_| "null".to_string());
     sha256_hex(format!("{}|{canonical_args}", tc.name).as_bytes())
 }
 
@@ -36,7 +37,9 @@ pub(super) fn normalized_tool_path_from_args(tc: &ToolCall) -> Option<String> {
         .map(normalize_tool_path)
 }
 
-pub(super) fn injected_messages_enforce_implementation_integrity_guard(messages: &[Message]) -> bool {
+pub(super) fn injected_messages_enforce_implementation_integrity_guard(
+    messages: &[Message],
+) -> bool {
     messages.iter().any(|m| {
         matches!(m.role, Role::System | Role::Developer)
             && m.content
@@ -62,13 +65,13 @@ pub(super) enum SchemaRepairDecision {
 pub(super) enum InvalidPatchFormatDecision {
     Continue,
     RestartAgentStep,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 pub(super) enum RetryLoopDecision {
     Break,
     ContinueWithToolMsg(Message, u32),
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 pub(super) enum ToolRetryLoopOutcome {
@@ -77,26 +80,24 @@ pub(super) enum ToolRetryLoopOutcome {
         tool_retry_count: u32,
     },
     RestartAgentStep,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 pub(super) enum AllowedToolResultDecision {
     Continue,
     RestartAgentStep,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 pub(super) enum MalformedToolCallDecision {
-    ContinueToolLoop {
-        invalid_args_error: Option<String>,
-    },
+    ContinueToolLoop { invalid_args_error: Option<String> },
     RestartAgentStep,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 pub(super) enum FailedRepeatGuardDecision {
     Continue,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 impl<P: ModelProvider> Agent<P> {
@@ -303,8 +304,12 @@ impl<P: ModelProvider> Agent<P> {
                     .err()
             })
         } else {
-            crate::tools::validate_builtin_tool_args(&tc.name, &tc.arguments, self.tool_rt.tool_args_strict)
-                .err()
+            crate::tools::validate_builtin_tool_args(
+                &tc.name,
+                &tc.arguments,
+                self.tool_rt.tool_args_strict,
+            )
+            .err()
         };
 
         let Some(err) = invalid_args_error.as_ref() else {
@@ -332,7 +337,7 @@ impl<P: ModelProvider> Agent<P> {
                     "attempt": *malformed_tool_call_attempts
                 }),
             );
-            return MalformedToolCallDecision::Finalize(
+            return MalformedToolCallDecision::Finalize(Box::new(
                 self.finalize_planner_error_with_output_with_end(
                     step,
                     run_id,
@@ -350,7 +355,7 @@ impl<P: ModelProvider> Agent<P> {
                     total_token_usage,
                     taint_state,
                 ),
-            );
+            ));
         }
 
         let repair_key = format!("{}|{}", tc.name, err);
@@ -400,7 +405,9 @@ impl<P: ModelProvider> Agent<P> {
             if self.inject_post_tool_operator_messages(&run_id, step, messages) {
                 return MalformedToolCallDecision::RestartAgentStep;
             }
-            messages.push(crate::agent_tool_exec::schema_repair_instruction_message(tc, err));
+            messages.push(crate::agent_tool_exec::schema_repair_instruction_message(
+                tc, err,
+            ));
             return MalformedToolCallDecision::RestartAgentStep;
         }
 
@@ -435,9 +442,7 @@ impl<P: ModelProvider> Agent<P> {
                 }),
             );
         }
-        MalformedToolCallDecision::ContinueToolLoop {
-            invalid_args_error,
-        }
+        MalformedToolCallDecision::ContinueToolLoop { invalid_args_error }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -493,22 +498,24 @@ impl<P: ModelProvider> Agent<P> {
                 "name": tc.name
             }),
         );
-        FailedRepeatGuardDecision::Finalize(self.finalize_planner_error_with_output_with_end(
-            step,
-            run_id,
-            started_at,
-            reason,
-            messages,
-            observed_tool_calls,
-            observed_tool_decisions,
-            request_context_chars,
-            last_compaction_report,
-            hook_invocations,
-            provider_retry_count,
-            provider_error_count,
-            saw_token_usage,
-            total_token_usage,
-            taint_state,
+        FailedRepeatGuardDecision::Finalize(Box::new(
+            self.finalize_planner_error_with_output_with_end(
+                step,
+                run_id,
+                started_at,
+                reason,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                request_context_chars,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ),
         ))
     }
 
@@ -650,11 +657,13 @@ impl<P: ModelProvider> Agent<P> {
                 run_id,
                 step,
                 tc,
-                *attempts,
-                super::MAX_SCHEMA_REPAIR_ATTEMPTS,
-                "E_SCHEMA",
-                "repair",
-                Some(error_code.as_str()),
+                ToolRetryEvent {
+                    attempt: *attempts,
+                    max_retries: super::MAX_SCHEMA_REPAIR_ATTEMPTS,
+                    failure_class: "E_SCHEMA",
+                    action: "repair",
+                    error_code: Some(error_code.as_str()),
+                },
             );
             self.emit_event(
                 run_id,
@@ -688,11 +697,13 @@ impl<P: ModelProvider> Agent<P> {
             run_id,
             step,
             tc,
-            *attempts,
-            super::MAX_SCHEMA_REPAIR_ATTEMPTS,
-            "E_SCHEMA",
-            "stop",
-            Some(error_code.as_str()),
+            ToolRetryEvent {
+                attempt: *attempts,
+                max_retries: super::MAX_SCHEMA_REPAIR_ATTEMPTS,
+                failure_class: "E_SCHEMA",
+                action: "stop",
+                error_code: Some(error_code.as_str()),
+            },
         );
         self.emit_schema_repair_exhausted_event(run_id, step, tc, *attempts);
         SchemaRepairDecision::Exhausted
@@ -796,7 +807,7 @@ impl<P: ModelProvider> Agent<P> {
                     "attempt": invalid_patch_attempt
                 }),
             );
-            return InvalidPatchFormatDecision::Finalize(
+            return InvalidPatchFormatDecision::Finalize(Box::new(
                 self.finalize_planner_error_with_output_with_end(
                     step,
                     run_id,
@@ -814,7 +825,7 @@ impl<P: ModelProvider> Agent<P> {
                     total_token_usage,
                     taint_state,
                 ),
-            );
+            ));
         }
 
         InvalidPatchFormatDecision::Continue
@@ -859,11 +870,13 @@ impl<P: ModelProvider> Agent<P> {
                 &run_id,
                 step,
                 tc,
-                tool_retry_count,
-                max_retries,
-                class.as_str(),
-                "stop",
-                retry_error_code,
+                ToolRetryEvent {
+                    attempt: tool_retry_count,
+                    max_retries,
+                    failure_class: class.as_str(),
+                    action: "stop",
+                    error_code: retry_error_code,
+                },
             );
             return RetryLoopDecision::Break;
         }
@@ -872,11 +885,13 @@ impl<P: ModelProvider> Agent<P> {
             &run_id,
             step,
             tc,
-            next_retry_count,
-            max_retries,
-            class.as_str(),
-            "retry",
-            retry_error_code,
+            ToolRetryEvent {
+                attempt: next_retry_count,
+                max_retries,
+                failure_class: class.as_str(),
+                action: "retry",
+                error_code: retry_error_code,
+            },
         );
         if let Some(reason) = crate::agent_budget::check_and_consume_tool_budget(
             &self.tool_call_budget,
@@ -896,30 +911,32 @@ impl<P: ModelProvider> Agent<P> {
                     "side_effects": side_effects
                 }),
             );
-            return RetryLoopDecision::Finalize(self.finalize_runtime_budget_deny_with_end(
-                run_id,
-                step,
-                tc,
-                reason,
-                approval_mode_meta,
-                auto_scope_meta,
-                approval_key_version_meta,
-                tool_schema_hash_hex,
-                hooks_config_hash_hex,
-                planner_hash_hex,
-                decision_exec_target,
-                started_at,
-                messages,
-                observed_tool_calls,
-                observed_tool_decisions,
-                request_context_chars,
-                last_compaction_report,
-                hook_invocations,
-                provider_retry_count,
-                provider_error_count,
-                saw_token_usage,
-                total_token_usage,
-                taint_state,
+            return RetryLoopDecision::Finalize(Box::new(
+                self.finalize_runtime_budget_deny_with_end(
+                    run_id,
+                    step,
+                    tc,
+                    reason,
+                    approval_mode_meta,
+                    auto_scope_meta,
+                    approval_key_version_meta,
+                    tool_schema_hash_hex,
+                    hooks_config_hash_hex,
+                    planner_hash_hex,
+                    decision_exec_target,
+                    started_at,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_decisions,
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ),
             ));
         }
         if let Some(reason) = crate::agent_budget::check_and_consume_mcp_budget(
@@ -927,7 +944,7 @@ impl<P: ModelProvider> Agent<P> {
             tool_budget_usage,
             tc.name.starts_with("mcp."),
         ) {
-            return RetryLoopDecision::Finalize(
+            return RetryLoopDecision::Finalize(Box::new(
                 self.finalize_runtime_mcp_budget_exceeded_with_error(
                     run_id,
                     step,
@@ -945,7 +962,7 @@ impl<P: ModelProvider> Agent<P> {
                     total_token_usage,
                     taint_state,
                 ),
-            );
+            ));
         }
         let tool_msg = self
             .run_tool_with_timeout_and_emit_mcp_events(&run_id, step, tc, "retry_await_result")
@@ -1026,7 +1043,8 @@ impl<P: ModelProvider> Agent<P> {
                     return ToolRetryLoopOutcome::Finalize(outcome);
                 }
             }
-            if let Some(error_code) = crate::agent_tool_exec::tool_result_error_code(&current_content)
+            if let Some(error_code) =
+                crate::agent_tool_exec::tool_result_error_code(&current_content)
             {
                 if is_repairable_error_code(error_code) && plan_tool_allowed {
                     match self.handle_schema_repair_attempt(
@@ -1144,23 +1162,25 @@ impl<P: ModelProvider> Agent<P> {
         {
             Ok(state) => state,
             Err(reason) => {
-                return AllowedToolResultDecision::Finalize(self.finalize_hook_aborted_with_end(
-                    step,
-                    run_id,
-                    started_at,
-                    String::new(),
-                    reason,
-                    messages.clone(),
-                    observed_tool_calls,
-                    observed_tool_decisions.clone(),
-                    request_context_chars,
-                    last_compaction_report,
-                    hook_invocations.clone(),
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    total_token_usage,
-                    taint_state,
+                return AllowedToolResultDecision::Finalize(Box::new(
+                    self.finalize_hook_aborted_with_end(
+                        step,
+                        run_id,
+                        started_at,
+                        String::new(),
+                        reason,
+                        messages.clone(),
+                        observed_tool_calls,
+                        observed_tool_decisions.clone(),
+                        request_context_chars,
+                        last_compaction_report,
+                        hook_invocations.clone(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ),
                 ));
             }
         };
@@ -1230,7 +1250,7 @@ impl<P: ModelProvider> Agent<P> {
             && tc.name == "write_file"
             && content.contains("write_file blocked for existing file")
         {
-            return AllowedToolResultDecision::Finalize(
+            return AllowedToolResultDecision::Finalize(Box::new(
                 self.finalize_existing_write_file_guard_with_end(
                     run_id,
                     step,
@@ -1248,7 +1268,7 @@ impl<P: ModelProvider> Agent<P> {
                     total_token_usage,
                     taint_state,
                 ),
-            );
+            ));
         }
         if self.inject_post_tool_operator_messages(&run_id, step, messages) {
             return AllowedToolResultDecision::RestartAgentStep;

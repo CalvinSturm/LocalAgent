@@ -216,8 +216,9 @@ Use a two-step pattern per area:
 ### Current Status
 - Phase 2 is complete.
 - `src/agent.rs` has been reduced from 4757 lines to 1198 lines.
-- Phase 3 is now the active priority, starting with `src/tools.rs`.
+- Phase 3 is now the active priority and already in progress on `src/tools.rs`.
 - The `agent` runtime has been split into focused helper modules under `src/agent/`.
+- `src/tools.rs` has already been reduced from 2339 lines to 1191 lines through first-pass extraction.
 
 ### Completed Extractions In `src/agent`
 - `agent_types.rs`
@@ -240,7 +241,29 @@ Use a two-step pattern per area:
 - Gate allow/deny/approval-required paths have been extracted from the main loop.
 - MCP drift handling has been moved out of the core loop.
 - Tool timeout, malformed-call repair, failed-repeat guard, tool-result hook processing, taint update, retry event emission, and post-write verification now have dedicated helpers.
+- `tools` envelope/schema handling and the filesystem-read, shell, and filesystem-write execution paths have been extracted into focused submodules.
 - Full `cargo check` and `cargo test -q` have been run after each extraction slice and remain green.
+
+## Eval Refactor Update
+### Completed Extractions In `src/eval`
+- `src/eval/runner_output.rs`
+- `src/eval/runner_rows.rs`
+- `src/eval/runner_runtime.rs`
+
+### Current Eval State
+- `src/eval/runner.rs` now acts as the eval orchestration facade and local test host.
+- Row-building and skip/capability helpers live in `src/eval/runner_rows.rs`.
+- Single-run execution, verifier execution, gate/provider wiring, and eval run artifact persistence live in `src/eval/runner_runtime.rs`.
+- `src/eval/runner.rs` is reduced to 752 lines, below the phase target.
+
+### Validation Status
+- `cargo fmt --check` passes.
+- `cargo clippy -- -D warnings` passes.
+- `cargo test` passes.
+
+### Notes
+- The `clippy` cleanup required follow-up fixes in extracted `src/agent/*` helper modules introduced earlier in the refactor, but no user-facing behavior changes were made.
+- The remaining optional eval follow-up is to split artifact persistence from `runner_runtime.rs` only if a smaller file boundary is still desired; it is no longer required for the phase target.
 
 ### Phase 2 Outcome
 - `src/agent.rs` is now below the phase target of 1200 lines.
@@ -250,8 +273,26 @@ Use a two-step pattern per area:
 ## Priority Update
 ### Immediate Priority
 1. Start Phase 3 on `src/tools.rs`.
-2. Prioritize envelope/schema extraction first, then split filesystem execution paths, then shell-specific execution.
-3. Keep `execute_tool` stable during the first pass and move internals before reconsidering the top-level dispatch shape.
+2. Keep `src/tools.rs` as the stable facade while extracting remaining shared support/pathing helpers.
+3. Defer any `src/tools/mod.rs` conversion until after the remaining shared helpers are extracted and the facade shape can be reassessed cleanly.
+
+### Phase 3 Progress
+#### Completed Extractions In `src/tools`
+- `src/tools/schema.rs`
+- `src/tools/envelope.rs`
+- `src/tools/exec_fs.rs`
+- `src/tools/exec_shell.rs`
+- `src/tools/exec_write.rs`
+
+#### Current Phase 3 State
+- `execute_tool` remains in `src/tools.rs` as the stable dispatcher.
+- Tool definition metadata, runtime structs, and shared execution support still live in `src/tools.rs`.
+- The highest-risk execution branches have already been moved out, and the file is now below the original phase target.
+
+#### Remaining Work In Phase 3
+- Extract shared execution/pathing helpers from `src/tools.rs` into a focused support module.
+- Reassess whether `src/tools.rs` should remain the facade or be converted to `src/tools/mod.rs`.
+- Optionally do a second cleanup pass on remaining shared helper boundaries once the support extraction is complete.
 
 ### Next Priority After Phase 3
 1. Move to `src/agent_runtime.rs` and `src/learning.rs`.

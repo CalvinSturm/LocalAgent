@@ -2,29 +2,31 @@ use crate::gate::GateEvent;
 use crate::providers::ModelProvider;
 use crate::taint::TaintState;
 use crate::tools::tool_side_effects;
-use crate::types::{Message, ToolCall, TokenUsage};
+use crate::types::{Message, TokenUsage, ToolCall};
 
 use super::agent_types::ToolDecisionRecord;
-use super::tool_helpers::{AllowedToolResultDecision, ToolRetryLoopOutcome, normalized_tool_path_from_args};
+use super::tool_helpers::{
+    normalized_tool_path_from_args, AllowedToolResultDecision, ToolRetryLoopOutcome,
+};
 use super::Agent;
 
 pub(super) enum AllowToolCallDecision {
     Continue,
     RestartAgentStep,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 pub(super) enum GateNonAllowDecision {
     ContinueToolLoop,
     RestartAgentStep,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 pub(super) enum PlanConstraintDecision {
     Continue,
     ContinueToolLoop,
     RestartAgentStep,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 impl<P: ModelProvider> Agent<P> {
@@ -171,7 +173,9 @@ impl<P: ModelProvider> Agent<P> {
                 *successful_write_tool_ok_this_step = true;
             }
         } else {
-            let n = failed_repeat_counts.entry(repeat_key.to_string()).or_insert(0);
+            let n = failed_repeat_counts
+                .entry(repeat_key.to_string())
+                .or_insert(0);
             *n = n.saturating_add(1);
         }
         self.emit_event(
@@ -343,7 +347,7 @@ impl<P: ModelProvider> Agent<P> {
                 PlanConstraintDecision::ContinueToolLoop
             }
             super::PlanToolEnforcementMode::Hard => {
-                PlanConstraintDecision::Finalize(self.finalize_denied_with_end(
+                PlanConstraintDecision::Finalize(Box::new(self.finalize_denied_with_end(
                     step,
                     run_id,
                     started_at,
@@ -360,7 +364,7 @@ impl<P: ModelProvider> Agent<P> {
                     saw_token_usage,
                     total_token_usage,
                     taint_state,
-                ))
+                )))
             }
         }
     }
@@ -435,30 +439,32 @@ impl<P: ModelProvider> Agent<P> {
                     }
                 }),
             );
-            return AllowToolCallDecision::Finalize(self.finalize_runtime_budget_deny_with_end(
-                run_id,
-                step,
-                tc,
-                reason,
-                approval_mode_meta,
-                auto_scope_meta,
-                approval_key_version_meta,
-                tool_schema_hash_hex,
-                hooks_config_hash_hex,
-                planner_hash_hex,
-                decision_exec_target,
-                started_at,
-                messages.clone(),
-                observed_tool_calls,
-                observed_tool_decisions.clone(),
-                request_context_chars,
-                last_compaction_report,
-                hook_invocations.clone(),
-                provider_retry_count,
-                provider_error_count,
-                saw_token_usage,
-                total_token_usage,
-                taint_state,
+            return AllowToolCallDecision::Finalize(Box::new(
+                self.finalize_runtime_budget_deny_with_end(
+                    run_id,
+                    step,
+                    tc,
+                    reason,
+                    approval_mode_meta,
+                    auto_scope_meta,
+                    approval_key_version_meta,
+                    tool_schema_hash_hex,
+                    hooks_config_hash_hex,
+                    planner_hash_hex,
+                    decision_exec_target,
+                    started_at,
+                    messages.clone(),
+                    observed_tool_calls,
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ),
             ));
         }
         if let Some(reason) = crate::agent_budget::check_and_consume_mcp_budget(
@@ -466,7 +472,7 @@ impl<P: ModelProvider> Agent<P> {
             tool_budget_usage,
             tc.name.starts_with("mcp."),
         ) {
-            return AllowToolCallDecision::Finalize(
+            return AllowToolCallDecision::Finalize(Box::new(
                 self.finalize_runtime_mcp_budget_exceeded_with_tool_decision(
                     run_id,
                     step,
@@ -486,7 +492,7 @@ impl<P: ModelProvider> Agent<P> {
                     total_token_usage,
                     taint_state,
                 ),
-            );
+            ));
         }
         self.emit_event(
             &run_id,
@@ -515,7 +521,11 @@ impl<P: ModelProvider> Agent<P> {
         );
         self.emit_tool_exec_start_events(&run_id, step, tc);
         let mut tool_msg = if let Some(err) = &invalid_args_error {
-            crate::agent_tool_exec::make_invalid_args_tool_message(tc, err, self.tool_rt.exec_target_kind)
+            crate::agent_tool_exec::make_invalid_args_tool_message(
+                tc,
+                err,
+                self.tool_rt.exec_target_kind,
+            )
         } else {
             self.run_tool_with_timeout_and_emit_mcp_events(&run_id, step, tc, "await_result")
                 .await
@@ -658,7 +668,7 @@ impl<P: ModelProvider> Agent<P> {
                 taint_enforced,
                 escalated,
                 escalation_reason,
-            } => GateNonAllowDecision::Finalize(self.finalize_gate_deny_with_end(
+            } => GateNonAllowDecision::Finalize(Box::new(self.finalize_gate_deny_with_end(
                 run_id,
                 step,
                 tc,
@@ -687,7 +697,7 @@ impl<P: ModelProvider> Agent<P> {
                 saw_token_usage,
                 total_token_usage,
                 taint_state,
-            )),
+            ))),
             crate::gate::GateDecision::RequireApproval {
                 reason,
                 approval_id,
@@ -722,36 +732,38 @@ impl<P: ModelProvider> Agent<P> {
                     }
                     return GateNonAllowDecision::ContinueToolLoop;
                 }
-                GateNonAllowDecision::Finalize(self.finalize_gate_require_approval_with_end(
-                    run_id,
-                    step,
-                    tc,
-                    reason,
-                    approval_id,
-                    approval_key,
-                    source,
-                    taint_enforced,
-                    escalated,
-                    escalation_reason,
-                    approval_mode_meta,
-                    auto_scope_meta,
-                    approval_key_version_meta,
-                    tool_schema_hash_hex,
-                    hooks_config_hash_hex,
-                    planner_hash_hex,
-                    decision_exec_target,
-                    started_at,
-                    messages.clone(),
-                    observed_tool_calls,
-                    observed_tool_decisions.clone(),
-                    request_context_chars,
-                    last_compaction_report,
-                    hook_invocations,
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    total_token_usage,
-                    taint_state,
+                GateNonAllowDecision::Finalize(Box::new(
+                    self.finalize_gate_require_approval_with_end(
+                        run_id,
+                        step,
+                        tc,
+                        reason,
+                        approval_id,
+                        approval_key,
+                        source,
+                        taint_enforced,
+                        escalated,
+                        escalation_reason,
+                        approval_mode_meta,
+                        auto_scope_meta,
+                        approval_key_version_meta,
+                        tool_schema_hash_hex,
+                        hooks_config_hash_hex,
+                        planner_hash_hex,
+                        decision_exec_target,
+                        started_at,
+                        messages.clone(),
+                        observed_tool_calls,
+                        observed_tool_decisions.clone(),
+                        request_context_chars,
+                        last_compaction_report,
+                        hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ),
                 ))
             }
             crate::gate::GateDecision::Allow { .. } => GateNonAllowDecision::ContinueToolLoop,

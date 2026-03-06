@@ -2,14 +2,14 @@ use crate::events::EventKind;
 use crate::providers::ModelProvider;
 use crate::taint::TaintState;
 use crate::tools::tool_side_effects;
-use crate::types::{Message, ToolCall, TokenUsage};
+use crate::types::{Message, TokenUsage, ToolCall};
 
 use super::agent_types::ToolDecisionRecord;
 use super::Agent;
 
 pub(super) enum McpDriftDecision {
     Continue,
-    Finalize(super::agent_types::AgentOutcome),
+    Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
 impl<P: ModelProvider> Agent<P> {
@@ -146,7 +146,9 @@ impl<P: ModelProvider> Agent<P> {
         total_token_usage: &TokenUsage,
         taint_state: &TaintState,
     ) -> McpDriftDecision {
-        if !tc.name.starts_with("mcp.") || matches!(self.mcp_pin_enforcement, super::McpPinEnforcementMode::Off) {
+        if !tc.name.starts_with("mcp.")
+            || matches!(self.mcp_pin_enforcement, super::McpPinEnforcementMode::Off)
+        {
             return McpDriftDecision::Continue;
         }
         let (Some(registry), Some(expected_hash)) =
@@ -164,7 +166,7 @@ impl<P: ModelProvider> Agent<P> {
         match (live_catalog, live_docs) {
             (Ok(actual_hash), Some(Ok(actual_docs_hash))) => {
                 let expected_docs_hash = expected_mcp_docs_hash_hex
-                    .and_then(|h| Some(h.as_str()))
+                    .map(|h| h.as_str())
                     .unwrap_or_default();
                 let catalog_drift = actual_hash != *expected_hash;
                 let docs_drift = actual_docs_hash != expected_docs_hash;
@@ -216,24 +218,26 @@ impl<P: ModelProvider> Agent<P> {
                     }),
                 );
                 if matches!(self.mcp_pin_enforcement, super::McpPinEnforcementMode::Hard) {
-                    return McpDriftDecision::Finalize(self.finalize_mcp_drift_hard_deny_with_end(
-                        run_id,
-                        step,
-                        tc,
-                        reason,
-                        "mcp_drift",
-                        started_at,
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions.clone(),
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
+                    return McpDriftDecision::Finalize(Box::new(
+                        self.finalize_mcp_drift_hard_deny_with_end(
+                            run_id,
+                            step,
+                            tc,
+                            reason,
+                            "mcp_drift",
+                            started_at,
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions.clone(),
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ),
                     ));
                 }
                 self.record_mcp_drift_warn_decision(
@@ -269,24 +273,26 @@ impl<P: ModelProvider> Agent<P> {
                     }),
                 );
                 if matches!(self.mcp_pin_enforcement, super::McpPinEnforcementMode::Hard) {
-                    return McpDriftDecision::Finalize(self.finalize_mcp_drift_hard_deny_with_end(
-                        run_id,
-                        step,
-                        tc,
-                        reason,
-                        "mcp_drift",
-                        started_at,
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions.clone(),
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
+                    return McpDriftDecision::Finalize(Box::new(
+                        self.finalize_mcp_drift_hard_deny_with_end(
+                            run_id,
+                            step,
+                            tc,
+                            reason,
+                            "mcp_drift",
+                            started_at,
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions.clone(),
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ),
                     ));
                 }
                 self.record_mcp_drift_warn_decision(
@@ -323,7 +329,7 @@ impl<P: ModelProvider> Agent<P> {
                         }),
                     );
                     if matches!(self.mcp_pin_enforcement, super::McpPinEnforcementMode::Hard) {
-                        return McpDriftDecision::Finalize(
+                        return McpDriftDecision::Finalize(Box::new(
                             self.finalize_mcp_drift_hard_deny_with_end(
                                 run_id,
                                 step,
@@ -343,7 +349,7 @@ impl<P: ModelProvider> Agent<P> {
                                 total_token_usage,
                                 taint_state,
                             ),
-                        );
+                        ));
                     }
                     self.record_mcp_drift_warn_decision(
                         &run_id,
@@ -356,8 +362,9 @@ impl<P: ModelProvider> Agent<P> {
                 }
             }
             (Err(e), _) => {
-                let reason =
-                    format!("MCP_DRIFT verification failed: unable to probe live tool catalog ({e})");
+                let reason = format!(
+                    "MCP_DRIFT verification failed: unable to probe live tool catalog ({e})"
+                );
                 self.emit_event(
                     &run_id,
                     step,
@@ -375,24 +382,26 @@ impl<P: ModelProvider> Agent<P> {
                     }),
                 );
                 if matches!(self.mcp_pin_enforcement, super::McpPinEnforcementMode::Hard) {
-                    return McpDriftDecision::Finalize(self.finalize_mcp_drift_hard_deny_with_end(
-                        run_id,
-                        step,
-                        tc,
-                        reason,
-                        "mcp_drift_probe_failed",
-                        started_at,
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions.clone(),
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
+                    return McpDriftDecision::Finalize(Box::new(
+                        self.finalize_mcp_drift_hard_deny_with_end(
+                            run_id,
+                            step,
+                            tc,
+                            reason,
+                            "mcp_drift_probe_failed",
+                            started_at,
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions.clone(),
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ),
                     ));
                 }
                 self.record_mcp_drift_warn_decision(
