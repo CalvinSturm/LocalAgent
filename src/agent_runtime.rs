@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 use anyhow::{anyhow, Context};
-use tokio::sync::watch;
 
 use crate::agent::{
     self, Agent, AgentExitReason, PlanToolEnforcementMode, PolicyLoadedInfo, ToolCallBudget,
@@ -21,15 +20,13 @@ use crate::runtime_events;
 use crate::runtime_flags;
 use crate::runtime_paths;
 use crate::runtime_wiring;
-use crate::session;
 use crate::store::{self, PlannerRunRecord, WorkerRunRecord};
-use crate::store::extract_session_messages;
 use crate::tools::ToolRuntime;
-use crate::trust;
 use crate::trust::policy::Policy;
 use crate::types::{Message, Role};
-use crate::{planner_runtime, RunArgs};
+use crate::RunArgs;
 mod finalize;
+mod planner_phase;
 mod setup;
 use finalize::{
     build_and_emit_repro_snapshot, build_run_cli_config_fingerprint_bundle,
@@ -37,62 +34,18 @@ use finalize::{
     normalize_and_record_worker_step_result, write_run_artifact_with_warning,
     ReproSnapshotBuildInput, RunArtifactWriteInput, RunCliFingerprintBuildInput,
 };
+use planner_phase::{
+    cancelled_outcome, emit_planner_end_event, emit_worker_start_event,
+    planner_runtime_error_outcome, planner_strict_failure_outcome, prepare_replan_success_resume,
+    run_planner_phase_with_start_event, run_replan_resume_with_cancel,
+    run_replanner_phase_with_start_event, PlannerPhaseLaunch, ReplannerPhaseLaunch,
+    ReplanResumeRunInput, ReplanSuccessPrep, ReplanSuccessPrepInput,
+};
 use setup::{
     build_context_augmentations, build_exec_target, build_gate_context, build_hook_and_tool_setup,
     build_session_bootstrap, build_ui_runtime_setup, resolve_mcp_runtime_registry,
     ContextAugmentations, HookToolSetup, SessionBootstrap, UiRuntimeSetup, UiRuntimeSetupInput,
 };
-
-struct PlannerPhaseLaunch<'a> {
-    run_id: &'a str,
-    planner_model: &'a str,
-    prompt: &'a str,
-    planner_max_steps: u32,
-    planner_output: planner::PlannerOutput,
-    planner_strict: bool,
-    effective_plan_tool_enforcement: PlanToolEnforcementMode,
-}
-
-struct ReplannerPhaseLaunch<'a> {
-    run_id: &'a str,
-    planner_model: &'a str,
-    replanner_reason: &'a str,
-    replan_prompt: &'a str,
-    planner_max_steps: u32,
-    planner_output: planner::PlannerOutput,
-    planner_strict: bool,
-}
-
-struct ReplanSuccessPrepInput<'a, P: ModelProvider> {
-    agent: &'a mut Agent<P>,
-    run_id: &'a str,
-    planner_model: &'a str,
-    worker_model: &'a str,
-    planner_max_steps: u32,
-    planner_output: planner::PlannerOutput,
-    planner_strict_effective: bool,
-    effective_plan_tool_enforcement: PlanToolEnforcementMode,
-    worker_record: &'a mut Option<WorkerRunRecord>,
-    planner_record: &'a mut Option<PlannerRunRecord>,
-}
-
-struct ReplanSuccessPrep {
-    replan_handoff: String,
-}
-
-struct ReplanResumeRunInput<'a, P: ModelProvider> {
-    agent: &'a mut Agent<P>,
-    prompt: &'a str,
-    prior_outcome: &'a agent::AgentOutcome,
-    base_instruction_messages: &'a [Message],
-    project_guidance_message: &'a Option<Message>,
-    repo_map_message: &'a Option<Message>,
-    pack_guidance_message: &'a Option<Message>,
-    base_task_memory: &'a Option<Message>,
-    replan_handoff: String,
-    resolved_settings: &'a session::RunSettingResolution,
-    cancel_rx: &'a mut watch::Receiver<bool>,
-}
 
 fn task_kind_enforces_implementation_guard(
     task_kind: Option<&str>,
@@ -991,294 +944,6 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     })
 }
 
-async fn run_planner_phase_with_start_event<P: ModelProvider>(
-    provider: &P,
-    launch: PlannerPhaseLaunch<'_>,
-    event_sink: &mut Option<Box<dyn crate::events::EventSink>>,
-) -> anyhow::Result<planner_runtime::PlannerPhaseOutput> {
-    runtime_events::emit_event(
-        event_sink,
-        launch.run_id,
-        0,
-        EventKind::PlannerStart,
-        serde_json::json!({
-            "planner_model": launch.planner_model,
-            "planner_max_steps": launch.planner_max_steps,
-            "planner_output": format!("{:?}", launch.planner_output).to_lowercase(),
-            "planner_strict": launch.planner_strict,
-            "enforce_plan_tools_effective": format!("{:?}", launch.effective_plan_tool_enforcement).to_lowercase()
-        }),
-    );
-    planner_runtime::run_planner_phase(
-        provider,
-        launch.run_id,
-        launch.planner_model,
-        launch.prompt,
-        launch.planner_max_steps,
-        launch.planner_output,
-        launch.planner_strict,
-        event_sink,
-    )
-    .await
-}
-
-async fn run_replanner_phase_with_start_event<P: ModelProvider>(
-    provider: &P,
-    launch: ReplannerPhaseLaunch<'_>,
-    event_sink: &mut Option<Box<dyn crate::events::EventSink>>,
-) -> anyhow::Result<planner_runtime::PlannerPhaseOutput> {
-    runtime_events::emit_event(
-        event_sink,
-        launch.run_id,
-        0,
-        EventKind::PlannerStart,
-        serde_json::json!({
-            "phase": "replan",
-            "reason": launch.replanner_reason
-        }),
-    );
-    planner_runtime::run_planner_phase(
-        provider,
-        launch.run_id,
-        launch.planner_model,
-        launch.replan_prompt,
-        launch.planner_max_steps,
-        launch.planner_output,
-        launch.planner_strict,
-        event_sink,
-    )
-    .await
-}
-
-fn prepare_replan_success_resume<P: ModelProvider>(
-    input: ReplanSuccessPrepInput<'_, P>,
-    replan_out: planner_runtime::PlannerPhaseOutput,
-) -> anyhow::Result<ReplanSuccessPrep> {
-    let replan_handoff = format!(
-        "{}\n\n{}",
-        planner::planner_handoff_content(&replan_out.plan_json)?,
-        planner::planner_worker_contract_content(&replan_out.plan_json)?
-    );
-    if matches!(
-        input.effective_plan_tool_enforcement,
-        PlanToolEnforcementMode::Soft | PlanToolEnforcementMode::Hard
-    ) {
-        if let Ok(steps) = planner::extract_plan_step_tools(&replan_out.plan_json) {
-            input.agent.plan_step_constraints = steps
-                .into_iter()
-                .map(|s| agent::PlanStepConstraint {
-                    step_id: s.step_id,
-                    intended_tools: s.intended_tools,
-                })
-                .collect();
-        }
-    }
-    *input.planner_record = Some(PlannerRunRecord {
-        model: input.planner_model.to_string(),
-        max_steps: input.planner_max_steps,
-        strict: input.planner_strict_effective,
-        output_format: format!("{:?}", input.planner_output).to_lowercase(),
-        plan_json: replan_out.plan_json.clone(),
-        plan_hash_hex: replan_out.plan_hash_hex.clone(),
-        ok: replan_out.ok,
-        raw_output: replan_out.raw_output,
-        error: replan_out.error,
-    });
-    input.agent.gate_ctx.planner_hash_hex = Some(replan_out.plan_hash_hex.clone());
-    if let Some(worker) = input.worker_record.as_mut() {
-        worker.injected_planner_hash_hex = Some(replan_out.plan_hash_hex.clone());
-    }
-    emit_worker_start_event(
-        &mut input.agent.event_sink,
-        input.run_id,
-        input.worker_model,
-        &replan_out.plan_hash_hex,
-        input.effective_plan_tool_enforcement,
-        Some("replan_resume"),
-    );
-    Ok(ReplanSuccessPrep { replan_handoff })
-}
-
-async fn run_replan_resume_with_cancel<P: ModelProvider>(
-    input: ReplanResumeRunInput<'_, P>,
-) -> agent::AgentOutcome {
-    let resume_session_messages = extract_session_messages(&input.prior_outcome.messages);
-    let replan_injected = runtime_paths::merge_injected_messages(
-        input.base_instruction_messages.to_vec(),
-        input.project_guidance_message.clone(),
-        input.repo_map_message.clone(),
-        input.pack_guidance_message.clone(),
-        input.base_task_memory.clone(),
-        Some(Message {
-            role: Role::Developer,
-            content: Some(input.replan_handoff),
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-        }),
-    );
-    tokio::select! {
-        out = input.agent.run(input.prompt, resume_session_messages, replan_injected) => out,
-        _ = tokio::signal::ctrl_c() => {
-            cancelled_outcome(input.resolved_settings)
-        },
-        _ = async {
-            let _ = input.cancel_rx.changed().await;
-        } => {
-            cancelled_outcome(input.resolved_settings)
-        }
-    }
-}
-
-fn emit_planner_end_event(
-    event_sink: &mut Option<Box<dyn crate::events::EventSink>>,
-    run_id: &str,
-    ok: bool,
-    planner_hash_hex: &str,
-    error_short: &str,
-    phase: Option<&str>,
-    lineage_parent_plan_hash_hex: Option<&str>,
-) {
-    let mut payload = serde_json::Map::new();
-    if let Some(phase) = phase {
-        payload.insert(
-            "phase".to_string(),
-            serde_json::Value::String(phase.to_string()),
-        );
-    }
-    payload.insert("ok".to_string(), serde_json::Value::Bool(ok));
-    payload.insert(
-        "planner_hash_hex".to_string(),
-        serde_json::Value::String(planner_hash_hex.to_string()),
-    );
-    if !error_short.is_empty() {
-        payload.insert(
-            "error_short".to_string(),
-            serde_json::Value::String(error_short.to_string()),
-        );
-    } else if phase.is_none() {
-        // Preserve the non-replan PlannerEnd payload shape in existing call sites.
-        payload.insert(
-            "error_short".to_string(),
-            serde_json::Value::String(String::new()),
-        );
-    }
-    if let Some(parent) = lineage_parent_plan_hash_hex {
-        payload.insert(
-            "lineage_parent_plan_hash_hex".to_string(),
-            serde_json::Value::String(parent.to_string()),
-        );
-    }
-    runtime_events::emit_event(
-        event_sink,
-        run_id,
-        0,
-        EventKind::PlannerEnd,
-        serde_json::Value::Object(payload),
-    );
-}
-
-fn emit_worker_start_event(
-    event_sink: &mut Option<Box<dyn crate::events::EventSink>>,
-    run_id: &str,
-    worker_model: &str,
-    planner_hash_hex: &str,
-    effective_plan_tool_enforcement: PlanToolEnforcementMode,
-    phase: Option<&str>,
-) {
-    let mut payload = serde_json::Map::new();
-    if let Some(phase) = phase {
-        payload.insert(
-            "phase".to_string(),
-            serde_json::Value::String(phase.to_string()),
-        );
-    }
-    payload.insert(
-        "worker_model".to_string(),
-        serde_json::Value::String(worker_model.to_string()),
-    );
-    payload.insert(
-        "planner_hash_hex".to_string(),
-        serde_json::Value::String(planner_hash_hex.to_string()),
-    );
-    payload.insert(
-        "enforce_plan_tools_effective".to_string(),
-        serde_json::Value::String(format!("{:?}", effective_plan_tool_enforcement).to_lowercase()),
-    );
-    runtime_events::emit_event(
-        event_sink,
-        run_id,
-        0,
-        EventKind::WorkerStart,
-        serde_json::Value::Object(payload),
-    );
-}
-
-fn cancelled_outcome(resolved_settings: &session::RunSettingResolution) -> agent::AgentOutcome {
-    agent::AgentOutcome {
-        run_id: uuid::Uuid::new_v4().to_string(),
-        started_at: trust::now_rfc3339(),
-        finished_at: trust::now_rfc3339(),
-        exit_reason: AgentExitReason::Cancelled,
-        final_output: String::new(),
-        error: Some("cancelled".to_string()),
-        messages: Vec::new(),
-        tool_calls: Vec::new(),
-        tool_decisions: Vec::new(),
-        compaction_settings: CompactionSettings {
-            max_context_chars: resolved_settings.max_context_chars,
-            mode: resolved_settings.compaction_mode,
-            keep_last: resolved_settings.compaction_keep_last,
-            tool_result_persist: resolved_settings.tool_result_persist,
-        },
-        final_prompt_size_chars: 0,
-        compaction_report: None,
-        hook_invocations: Vec::new(),
-        provider_retry_count: 0,
-        provider_error_count: 0,
-        token_usage: None,
-        taint: None,
-    }
-}
-
-fn planner_strict_failure_outcome(
-    run_id: &str,
-    resolved_settings: &session::RunSettingResolution,
-    error: Option<String>,
-    raw_output: Option<String>,
-) -> agent::AgentOutcome {
-    agent::AgentOutcome {
-        run_id: run_id.to_string(),
-        started_at: trust::now_rfc3339(),
-        finished_at: trust::now_rfc3339(),
-        exit_reason: AgentExitReason::PlannerError,
-        final_output: String::new(),
-        error,
-        messages: vec![Message {
-            role: Role::Assistant,
-            content: raw_output,
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-        }],
-        tool_calls: Vec::new(),
-        tool_decisions: Vec::new(),
-        compaction_settings: CompactionSettings {
-            max_context_chars: resolved_settings.max_context_chars,
-            mode: resolved_settings.compaction_mode,
-            keep_last: resolved_settings.compaction_keep_last,
-            tool_result_persist: resolved_settings.tool_result_persist,
-        },
-        final_prompt_size_chars: 0,
-        compaction_report: None,
-        hook_invocations: Vec::new(),
-        provider_retry_count: 0,
-        provider_error_count: 0,
-        token_usage: None,
-        taint: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -1484,43 +1149,6 @@ mod tests {
     }
 }
 
-fn planner_runtime_error_outcome(
-    run_id: &str,
-    resolved_settings: &session::RunSettingResolution,
-    error: String,
-    prompt: &str,
-) -> agent::AgentOutcome {
-    agent::AgentOutcome {
-        run_id: run_id.to_string(),
-        started_at: trust::now_rfc3339(),
-        finished_at: trust::now_rfc3339(),
-        exit_reason: AgentExitReason::PlannerError,
-        final_output: String::new(),
-        error: Some(error),
-        messages: vec![Message {
-            role: Role::User,
-            content: Some(prompt.to_string()),
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-        }],
-        tool_calls: Vec::new(),
-        tool_decisions: Vec::new(),
-        compaction_settings: CompactionSettings {
-            max_context_chars: resolved_settings.max_context_chars,
-            mode: resolved_settings.compaction_mode,
-            keep_last: resolved_settings.compaction_keep_last,
-            tool_result_persist: resolved_settings.tool_result_persist,
-        },
-        final_prompt_size_chars: 0,
-        compaction_report: None,
-        hook_invocations: Vec::new(),
-        provider_retry_count: 0,
-        provider_error_count: 0,
-        token_usage: None,
-        taint: None,
-    }
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RunExecutionResult {
