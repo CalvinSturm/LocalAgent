@@ -1,6 +1,5 @@
 use crate::agent_budget::ToolCallBudgetUsage;
 use uuid::Uuid;
-
 use crate::agent_impl_guard::{
     prompt_requires_tool_only, ToolExecutionRecord,
 };
@@ -12,7 +11,7 @@ use crate::compaction::{
     context_size_chars, maybe_compact, CompactionReport, CompactionSettings,
 };
 use crate::events::{EventKind, EventSink};
-use crate::gate::{GateContext, GateDecision, GateEvent, ToolGate};
+use crate::gate::{GateContext, GateDecision, ToolGate};
 use crate::hooks::protocol::{HookInvocationReport, PreModelCompactionPayload, PreModelPayload};
 use crate::hooks::runner::{make_pre_model_input, HookManager};
 use crate::mcp::registry::McpRegistry;
@@ -21,9 +20,7 @@ use crate::operator_queue::{
 };
 use crate::providers::ModelProvider;
 use crate::taint::{TaintMode, TaintState, TaintToggle};
-use crate::tools::{
-    envelope_to_message, to_tool_result_envelope, tool_side_effects, ToolResultMeta, ToolRuntime,
-};
+use crate::tools::ToolRuntime;
 use crate::trust::policy::Policy;
 use crate::types::{Message, Role, TokenUsage, ToolDef};
 
@@ -41,7 +38,6 @@ mod run_finalize;
 mod run_setup;
 mod timeouts;
 mod tool_helpers;
-
 pub use agent_types::{
     AgentExitReason, AgentOutcome, AgentTaintRecord, McpPinEnforcementMode,
     McpRuntimeTraceEntry, PlanStepConstraint, PlanToolEnforcementMode, PolicyLoadedInfo,
@@ -56,20 +52,17 @@ use runtime_completion::{
 pub(crate) use runtime_completion::RuntimeCompletionDecision;
 use run_events::apply_usage_totals;
 use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
-use gate_paths::{AllowToolCallDecision, GateNonAllowDecision};
+use gate_paths::{AllowToolCallDecision, GateNonAllowDecision, PlanConstraintDecision};
 use mcp_drift::McpDriftDecision;
-use tool_helpers::{failed_repeat_key, injected_messages_enforce_implementation_integrity_guard};
-use tool_helpers::MalformedToolCallDecision;
-
+use tool_helpers::injected_messages_enforce_implementation_integrity_guard;
+use tool_helpers::{FailedRepeatGuardDecision, MalformedToolCallDecision};
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     sanitize_user_visible_output_impl(raw)
 }
-
 #[cfg(test)]
 fn contains_tool_wrapper_markers(text: &str) -> bool {
     crate::agent_tool_exec::contains_tool_wrapper_markers(text)
 }
-
 const MAX_SCHEMA_REPAIR_ATTEMPTS: u32 = 2;
 const MAX_FAILED_REPEAT_PER_KEY: u32 = 3;
 const DEFAULT_POST_WRITE_VERIFY_TIMEOUT_MS: u64 = 5_000;
@@ -111,7 +104,6 @@ pub struct Agent<P: ModelProvider> {
     pub operator_queue_limits: QueueLimits,
     pub operator_queue_rx: Option<std::sync::mpsc::Receiver<QueueSubmitRequest>>,
 }
-
 impl<P: ModelProvider> Agent<P> {
     pub async fn run(
         &mut self,
@@ -130,7 +122,6 @@ impl<P: ModelProvider> Agent<P> {
         self.emit_run_start_events(&run_id);
         let mut messages =
             self.build_initial_messages(user_prompt, session_messages, injected_messages);
-
         let mut observed_tool_calls = Vec::new();
         let mut observed_tool_executions: Vec<ToolExecutionRecord> = Vec::new();
         let mut observed_tool_decisions: Vec<ToolDecisionRecord> = Vec::new();
@@ -235,10 +226,8 @@ impl<P: ModelProvider> Agent<P> {
                 last_compaction_report = Some(report);
             }
             messages = compacted.messages;
-
             let mut tools_sorted = self.tools.clone();
             tools_sorted.sort_by(|a, b| a.name.cmp(&b.name));
-
             if self.hooks.enabled() {
                 let pre_payload = PreModelPayload {
                     messages: messages.clone(),
@@ -990,68 +979,38 @@ impl<P: ModelProvider> Agent<P> {
                     McpDriftDecision::Continue => {}
                     McpDriftDecision::Finalize(outcome) => return outcome,
                 }
-                let (plan_allowed_tools, plan_tool_allowed) = self
-                    .plan_allowed_tools_and_decision(active_plan_step_idx, &tc.name);
-                let plan_step_id = self
-                    .current_plan_constraint(active_plan_step_idx)
-                    .map(|c| c.step_id)
-                    .unwrap_or_else(|| "unknown".to_string());
-                let repeat_key = failed_repeat_key(tc);
-                let failed_repeat_count =
-                    failed_repeat_counts.get(&repeat_key).copied().unwrap_or(0);
-                if failed_repeat_count >= MAX_FAILED_REPEAT_PER_KEY {
-                    let reason = format!(
-                        "TOOL_REPEAT_BLOCKED: repeated failed tool call for '{}' exceeded repeat limit",
-                        tc.name
-                    );
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "source": "tool_repeat_guard",
-                            "code": "TOOL_REPEAT_BLOCKED",
-                            "tool_call_id": tc.id,
-                            "name": tc.name,
-                            "repeat_count": failed_repeat_count,
-                            "repeat_limit": MAX_FAILED_REPEAT_PER_KEY,
-                            "repeat_key_sha256": repeat_key
-                        }),
-                    );
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::Error,
-                        serde_json::json!({
-                            "error": reason.clone(),
-                            "source": "tool_repeat_guard",
-                            "tool_call_id": tc.id,
-                            "name": tc.name
-                        }),
-                    );
-                    return self.finalize_planner_error_with_output_with_end(
-                        step as u32,
-                        run_id,
-                        started_at,
-                        reason,
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    );
+                let planning_ctx = self.build_tool_call_planning_context(
+                    active_plan_step_idx,
+                    tc,
+                    &failed_repeat_counts,
+                );
+                match self.handle_failed_repeat_guard(
+                    run_id.clone(),
+                    step as u32,
+                    tc,
+                    planning_ctx.failed_repeat_count,
+                    &planning_ctx.repeat_key,
+                    started_at.clone(),
+                    messages.clone(),
+                    observed_tool_calls.clone(),
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    &total_token_usage,
+                    &taint_state,
+                ) {
+                    FailedRepeatGuardDecision::Continue => {}
+                    FailedRepeatGuardDecision::Finalize(outcome) => return outcome,
                 }
                 let invalid_args_error = match self.handle_malformed_tool_call(
                     run_id.clone(),
                     step as u32,
                     tc,
-                    plan_tool_allowed,
+                    planning_ctx.plan_tool_allowed,
                     &mut malformed_tool_call_attempts,
                     &mut schema_repair_attempts,
                     &mut messages,
@@ -1082,151 +1041,38 @@ impl<P: ModelProvider> Agent<P> {
                     planner_hash_hex,
                     decision_exec_target,
                 ) = self.gate_decision_metadata_for_tool(tc, &taint_state);
-                if !plan_tool_allowed {
-                    let reason = format!(
-                        "tool '{}' is not allowed for plan step {} (allowed: {})",
-                        tc.name,
-                        plan_step_id,
-                        if plan_allowed_tools.is_empty() {
-                            "none".to_string()
-                        } else {
-                            plan_allowed_tools.join(", ")
-                        }
-                    );
-                    self.emit_event(
-                        &run_id,
+                if !planning_ctx.plan_tool_allowed {
+                    match self.handle_plan_constraint_deny(
+                        run_id.clone(),
                         step as u32,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "step_id": plan_step_id.clone(),
-                            "tool": tc.name,
-                            "reason": "tool_not_allowed_by_plan",
-                            "allowed_tools": plan_allowed_tools.clone()
-                        }),
-                    );
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::ToolDecision,
-                        serde_json::json!({
-                            "tool_call_id": tc.id,
-                            "name": tc.name,
-                            "decision": "deny",
-                            "reason": reason,
-                            "source": "plan_step_constraint",
-                            "planner_hash_hex": planner_hash_hex.clone(),
-                            "plan_step_id": plan_step_id,
-                            "plan_step_index": active_plan_step_idx,
-                            "plan_allowed_tools": plan_allowed_tools,
-                            "enforcement_mode": format!("{:?}", self.plan_tool_enforcement).to_lowercase()
-                        }),
-                    );
-                    self.gate.record(GateEvent {
-                        run_id: run_id.clone(),
-                        step: step as u32,
-                        tool_call_id: tc.id.clone(),
-                        tool: tc.name.clone(),
-                        arguments: tc.arguments.clone(),
-                        decision: "deny".to_string(),
-                        decision_reason: Some(reason.clone()),
-                        decision_source: Some("plan_step_constraint".to_string()),
-                        approval_id: None,
-                        approval_key: None,
-                        approval_mode: approval_mode_meta.clone(),
-                        auto_approve_scope: auto_scope_meta.clone(),
-                        approval_key_version: approval_key_version_meta.clone(),
-                        tool_schema_hash_hex: tool_schema_hash_hex.clone(),
-                        hooks_config_hash_hex: hooks_config_hash_hex.clone(),
-                        planner_hash_hex: planner_hash_hex.clone(),
-                        exec_target: decision_exec_target.clone(),
-                        taint_overall: Some(taint_state.overall_str().to_string()),
-                        taint_enforced: false,
-                        escalated: false,
-                        escalation_reason: None,
-                        result_ok: false,
-                        result_content: reason.clone(),
-                        result_input_digest: None,
-                        result_output_digest: None,
-                        result_input_len: None,
-                        result_output_len: None,
-                    });
-                    observed_tool_decisions.push(ToolDecisionRecord {
-                        step: step as u32,
-                        tool_call_id: tc.id.clone(),
-                        tool: tc.name.clone(),
-                        decision: "deny".to_string(),
-                        reason: Some(reason.clone()),
-                        source: Some("plan_step_constraint".to_string()),
-                        taint_overall: Some(taint_state.overall_str().to_string()),
-                        taint_enforced: false,
-                        escalated: false,
-                        escalation_reason: None,
-                    });
-
-                    match self.plan_tool_enforcement {
-                        PlanToolEnforcementMode::Off => {}
-                        PlanToolEnforcementMode::Soft => {
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::ToolExecEnd,
-                                serde_json::json!({
-                                    "tool_call_id": tc.id,
-                                    "name": tc.name,
-                                    "ok": false,
-                                    "truncated": false,
-                                    "source": "plan_step_constraint"
-                                }),
-                            );
-                            messages.push(envelope_to_message(to_tool_result_envelope(
-                                tc,
-                                "runtime",
-                                false,
-                                reason,
-                                false,
-                                ToolResultMeta {
-                                    side_effects: tool_side_effects(&tc.name),
-                                    bytes: None,
-                                    exit_code: None,
-                                    stderr_truncated: None,
-                                    stdout_truncated: None,
-                                    source: "runtime".to_string(),
-                                    execution_target: "host".to_string(),
-                                    warnings: None,
-                                    warnings_max: None,
-                                    warnings_truncated: None,
-                                    docker: None,
-                                },
-                            )));
-                            if self.inject_post_tool_operator_messages(
-                                &run_id,
-                                step as u32,
-                                &mut messages,
-                            ) {
-                                continue 'agent_steps;
-                            }
-                            continue;
-                        }
-                        PlanToolEnforcementMode::Hard => {
-                            return self.finalize_denied_with_end(
-                                step as u32,
-                                run_id,
-                                started_at,
-                                reason,
-                                None,
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
-                                request_context_chars,
-                                last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &taint_state,
-                            );
-                        }
+                        tc,
+                        planning_ctx.plan_step_id,
+                        active_plan_step_idx,
+                        planning_ctx.plan_allowed_tools,
+                        approval_mode_meta.clone(),
+                        auto_scope_meta.clone(),
+                        approval_key_version_meta.clone(),
+                        tool_schema_hash_hex.clone(),
+                        hooks_config_hash_hex.clone(),
+                        planner_hash_hex.clone(),
+                        decision_exec_target.clone(),
+                        started_at.clone(),
+                        &mut messages,
+                        observed_tool_calls.clone(),
+                        &mut observed_tool_decisions,
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.clone(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    ) {
+                        PlanConstraintDecision::Continue => {}
+                        PlanConstraintDecision::ContinueToolLoop => continue,
+                        PlanConstraintDecision::RestartAgentStep => continue 'agent_steps,
+                        PlanConstraintDecision::Finalize(outcome) => return outcome,
                     }
                 }
                 match self.gate.decide(&self.gate_ctx, tc) {
@@ -1252,8 +1098,8 @@ impl<P: ModelProvider> Agent<P> {
                                 escalated,
                                 escalation_reason,
                                 invalid_args_error.clone(),
-                                plan_tool_allowed,
-                                &repeat_key,
+                                planning_ctx.plan_tool_allowed,
+                                &planning_ctx.repeat_key,
                                 approval_mode_meta.clone(),
                                 auto_scope_meta.clone(),
                                 approval_key_version_meta.clone(),

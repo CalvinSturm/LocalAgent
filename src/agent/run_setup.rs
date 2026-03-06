@@ -8,6 +8,14 @@ use crate::types::{GenerateRequest, Message, Role, ToolCall, ToolDef};
 
 use super::{Agent, PlanStepConstraint, PlanToolEnforcementMode, WorkerStepStatus};
 
+pub(super) struct ToolCallPlanningContext {
+    pub(super) plan_allowed_tools: Vec<String>,
+    pub(super) plan_tool_allowed: bool,
+    pub(super) plan_step_id: String,
+    pub(super) repeat_key: String,
+    pub(super) failed_repeat_count: u32,
+}
+
 impl<P: ModelProvider> Agent<P> {
     #[allow(clippy::type_complexity)]
     pub(super) fn gate_decision_metadata_for_tool(
@@ -121,6 +129,26 @@ impl<P: ModelProvider> Agent<P> {
             .unwrap_or_default();
         let allowed = self.is_plan_tool_allowed(active_plan_step_idx, tool_name);
         (plan_allowed_tools, allowed)
+    }
+
+    pub(super) fn build_tool_call_planning_context(
+        &self,
+        active_plan_step_idx: usize,
+        tc: &ToolCall,
+        failed_repeat_counts: &std::collections::BTreeMap<String, u32>,
+    ) -> ToolCallPlanningContext {
+        let (plan_allowed_tools, plan_tool_allowed) =
+            self.plan_allowed_tools_and_decision(active_plan_step_idx, &tc.name);
+        let plan_step_id = self.current_plan_step_id_or_unknown(active_plan_step_idx);
+        let repeat_key = crate::agent::tool_helpers::failed_repeat_key(tc);
+        let failed_repeat_count = failed_repeat_counts.get(&repeat_key).copied().unwrap_or(0);
+        ToolCallPlanningContext {
+            plan_allowed_tools,
+            plan_tool_allowed,
+            plan_step_id,
+            repeat_key,
+            failed_repeat_count,
+        }
     }
 
     pub(super) fn pending_plan_step_text(&self, active_plan_step_idx: usize) -> Option<String> {
