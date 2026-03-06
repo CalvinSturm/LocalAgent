@@ -3,13 +3,14 @@ use std::sync::Arc;
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::target::{
     DockerMeta, ExecTarget, ExecTargetKind,
 };
-use crate::types::{Message, SideEffects, ToolCall, ToolDef};
+use crate::types::{Message, SideEffects, ToolCall};
 
+mod catalog;
 mod envelope;
 mod exec_fs;
 mod exec_shell;
@@ -17,6 +18,7 @@ mod exec_support;
 mod exec_write;
 mod schema;
 
+pub use catalog::{builtin_tools_enabled, tool_side_effects};
 pub use envelope::{
     envelope_to_message, invalid_args_tool_message, to_tool_result_envelope,
     to_tool_result_envelope_with_error,
@@ -162,115 +164,6 @@ pub struct ToolErrorDetail {
     pub available_tools: Option<Vec<String>>,
 }
 
-pub fn tool_side_effects(tool_name: &str) -> SideEffects {
-    match tool_name {
-        "list_dir" | "read_file" | "glob" | "grep" => SideEffects::FilesystemRead,
-        "shell" => SideEffects::ShellExec,
-        "write_file" | "apply_patch" => SideEffects::FilesystemWrite,
-        _ if tool_name.starts_with("mcp.playwright.") => SideEffects::Browser,
-        _ if tool_name.starts_with("mcp.") => SideEffects::Network,
-        _ => SideEffects::None,
-    }
-}
-
-pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) -> Vec<ToolDef> {
-    let mut tools = vec![
-        ToolDef {
-            name: "list_dir".to_string(),
-            description: "List entries in a directory.".to_string(),
-            parameters: json!({
-                "type":"object",
-                "properties":{"path":{"type":"string"}},
-                "required":["path"]
-            }),
-            side_effects: SideEffects::FilesystemRead,
-        },
-        ToolDef {
-            name: "read_file".to_string(),
-            description: "Read a UTF-8 text file (lossy decode allowed).".to_string(),
-            parameters: json!({
-                "type":"object",
-                "properties":{"path":{"type":"string"}},
-                "required":["path"]
-            }),
-            side_effects: SideEffects::FilesystemRead,
-        },
-        ToolDef {
-            name: "glob".to_string(),
-            description: "Find files matching a glob pattern under a scoped path.".to_string(),
-            parameters: json!({
-                "type":"object",
-                "properties":{
-                    "pattern":{"type":"string"},
-                    "path":{"type":"string"},
-                    "max_results":{"type":"integer","minimum":1,"maximum":1000}
-                },
-                "required":["pattern"]
-            }),
-            side_effects: SideEffects::FilesystemRead,
-        },
-        ToolDef {
-            name: "grep".to_string(),
-            description: "Search text files with a regex pattern under a scoped path.".to_string(),
-            parameters: json!({
-                "type":"object",
-                "properties":{
-                    "pattern":{"type":"string"},
-                    "path":{"type":"string"},
-                    "max_results":{"type":"integer","minimum":1,"maximum":1000},
-                    "ignore_case":{"type":"boolean"}
-                },
-                "required":["pattern"]
-            }),
-            side_effects: SideEffects::FilesystemRead,
-        },
-    ];
-    if enable_shell_tool {
-        tools.push(ToolDef {
-            name: "shell".to_string(),
-            description: "Run a shell command with optional args and cwd.".to_string(),
-            parameters: json!({
-                "type":"object",
-                "properties":{
-                    "cmd":{"type":"string"},
-                    "args":{"type":"array","items":{"type":"string"}},
-                    "cwd":{"type":"string"}
-                },
-                "required":["cmd"]
-            }),
-            side_effects: SideEffects::ShellExec,
-        });
-    }
-    if enable_write_tools {
-        tools.push(ToolDef {
-            name: "write_file".to_string(),
-            description: "Write UTF-8 text content to a file.".to_string(),
-            parameters: json!({
-                "type":"object",
-                "properties":{
-                    "path":{"type":"string"},
-                    "content":{"type":"string"},
-                    "create_parents":{"type":"boolean"},
-                    "overwrite_existing":{"type":"boolean"}
-                },
-                "required":["path","content"]
-            }),
-            side_effects: SideEffects::FilesystemWrite,
-        });
-        tools.push(ToolDef {
-            name: "apply_patch".to_string(),
-            description: "Apply a unified diff patch to a file.".to_string(),
-            parameters: json!({
-                "type":"object",
-                "properties":{"path":{"type":"string"},"patch":{"type":"string"}},
-                "required":["path","patch"]
-            }),
-            side_effects: SideEffects::FilesystemWrite,
-        });
-    }
-    tools
-}
-
 #[cfg(test)]
 pub fn resolve_path(workdir: &std::path::Path, input: &str) -> PathBuf {
     let p = PathBuf::from(input);
@@ -283,7 +176,7 @@ pub fn resolve_path(workdir: &std::path::Path, input: &str) -> PathBuf {
 
 
 pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
-    let normalized_args = normalize_builtin_tool_args(&tc.name, &tc.arguments);
+    let normalized_args = catalog::normalize_builtin_tool_args(&tc.name, &tc.arguments);
     let side_effects = tool_side_effects(&tc.name);
     if let Err(e) = validate_builtin_tool_args(&tc.name, &normalized_args, rt.tool_args_strict) {
         return invalid_args_tool_message(
@@ -345,32 +238,9 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
     ))
 }
 
+#[cfg(test)]
 fn normalize_builtin_tool_args(tool_name: &str, args: &Value) -> Value {
-    if tool_name != "shell" {
-        return args.clone();
-    }
-    let Some(obj) = args.as_object() else {
-        return args.clone();
-    };
-    if obj.contains_key("cmd") {
-        return args.clone();
-    }
-    let Some(command) = obj.get("command").and_then(|v| v.as_str()) else {
-        return args.clone();
-    };
-    let parts: Vec<&str> = command.split_whitespace().collect();
-    if parts.is_empty() {
-        return args.clone();
-    }
-    let mut normalized = obj.clone();
-    normalized.insert("cmd".to_string(), Value::String(parts[0].to_string()));
-    let arg_list = parts[1..]
-        .iter()
-        .map(|s| Value::String((*s).to_string()))
-        .collect::<Vec<_>>();
-    normalized.insert("args".to_string(), Value::Array(arg_list));
-    normalized.remove("command");
-    Value::Object(normalized)
+    catalog::normalize_builtin_tool_args(tool_name, args)
 }
 
 #[cfg(test)]
