@@ -206,19 +206,35 @@ Use a two-step pattern per area:
 
 ## Tracking
 - [ ] Phase 0 complete
-- [ ] Phase 1 complete
+- [x] Phase 1 complete
 - [x] Phase 2 complete
-- [ ] Phase 3 complete
-- [ ] Phase 4 complete
+- [x] Phase 3 complete
+- [x] Phase 4 complete
 - [ ] Phase 5 complete
 
 ## Progress Update
+### Workspace Status Note
+- This section tracks the current workspace state, not only the last committed `HEAD`.
+- Some extracted files are present locally but are still untracked as of this audit:
+  - `src/eval/runner_artifacts.rs`
+  - `src/learning/tests.rs`
+  - `src/tools/tests.rs`
+
 ### Current Status
+- Phase 1 is complete.
 - Phase 2 is complete.
-- `src/agent.rs` has been reduced from 4757 lines to 1198 lines.
-- Phase 3 is now the active priority and already in progress on `src/tools.rs`.
+- Phase 3 is complete.
+- Phase 4 is complete.
+- `src/chat_tui_runtime.rs` has been reduced from 4878 lines to 528 lines.
+- `src/agent.rs` has been reduced from 4757 lines to 1201 lines in the current workspace.
 - The `agent` runtime has been split into focused helper modules under `src/agent/`.
-- `src/tools.rs` has already been reduced from 2339 lines to 1191 lines through first-pass extraction.
+- `src/tools.rs` has been reduced from 2339 lines to 213 lines.
+- `src/agent_runtime.rs` has been reduced from 2025 lines to 595 lines.
+- `src/learning.rs` has been reduced from 2391 lines to 446 lines.
+- `src/eval/runner.rs` is 698 lines in the current workspace.
+- `src/tui/state.rs` has been reduced from 1651 lines to 146 lines.
+- `src/gate.rs` has been reduced from 1240 lines to 562 lines.
+- Remaining oversized Phase 5 target is `src/chat_ui.rs` at 1185 lines.
 
 ### Completed Extractions In `src/agent`
 - `agent_types.rs`
@@ -249,15 +265,14 @@ Use a two-step pattern per area:
 - `src/eval/runner_output.rs`
 - `src/eval/runner_rows.rs`
 - `src/eval/runner_runtime.rs`
-- `src/eval/runner_artifacts.rs`
 
 ### Current Eval State
 - `src/eval/runner.rs` now acts as the eval orchestration facade and local test host.
 - Row-building and skip/capability helpers live in `src/eval/runner_rows.rs`.
 - Single-run execution, verifier execution, and gate/provider wiring live in `src/eval/runner_runtime.rs`.
-- Eval artifact persistence and synthetic error artifact writing live in `src/eval/runner_artifacts.rs`.
-- `src/eval/runner.rs` is reduced to 752 lines, below the phase target.
-- The eval runner slice is now fully under the size target across `runner.rs`, `runner_rows.rs`, `runner_runtime.rs`, and `runner_artifacts.rs`.
+- Eval artifact persistence and synthetic error artifact writing have been split into `src/eval/runner_artifacts.rs` in the current workspace, but that file is still untracked.
+- `src/eval/runner.rs` is reduced to 698 lines, below the phase target.
+- The committed eval runner slice is under the size target across `runner.rs`, `runner_rows.rs`, and `runner_runtime.rs`.
 
 ### Validation Status
 - `cargo fmt --check` passes.
@@ -266,40 +281,66 @@ Use a two-step pattern per area:
 
 ### Notes
 - The `clippy` cleanup required follow-up fixes in extracted `src/agent/*` helper modules introduced earlier in the refactor, but no user-facing behavior changes were made.
-- The optional eval artifact split is complete; no additional eval runner breakup is currently required for the phase target.
+- The optional eval artifact split exists locally but is not yet tracked in git.
+- No additional eval runner breakup is currently required for the phase target.
 
 ### Phase 2 Outcome
-- `src/agent.rs` is now below the phase target of 1200 lines.
+- `src/agent.rs` is effectively at the phase target, but the current workspace is 1201 lines after follow-on edits.
 - The remaining code in `src/agent.rs` is primarily top-level orchestration and model-response handling rather than dense gate/tool execution state machines.
 - Follow-up cleanup inside `src/agent/` can happen later without blocking the next major split.
 
 ## Priority Update
 ### Immediate Priority
-1. Start Phase 3 on `src/tools.rs`.
-2. Keep `src/tools.rs` as the stable facade while extracting remaining shared support/pathing helpers.
-3. Defer any `src/tools/mod.rs` conversion until after the remaining shared helpers are extracted and the facade shape can be reassessed cleanly.
+1. Continue Phase 5 on `src/chat_ui.rs`.
+2. Keep the same pattern: mechanical extraction first, local cleanup second, tests after every slice.
+3. After `src/chat_ui.rs`, reassess whether Phase 5 can be closed or if any follow-up cleanup should be split into a separate pass.
+
+### Phase 4 Progress
+#### Completed Extractions In `src/agent_runtime`
+- `src/agent_runtime/setup.rs`
+- `src/agent_runtime/launch.rs`
+- `src/agent_runtime/guard.rs`
+- `src/agent_runtime/planner_phase.rs`
+- `src/agent_runtime/finalize.rs`
+
+#### Current `agent_runtime` State
+- `src/agent_runtime.rs` is now the orchestration facade for launch, execute, and finalize flow.
+- Runtime-owned timeout/implementation guard policy, launch setup, planner-worker orchestration, and artifact/repro finalization now live in focused helpers.
+- `src/agent_runtime.rs` is 595 lines, comfortably below the phase target.
+
+#### Current `learning` State
+- `src/learning.rs` already delegates assist, capture, promotion, rendering, store ops, and support logic to focused submodules.
+- Inline tests have been moved into `src/learning/tests.rs` in the current workspace, but that file is still untracked.
+- `src/learning.rs` is 446 lines and now acts as a thin facade over the existing learning submodules.
+
+#### Remaining Work In Phase 4
+- None required for the phase target.
+- Future cleanup inside `src/learning/` is optional and does not block the next phase.
 
 ### Phase 3 Progress
 #### Completed Extractions In `src/tools`
+- `src/tools/catalog.rs`
 - `src/tools/schema.rs`
 - `src/tools/envelope.rs`
 - `src/tools/exec_fs.rs`
 - `src/tools/exec_shell.rs`
 - `src/tools/exec_write.rs`
+- `src/tools/exec_support.rs`
 
 #### Current Phase 3 State
-- `execute_tool` remains in `src/tools.rs` as the stable dispatcher.
-- Tool definition metadata, runtime structs, and shared execution support still live in `src/tools.rs`.
-- The highest-risk execution branches have already been moved out, and the file is now below the original phase target.
+- `src/tools.rs` now acts as a thin facade for public tool types plus the top-level `execute_tool` dispatcher.
+- Tool catalog/metadata, schema validation, and execution helpers now live in focused submodules under `src/tools/`.
+- The split-out `src/tools/tests.rs` file exists in the current workspace but is still untracked.
+- The facade is 213 lines, well below the phase target, so a `src/tools/mod.rs` conversion is not currently necessary.
 
 #### Remaining Work In Phase 3
-- Extract shared execution/pathing helpers from `src/tools.rs` into a focused support module.
-- Reassess whether `src/tools.rs` should remain the facade or be converted to `src/tools/mod.rs`.
-- Optionally do a second cleanup pass on remaining shared helper boundaries once the support extraction is complete.
+- None required for the phase target.
+- A future `src/tools/mod.rs` rename remains optional stylistic cleanup only if a broader module-layout pass justifies it.
 
-### Next Priority After Phase 3
-1. Move to `src/agent_runtime.rs` and `src/learning.rs`.
-2. Keep the same pattern: mechanical extraction first, local cleanup second, tests after every slice.
+### Next Priority After Phase 4
+1. Move to `src/chat_ui.rs`, the largest remaining oversized Phase 5 target at 1185 lines.
+2. After `src/chat_ui.rs`, reassess remaining test-file follow-up work separately from the runtime-heavy Phase 5 splits.
+3. Keep the same pattern: mechanical extraction first, local cleanup second, tests after every slice.
 
 ### Deferred Priority
-- Phase 1 (`src/chat_tui_runtime.rs`) remains important, but the next highest-value move is to reduce `src/tools.rs` while `agent.rs` call sites are fresh and already stabilized.
+- Split the large remaining test files after the runtime-heavy Phase 5 modules are stable.
