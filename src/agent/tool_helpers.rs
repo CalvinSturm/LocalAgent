@@ -80,6 +80,12 @@ pub(super) enum ToolRetryLoopOutcome {
     Finalize(super::agent_types::AgentOutcome),
 }
 
+pub(super) enum AllowedToolResultDecision {
+    Continue,
+    RestartAgentStep,
+    Finalize(super::agent_types::AgentOutcome),
+}
+
 impl<P: ModelProvider> Agent<P> {
     pub(super) async fn run_tool_with_timeout_and_emit_mcp_events(
         &mut self,
@@ -839,5 +845,164 @@ impl<P: ModelProvider> Agent<P> {
             tool_msg,
             tool_retry_count,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn finalize_allowed_tool_result(
+        &mut self,
+        run_id: String,
+        step: u32,
+        tc: &ToolCall,
+        tool_msg: Message,
+        tool_retry_count: u32,
+        invalid_args_present: bool,
+        approval_id: Option<String>,
+        approval_key: Option<String>,
+        reason: Option<String>,
+        source: Option<String>,
+        taint_enforced: bool,
+        escalated: bool,
+        escalation_reason: Option<String>,
+        approval_mode_meta: Option<String>,
+        auto_scope_meta: Option<String>,
+        approval_key_version_meta: Option<String>,
+        tool_schema_hash_hex: Option<String>,
+        hooks_config_hash_hex: Option<String>,
+        planner_hash_hex: Option<String>,
+        decision_exec_target: Option<String>,
+        repeat_key: &str,
+        started_at: String,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &crate::types::TokenUsage,
+        hook_invocations: &mut Vec<crate::hooks::protocol::HookInvocationReport>,
+        taint_state: &mut crate::taint::TaintState,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        successful_write_tool_ok_this_step: &mut bool,
+        messages: &mut Vec<Message>,
+        observed_tool_decisions: &mut Vec<super::ToolDecisionRecord>,
+        observed_tool_executions: &mut Vec<crate::agent_impl_guard::ToolExecutionRecord>,
+        observed_tool_calls: Vec<ToolCall>,
+    ) -> AllowedToolResultDecision {
+        let hook_state = match self
+            .apply_tool_result_hooks(&run_id, step, tc, tool_msg, hook_invocations)
+            .await
+        {
+            Ok(state) => state,
+            Err(reason) => {
+                return AllowedToolResultDecision::Finalize(self.finalize_hook_aborted_with_end(
+                    step,
+                    run_id,
+                    started_at,
+                    String::new(),
+                    reason,
+                    messages.clone(),
+                    observed_tool_calls,
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+        };
+        let tool_msg = hook_state.tool_msg;
+        let input_digest = hook_state.input_digest;
+        let output_digest = hook_state.output_digest;
+        let input_len = hook_state.input_len;
+        let output_len = hook_state.output_len;
+        let final_truncated = hook_state.final_truncated;
+
+        let content = tool_msg.content.clone().unwrap_or_default();
+        let final_ok = !tool_result_has_error(&content);
+        let final_error_code = crate::agent_tool_exec::tool_result_error_code(&content);
+        observed_tool_executions.push(crate::agent_impl_guard::ToolExecutionRecord {
+            name: tc.name.clone(),
+            path: normalized_tool_path_from_args(tc),
+            ok: final_ok,
+        });
+        let final_failure_class = if tool_result_has_error(&content) {
+            Some(crate::agent_tool_exec::classify_tool_failure(
+                tc,
+                &content,
+                invalid_args_present,
+            ))
+        } else {
+            None
+        };
+        self.update_taint_for_tool_result(&run_id, step, tc, &content, messages.len(), taint_state);
+        self.record_allowed_tool_result(
+            &run_id,
+            step,
+            tc,
+            approval_id,
+            approval_key,
+            reason,
+            source,
+            taint_enforced,
+            escalated,
+            escalation_reason,
+            approval_mode_meta,
+            auto_scope_meta,
+            approval_key_version_meta,
+            tool_schema_hash_hex,
+            hooks_config_hash_hex,
+            planner_hash_hex,
+            decision_exec_target,
+            final_ok,
+            content.clone(),
+            Some(input_digest),
+            Some(output_digest),
+            Some(input_len),
+            Some(output_len),
+            tool_retry_count,
+            final_truncated,
+            final_failure_class,
+            final_error_code,
+            taint_state,
+            repeat_key,
+            failed_repeat_counts,
+            invalid_patch_format_attempts,
+            successful_write_tool_ok_this_step,
+            tool_msg,
+            messages,
+            observed_tool_decisions,
+        );
+        if !final_ok
+            && tc.name == "write_file"
+            && content.contains("write_file blocked for existing file")
+        {
+            return AllowedToolResultDecision::Finalize(
+                self.finalize_existing_write_file_guard_with_end(
+                    run_id,
+                    step,
+                    tc,
+                    started_at,
+                    messages.clone(),
+                    observed_tool_calls,
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ),
+            );
+        }
+        if self.inject_post_tool_operator_messages(&run_id, step, messages) {
+            return AllowedToolResultDecision::RestartAgentStep;
+        }
+        AllowedToolResultDecision::Continue
     }
 }

@@ -9,10 +9,10 @@ use crate::agent_impl_guard::{
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
 use crate::agent_tool_exec::{
-    classify_tool_failure,
-    make_invalid_args_tool_message, schema_repair_instruction_message, tool_result_error_code,
-    tool_result_has_error,
+    make_invalid_args_tool_message, schema_repair_instruction_message,
 };
+#[cfg(test)]
+use crate::agent_tool_exec::{classify_tool_failure, tool_result_has_error};
 use crate::agent_utils::provider_name;
 use crate::compaction::{
     context_size_chars, maybe_compact, CompactionReport, CompactionSettings,
@@ -63,7 +63,7 @@ use run_events::apply_usage_totals;
 use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
 use tool_helpers::{
     failed_repeat_key, injected_messages_enforce_implementation_integrity_guard,
-    normalized_tool_path_from_args, ToolRetryLoopOutcome,
+    AllowedToolResultDecision, ToolRetryLoopOutcome,
 };
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
@@ -1954,135 +1954,55 @@ impl<P: ModelProvider> Agent<P> {
                                 ToolRetryLoopOutcome::Finalize(outcome) => return outcome,
                             }
                         }
-                        let hook_state = match self
-                            .apply_tool_result_hooks(
-                                &run_id,
+                        match self
+                            .finalize_allowed_tool_result(
+                                run_id.clone(),
                                 step as u32,
                                 tc,
                                 tool_msg,
-                                &mut hook_invocations,
-                            )
-                            .await
-                        {
-                            Ok(state) => state,
-                            Err(reason) => {
-                                return self.finalize_hook_aborted_with_end(
-                                    step as u32,
-                                    run_id,
-                                    started_at,
-                                    String::new(),
-                                    reason,
-                                    messages,
-                                    observed_tool_calls,
-                                    observed_tool_decisions,
-                                    request_context_chars,
-                                    last_compaction_report,
-                                    hook_invocations,
-                                    provider_retry_count,
-                                    provider_error_count,
-                                    saw_token_usage,
-                                    &total_token_usage,
-                                    &taint_state,
-                                );
-                            }
-                        };
-                        let tool_msg = hook_state.tool_msg;
-                        let input_digest = hook_state.input_digest;
-                        let output_digest = hook_state.output_digest;
-                        let input_len = hook_state.input_len;
-                        let output_len = hook_state.output_len;
-                        let final_truncated = hook_state.final_truncated;
-
-                        let content = tool_msg.content.clone().unwrap_or_default();
-                        let final_ok = !tool_result_has_error(&content);
-                        let final_error_code = tool_result_error_code(&content);
-                        observed_tool_executions.push(ToolExecutionRecord {
-                            name: tc.name.clone(),
-                            path: normalized_tool_path_from_args(tc),
-                            ok: final_ok,
-                        });
-                        let final_failure_class = if tool_result_has_error(&content) {
-                            Some(classify_tool_failure(
-                                tc,
-                                &content,
+                                tool_retry_count,
                                 invalid_args_error.is_some(),
-                            ))
-                        } else {
-                            None
-                        };
-                        self.update_taint_for_tool_result(
-                            &run_id,
-                            step as u32,
-                            tc,
-                            &content,
-                            messages.len(),
-                            &mut taint_state,
-                        );
-                        self.record_allowed_tool_result(
-                            &run_id,
-                            step as u32,
-                            tc,
-                            approval_id,
-                            approval_key,
-                            reason.clone(),
-                            source.clone(),
-                            taint_enforced,
-                            escalated,
-                            escalation_reason.clone(),
-                            approval_mode_meta.clone(),
-                            auto_scope_meta.clone(),
-                            approval_key_version_meta.clone(),
-                            tool_schema_hash_hex.clone(),
-                            hooks_config_hash_hex.clone(),
-                            planner_hash_hex.clone(),
-                            decision_exec_target.clone(),
-                            final_ok,
-                            content.clone(),
-                            Some(input_digest),
-                            Some(output_digest),
-                            Some(input_len),
-                            Some(output_len),
-                            tool_retry_count,
-                            final_truncated,
-                            final_failure_class,
-                            final_error_code,
-                            &taint_state,
-                            &repeat_key,
-                            &mut failed_repeat_counts,
-                            &mut invalid_patch_format_attempts,
-                            &mut successful_write_tool_ok_this_step,
-                            tool_msg,
-                            &mut messages,
-                            &mut observed_tool_decisions,
-                        );
-                        if !final_ok
-                            && tc.name == "write_file"
-                            && content.contains("write_file blocked for existing file")
-                        {
-                            return self.finalize_existing_write_file_guard_with_end(
-                                run_id,
-                                step as u32,
-                                tc,
-                                started_at,
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
+                                approval_id,
+                                approval_key,
+                                reason.clone(),
+                                source.clone(),
+                                taint_enforced,
+                                escalated,
+                                escalation_reason.clone(),
+                                approval_mode_meta.clone(),
+                                auto_scope_meta.clone(),
+                                approval_key_version_meta.clone(),
+                                tool_schema_hash_hex.clone(),
+                                hooks_config_hash_hex.clone(),
+                                planner_hash_hex.clone(),
+                                decision_exec_target.clone(),
+                                &repeat_key,
+                                started_at.clone(),
                                 request_context_chars,
-                                last_compaction_report,
-                                hook_invocations,
+                                last_compaction_report.clone(),
                                 provider_retry_count,
                                 provider_error_count,
                                 saw_token_usage,
                                 &total_token_usage,
-                                &taint_state,
-                            );
-                        }
-                        if self.inject_post_tool_operator_messages(
-                            &run_id,
-                            step as u32,
-                            &mut messages,
-                        ) {
-                            continue 'agent_steps;
+                                &mut hook_invocations,
+                                &mut taint_state,
+                                &mut failed_repeat_counts,
+                                &mut invalid_patch_format_attempts,
+                                &mut successful_write_tool_ok_this_step,
+                                &mut messages,
+                                &mut observed_tool_decisions,
+                                &mut observed_tool_executions,
+                                observed_tool_calls.clone(),
+                            )
+                            .await
+                        {
+                            AllowedToolResultDecision::Continue => {}
+                            AllowedToolResultDecision::RestartAgentStep => {
+                                continue 'agent_steps;
+                            }
+                            AllowedToolResultDecision::Finalize(outcome) => {
+                                return outcome;
+                            }
                         }
                     }
                     GateDecision::Deny {
