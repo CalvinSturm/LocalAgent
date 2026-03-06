@@ -5,9 +5,6 @@ use crate::agent_impl_guard::{
     prompt_requires_tool_only, ToolExecutionRecord,
 };
 use crate::agent_output_sanitize::sanitize_user_visible_output as sanitize_user_visible_output_impl;
-use crate::agent_tool_exec::{
-    make_invalid_args_tool_message, schema_repair_instruction_message,
-};
 #[cfg(test)]
 use crate::agent_tool_exec::{classify_tool_failure, tool_result_has_error};
 use crate::agent_utils::provider_name;
@@ -25,8 +22,7 @@ use crate::operator_queue::{
 use crate::providers::ModelProvider;
 use crate::taint::{TaintMode, TaintState, TaintToggle};
 use crate::tools::{
-    envelope_to_message, to_tool_result_envelope, tool_side_effects, validate_builtin_tool_args,
-    ToolErrorCode, ToolResultMeta, ToolRuntime,
+    envelope_to_message, to_tool_result_envelope, tool_side_effects, ToolResultMeta, ToolRuntime,
 };
 use crate::trust::policy::Policy;
 use crate::types::{Message, Role, TokenUsage, ToolDef};
@@ -63,6 +59,7 @@ use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperPar
 use gate_paths::{AllowToolCallDecision, GateNonAllowDecision};
 use mcp_drift::McpDriftDecision;
 use tool_helpers::{failed_repeat_key, injected_messages_enforce_implementation_integrity_guard};
+use tool_helpers::MalformedToolCallDecision;
 
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     sanitize_user_visible_output_impl(raw)
@@ -1050,141 +1047,32 @@ impl<P: ModelProvider> Agent<P> {
                         &taint_state,
                     );
                 }
-                let invalid_args_error = if tc.name.starts_with("mcp.") {
-                    self.mcp_registry.as_ref().and_then(|reg| {
-                        reg.validate_namespaced_tool_args(tc, self.tool_rt.tool_args_strict)
-                            .err()
-                    })
-                } else {
-                    validate_builtin_tool_args(
-                        &tc.name,
-                        &tc.arguments,
-                        self.tool_rt.tool_args_strict,
-                    )
-                    .err()
+                let invalid_args_error = match self.handle_malformed_tool_call(
+                    run_id.clone(),
+                    step as u32,
+                    tc,
+                    plan_tool_allowed,
+                    &mut malformed_tool_call_attempts,
+                    &mut schema_repair_attempts,
+                    &mut messages,
+                    started_at.clone(),
+                    observed_tool_calls.clone(),
+                    observed_tool_decisions.clone(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    &total_token_usage,
+                    &taint_state,
+                ) {
+                    MalformedToolCallDecision::ContinueToolLoop { invalid_args_error } => {
+                        invalid_args_error
+                    }
+                    MalformedToolCallDecision::RestartAgentStep => continue 'agent_steps,
+                    MalformedToolCallDecision::Finalize(outcome) => return outcome,
                 };
-                if let Some(err) = &invalid_args_error {
-                    malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
-                    if malformed_tool_call_attempts >= 2 {
-                        let reason = format!(
-                            "MODEL_TOOL_PROTOCOL_VIOLATION: repeated malformed tool calls (tool='{}', error='{}')",
-                            tc.name, err
-                        );
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::Error,
-                            serde_json::json!({
-                                "error": reason,
-                                "source": "tool_protocol_guard",
-                                "tool_call_id": tc.id,
-                                "name": tc.name,
-                                "failure_class": "E_SCHEMA",
-                                "attempt": malformed_tool_call_attempts
-                            }),
-                        );
-                        return self.finalize_planner_error_with_output_with_end(
-                            step as u32,
-                            run_id,
-                            started_at,
-                            reason,
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
-                    let repair_key = format!("{}|{}", tc.name, err);
-                    let attempts = schema_repair_attempts
-                        .entry(repair_key)
-                        .and_modify(|n| *n = n.saturating_add(1))
-                        .or_insert(1);
-                    if *attempts <= MAX_SCHEMA_REPAIR_ATTEMPTS && plan_tool_allowed {
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::ToolRetry,
-                            serde_json::json!({
-                                "tool_call_id": tc.id,
-                                "name": tc.name,
-                                "attempt": *attempts,
-                                "max_retries": MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                "failure_class": "E_SCHEMA",
-                                "action": "repair",
-                                "error_code": ToolErrorCode::ToolArgsInvalid.as_str()
-                            }),
-                        );
-                        let tool_msg =
-                            make_invalid_args_tool_message(tc, err, self.tool_rt.exec_target_kind);
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::ToolExecEnd,
-                            serde_json::json!({
-                                "tool_call_id": tc.id,
-                                "name": tc.name,
-                                "ok": false,
-                                "truncated": false,
-                                "retry_count": 0,
-                                "failure_class": "E_SCHEMA",
-                                "source": "schema_repair",
-                                "repair_attempted": true,
-                                "repair_succeeded": false,
-                                "error_code": ToolErrorCode::ToolArgsInvalid.as_str()
-                            }),
-                        );
-                        messages.push(tool_msg);
-                        if self.inject_post_tool_operator_messages(
-                            &run_id,
-                            step as u32,
-                            &mut messages,
-                        ) {
-                            continue 'agent_steps;
-                        }
-                        messages.push(schema_repair_instruction_message(tc, err));
-                        continue 'agent_steps;
-                    } else {
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::ToolRetry,
-                            serde_json::json!({
-                                "tool_call_id": tc.id,
-                                "name": tc.name,
-                                "attempt": *attempts,
-                                "max_retries": MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS,
-                                "failure_class": "E_SCHEMA",
-                                "action": "stop",
-                                "error_code": ToolErrorCode::ToolArgsInvalid.as_str()
-                            }),
-                        );
-                        if *attempts > MAX_SCHEMA_REPAIR_ATTEMPTS {
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::Error,
-                                serde_json::json!({
-                                    "error": "schema repair attempts exhausted",
-                                    "source": "schema_repair",
-                                    "code": "TOOL_SCHEMA_REPAIR_EXHAUSTED",
-                                    "tool_call_id": tc.id,
-                                    "name": tc.name,
-                                    "attempt": *attempts,
-                                    "max_attempts": MAX_SCHEMA_REPAIR_ATTEMPTS
-                                }),
-                            );
-                        }
-                    }
-                }
                 let (
                     approval_mode_meta,
                     auto_scope_meta,

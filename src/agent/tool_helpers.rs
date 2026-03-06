@@ -86,6 +86,14 @@ pub(super) enum AllowedToolResultDecision {
     Finalize(super::agent_types::AgentOutcome),
 }
 
+pub(super) enum MalformedToolCallDecision {
+    ContinueToolLoop {
+        invalid_args_error: Option<String>,
+    },
+    RestartAgentStep,
+    Finalize(super::agent_types::AgentOutcome),
+}
+
 impl<P: ModelProvider> Agent<P> {
     pub(super) async fn run_tool_with_timeout_and_emit_mcp_events(
         &mut self,
@@ -259,6 +267,171 @@ impl<P: ModelProvider> Agent<P> {
                 );
                 Err(e.message)
             }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn handle_malformed_tool_call(
+        &mut self,
+        run_id: String,
+        step: u32,
+        tc: &ToolCall,
+        plan_tool_allowed: bool,
+        malformed_tool_call_attempts: &mut u32,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        messages: &mut Vec<Message>,
+        started_at: String,
+        observed_tool_calls: Vec<ToolCall>,
+        observed_tool_decisions: Vec<super::ToolDecisionRecord>,
+        request_context_chars: usize,
+        last_compaction_report: Option<crate::compaction::CompactionReport>,
+        hook_invocations: Vec<crate::hooks::protocol::HookInvocationReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &crate::types::TokenUsage,
+        taint_state: &crate::taint::TaintState,
+    ) -> MalformedToolCallDecision {
+        let invalid_args_error = if tc.name.starts_with("mcp.") {
+            self.mcp_registry.as_ref().and_then(|reg| {
+                reg.validate_namespaced_tool_args(tc, self.tool_rt.tool_args_strict)
+                    .err()
+            })
+        } else {
+            crate::tools::validate_builtin_tool_args(&tc.name, &tc.arguments, self.tool_rt.tool_args_strict)
+                .err()
+        };
+
+        let Some(err) = invalid_args_error.as_ref() else {
+            return MalformedToolCallDecision::ContinueToolLoop {
+                invalid_args_error: None,
+            };
+        };
+
+        *malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
+        if *malformed_tool_call_attempts >= 2 {
+            let reason = format!(
+                "MODEL_TOOL_PROTOCOL_VIOLATION: repeated malformed tool calls (tool='{}', error='{}')",
+                tc.name, err
+            );
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::Error,
+                serde_json::json!({
+                    "error": reason,
+                    "source": "tool_protocol_guard",
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "failure_class": "E_SCHEMA",
+                    "attempt": *malformed_tool_call_attempts
+                }),
+            );
+            return MalformedToolCallDecision::Finalize(
+                self.finalize_planner_error_with_output_with_end(
+                    step,
+                    run_id,
+                    started_at,
+                    reason,
+                    messages.clone(),
+                    observed_tool_calls,
+                    observed_tool_decisions,
+                    request_context_chars,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ),
+            );
+        }
+
+        let repair_key = format!("{}|{}", tc.name, err);
+        let attempts = schema_repair_attempts
+            .entry(repair_key)
+            .and_modify(|n| *n = n.saturating_add(1))
+            .or_insert(1);
+        if *attempts <= super::MAX_SCHEMA_REPAIR_ATTEMPTS && plan_tool_allowed {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::ToolRetry,
+                serde_json::json!({
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "attempt": *attempts,
+                    "max_retries": super::MAX_SCHEMA_REPAIR_ATTEMPTS,
+                    "max_attempts": super::MAX_SCHEMA_REPAIR_ATTEMPTS,
+                    "failure_class": "E_SCHEMA",
+                    "action": "repair",
+                    "error_code": crate::tools::ToolErrorCode::ToolArgsInvalid.as_str()
+                }),
+            );
+            let tool_msg = crate::agent_tool_exec::make_invalid_args_tool_message(
+                tc,
+                err,
+                self.tool_rt.exec_target_kind,
+            );
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::ToolExecEnd,
+                serde_json::json!({
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "ok": false,
+                    "truncated": false,
+                    "retry_count": 0,
+                    "failure_class": "E_SCHEMA",
+                    "source": "schema_repair",
+                    "repair_attempted": true,
+                    "repair_succeeded": false,
+                    "error_code": crate::tools::ToolErrorCode::ToolArgsInvalid.as_str()
+                }),
+            );
+            messages.push(tool_msg);
+            if self.inject_post_tool_operator_messages(&run_id, step, messages) {
+                return MalformedToolCallDecision::RestartAgentStep;
+            }
+            messages.push(crate::agent_tool_exec::schema_repair_instruction_message(tc, err));
+            return MalformedToolCallDecision::RestartAgentStep;
+        }
+
+        self.emit_event(
+            &run_id,
+            step,
+            EventKind::ToolRetry,
+            serde_json::json!({
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "attempt": *attempts,
+                "max_retries": super::MAX_SCHEMA_REPAIR_ATTEMPTS,
+                "max_attempts": super::MAX_SCHEMA_REPAIR_ATTEMPTS,
+                "failure_class": "E_SCHEMA",
+                "action": "stop",
+                "error_code": crate::tools::ToolErrorCode::ToolArgsInvalid.as_str()
+            }),
+        );
+        if *attempts > super::MAX_SCHEMA_REPAIR_ATTEMPTS {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::Error,
+                serde_json::json!({
+                    "error": "schema repair attempts exhausted",
+                    "source": "schema_repair",
+                    "code": "TOOL_SCHEMA_REPAIR_EXHAUSTED",
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "attempt": *attempts,
+                    "max_attempts": super::MAX_SCHEMA_REPAIR_ATTEMPTS
+                }),
+            );
+        }
+        MalformedToolCallDecision::ContinueToolLoop {
+            invalid_args_error,
         }
     }
 
