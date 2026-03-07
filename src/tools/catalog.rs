@@ -6,7 +6,7 @@ pub fn tool_side_effects(tool_name: &str) -> SideEffects {
     match tool_name {
         "list_dir" | "read_file" | "glob" | "grep" => SideEffects::FilesystemRead,
         "shell" => SideEffects::ShellExec,
-        "write_file" | "apply_patch" => SideEffects::FilesystemWrite,
+        "write_file" | "apply_patch" | "str_replace" => SideEffects::FilesystemWrite,
         _ if tool_name.starts_with("mcp.playwright.") => SideEffects::Browser,
         _ if tool_name.starts_with("mcp.") => SideEffects::Network,
         _ => SideEffects::None,
@@ -104,6 +104,20 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
                 "type":"object",
                 "properties":{"path":{"type":"string"},"patch":{"type":"string"}},
                 "required":["path","patch"]
+            }),
+            side_effects: SideEffects::FilesystemWrite,
+        });
+        tools.push(ToolDef {
+            name: "str_replace".to_string(),
+            description: "Replace an exact string occurrence in a file. The old_string must match exactly once; include surrounding lines for uniqueness if needed.".to_string(),
+            parameters: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "old_string":{"type":"string"},
+                    "new_string":{"type":"string"}
+                },
+                "required":["path","old_string","new_string"]
             }),
             side_effects: SideEffects::FilesystemWrite,
         });

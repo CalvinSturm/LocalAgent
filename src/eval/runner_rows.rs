@@ -93,7 +93,7 @@ pub(crate) fn missing_required_tool_reason(
     enabled_mcp: &[String],
 ) -> Option<String> {
     for req in &task.required_tools {
-        if (req == "write_file" || req == "apply_patch") && !enable_write_tools {
+        if (req == "write_file" || req == "apply_patch" || req == "str_replace") && !enable_write_tools {
             return Some(format!("skipped: required tool '{}' not enabled", req));
         }
         if req.starts_with("mcp.playwright") && !enabled_mcp.iter().any(|m| m == "playwright") {

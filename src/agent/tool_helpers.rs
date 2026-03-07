@@ -1210,7 +1210,7 @@ impl<P: ModelProvider> Agent<P> {
         let content = tool_msg.content.clone().unwrap_or_default();
         let final_ok = !tool_result_has_error(&content);
         let final_error_code = crate::agent_tool_exec::tool_result_error_code(&content);
-        let changed_flag = if matches!(tc.name.as_str(), "apply_patch" | "write_file") {
+        let changed_flag = if matches!(tc.name.as_str(), "apply_patch" | "write_file" | "str_replace") {
             crate::agent_tool_exec::tool_result_changed_flag(&content)
         } else {
             None

@@ -175,7 +175,7 @@ impl<P: ModelProvider> Agent<P> {
             if tc.name == "apply_patch" {
                 invalid_patch_format_attempts.remove(repeat_key);
             }
-            if tc.name == "apply_patch" || tc.name == "write_file" {
+            if tc.name == "apply_patch" || tc.name == "write_file" || tc.name == "str_replace" {
                 *successful_write_tool_ok_this_step = true;
             }
         } else {
@@ -214,6 +214,9 @@ impl<P: ModelProvider> Agent<P> {
                 ),
                 "apply_patch" => Some(
                     "The patch failed to apply. Use read_file to re-read the current file contents, then emit a corrected apply_patch with an accurate unified diff that matches the file.",
+                ),
+                "str_replace" => Some(
+                    "The str_replace failed. Use read_file to re-read the current file contents, then emit a corrected str_replace with an old_string that exactly matches text in the file.",
                 ),
                 _ => None,
             };

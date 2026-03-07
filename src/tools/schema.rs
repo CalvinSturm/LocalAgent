@@ -52,6 +52,15 @@ pub fn compact_builtin_schema(tool_name: &str) -> Option<Value> {
             "required":["path","patch"],
             "properties":{"path":{"type":"string"},"patch":{"type":"string"}}
         })),
+        "str_replace" => Some(json!({
+            "type":"object",
+            "required":["path","old_string","new_string"],
+            "properties":{
+                "path":{"type":"string"},
+                "old_string":{"type":"string"},
+                "new_string":{"type":"string"}
+            }
+        })),
         _ => None,
     }
 }
@@ -65,6 +74,7 @@ pub fn minimal_builtin_example(tool_name: &str) -> Option<Value> {
         "shell" => Some(json!({"cmd":"echo","args":["hello"]})),
         "write_file" => Some(json!({"path":"notes.txt","content":"hello"})),
         "apply_patch" => Some(json!({"path":"src/main.rs","patch":"@@ -1 +1 @@\n-a\n+b\n"})),
+        "str_replace" => Some(json!({"path":"src/main.rs","old_string":"println!(\"helo\")","new_string":"println!(\"hello\")"})),
         _ => None,
     }
 }
@@ -77,6 +87,7 @@ pub fn sorted_builtin_tool_names() -> Vec<String> {
         "list_dir".to_string(),
         "read_file".to_string(),
         "shell".to_string(),
+        "str_replace".to_string(),
         "write_file".to_string(),
     ];
     names.sort();
@@ -177,6 +188,11 @@ pub fn validate_builtin_tool_args(
         "apply_patch" => {
             require_non_empty_string(obj, "path")?;
             require_non_empty_string(obj, "patch")?;
+        }
+        "str_replace" => {
+            require_non_empty_string(obj, "path")?;
+            require_string(obj, "old_string")?;
+            require_string(obj, "new_string")?;
         }
         _ => {}
     }

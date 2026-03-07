@@ -66,7 +66,7 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
         if !execution.ok {
             continue;
         }
-        if matches!(execution.name.as_str(), "apply_patch" | "write_file") {
+        if matches!(execution.name.as_str(), "apply_patch" | "write_file" | "str_replace") {
             let actually_changed = execution.changed.unwrap_or(true);
             if actually_changed {
                 saw_effective_write = true;
@@ -79,11 +79,12 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
                     pending_post_write_verification.remove(path);
                 }
             }
-            "apply_patch" => {
+            "apply_patch" | "str_replace" => {
                 if let Some(path) = &execution.path {
                     if !successful_read_paths.contains(path) {
                         return Some(format!(
-                            "implementation guard: apply_patch on '{path}' requires prior read_file on the same path"
+                            "implementation guard: {} on '{path}' requires prior read_file on the same path",
+                            execution.name
                         ));
                     }
                     pending_post_write_verification.insert(path.clone());
@@ -129,7 +130,7 @@ pub(crate) fn pending_post_write_verification_paths(
                     pending_post_write_verification.remove(path);
                 }
             }
-            "apply_patch" | "write_file" => {
+            "apply_patch" | "write_file" | "str_replace" => {
                 if let Some(path) = &execution.path {
                     pending_post_write_verification.insert(path.clone());
                 }

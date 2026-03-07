@@ -292,7 +292,7 @@ impl<P: ModelProvider> Agent<P> {
                 {
                     let saw_effective_write = observed_tool_executions.iter().any(|e| {
                         e.ok
-                            && matches!(e.name.as_str(), "apply_patch" | "write_file")
+                            && matches!(e.name.as_str(), "apply_patch" | "write_file" | "str_replace")
                             && e.changed != Some(false)
                     });
                     let is_retryable = (!saw_effective_write

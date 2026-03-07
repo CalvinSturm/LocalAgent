@@ -260,9 +260,9 @@ Tool use contract:\n\
 - If no tool is needed, return a direct final answer.\n\
 \n\
 Edit workflow (required):\n\
-- Always use read_file on a path BEFORE editing it with apply_patch or write_file.\n\
+- Always use read_file on a path BEFORE editing it with apply_patch, str_replace, or write_file.\n\
 - After editing, use read_file again to verify your changes.\n\
-- Prefer apply_patch for modifying existing files. Only use write_file for new files.\n\
+- Prefer str_replace for small targeted edits (exact match and replace). Use apply_patch for larger multi-hunk changes. Only use write_file for new files.\n\
 \n\
 Fallback when native tool calls are unavailable:\n\
 - Emit exactly one wrapper block:\n\

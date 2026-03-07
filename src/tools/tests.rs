@@ -200,6 +200,7 @@ async fn unknown_tool_payload_includes_sorted_available_tools() {
         json!("list_dir"),
         json!("read_file"),
         json!("shell"),
+        json!("str_replace"),
         json!("write_file"),
     ];
     assert_eq!(got, expected);
