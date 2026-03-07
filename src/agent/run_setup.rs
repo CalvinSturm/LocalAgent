@@ -259,6 +259,11 @@ Tool use contract:\n\
 - If a tool returns an error, read the tool error and retry with corrected arguments only when applicable.\n\
 - If no tool is needed, return a direct final answer.\n\
 \n\
+Edit workflow (required):\n\
+- Always use read_file on a path BEFORE editing it with apply_patch or write_file.\n\
+- After editing, use read_file again to verify your changes.\n\
+- Prefer apply_patch for modifying existing files. Only use write_file for new files.\n\
+\n\
 Fallback when native tool calls are unavailable:\n\
 - Emit exactly one wrapper block:\n\
   [TOOL_CALL]\n\

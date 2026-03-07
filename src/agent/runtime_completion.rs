@@ -293,13 +293,17 @@ impl<P: ModelProvider> Agent<P> {
                     let saw_successful_write = observed_tool_executions
                         .iter()
                         .any(|e| e.ok && matches!(e.name.as_str(), "apply_patch" | "write_file"));
-                    if !saw_successful_write
-                        && reason.contains("without an effective write")
-                        && blocked_runtime_completion_count < 2
-                    {
+                    let is_retryable = (!saw_successful_write
+                        && reason.contains("without an effective write"))
+                        || reason.contains("requires prior read_file");
+                    if is_retryable && blocked_runtime_completion_count < 2 {
                         let blocked_runtime_completion_count =
                             blocked_runtime_completion_count.saturating_add(1);
-                        let corrective_instruction = "Implementation task requires at least one effective write tool call. Use read_file + apply_patch (or write_file when creating a new file), then verify with read_file before finalizing.";
+                        let corrective_instruction = if reason.contains("requires prior read_file") {
+                            "You must read_file on a path before editing it. Use read_file to inspect the file contents first, then apply_patch to make changes, then read_file again to verify."
+                        } else {
+                            "Implementation task requires at least one effective write tool call. Use read_file + apply_patch (or write_file when creating a new file), then verify with read_file before finalizing."
+                        };
                         self.emit_event(
                             &run_id,
                             step,

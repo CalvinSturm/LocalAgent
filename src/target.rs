@@ -342,22 +342,13 @@ impl ExecTarget for HostTarget {
             }
         };
         let original = String::from_utf8_lossy(&original_bytes).to_string();
-        let patch = match diffy::Patch::from_str(&req.patch) {
+        let normalized_patch = normalize_patch_for_diffy(&req.patch, &req.path);
+        let patched = match apply_patch_lenient(&original, &normalized_patch) {
             Ok(p) => p,
             Err(e) => {
                 return TargetResult::failed(
                     ExecTargetKind::Host,
-                    format!("invalid patch: {e}"),
-                    None,
-                )
-            }
-        };
-        let patched = match diffy::apply(&original, &patch) {
-            Ok(p) => p,
-            Err(e) => {
-                return TargetResult::failed(
-                    ExecTargetKind::Host,
-                    format!("failed to apply patch: {e}"),
+                    format!("{e}"),
                     None,
                 )
             }
@@ -820,6 +811,172 @@ pub fn resolve_path(workdir: &Path, input: &str) -> PathBuf {
     } else {
         workdir.join(p)
     }
+}
+
+/// Normalize a model-generated patch into valid unified diff format for `diffy`.
+///
+/// Local models commonly produce patches with:
+/// - Missing `--- a/file` / `+++ b/file` headers
+/// - Wrong line counts in `@@ -X,Y +X,Z @@` hunks
+/// - No hunk header at all (just +/- lines)
+///
+/// Try diffy first, then fall back to search-and-replace using the -/+ lines.
+fn apply_patch_lenient(original: &str, normalized_patch: &str) -> Result<String, String> {
+    // Try strict diffy parse + apply first.
+    if let Ok(patch) = diffy::Patch::from_str(normalized_patch) {
+        if let Ok(result) = diffy::apply(original, &patch) {
+            return Ok(result);
+        }
+    }
+
+    // Fallback: extract old/new lines from the patch and do search-and-replace.
+    let mut old_lines: Vec<String> = Vec::new();
+    let mut new_lines: Vec<String> = Vec::new();
+    for line in normalized_patch.lines() {
+        if line.starts_with("--- ") || line.starts_with("+++ ") || line.starts_with("@@ ") || line.starts_with("diff ") {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('-') {
+            old_lines.push(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix('+') {
+            new_lines.push(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(' ') {
+            old_lines.push(rest.to_string());
+            new_lines.push(rest.to_string());
+        } else if !line.is_empty() {
+            // Treat unpreixed lines as context.
+            old_lines.push(line.to_string());
+            new_lines.push(line.to_string());
+        }
+    }
+
+    if old_lines.is_empty() {
+        return Err("invalid patch: no content lines found".to_string());
+    }
+
+    let old_block = old_lines.join("\n");
+    let new_block = new_lines.join("\n");
+
+    if let Some(pos) = original.find(&old_block) {
+        let mut result = String::with_capacity(original.len() + new_block.len());
+        result.push_str(&original[..pos]);
+        result.push_str(&new_block);
+        result.push_str(&original[pos + old_block.len()..]);
+        return Ok(result);
+    }
+
+    // Try trimmed matching (handle trailing whitespace differences).
+    let old_trimmed: Vec<&str> = old_lines.iter().map(|l| l.trim_end()).collect();
+    let orig_lines: Vec<&str> = original.lines().collect();
+    for start in 0..orig_lines.len() {
+        if start + old_trimmed.len() > orig_lines.len() {
+            break;
+        }
+        let window = &orig_lines[start..start + old_trimmed.len()];
+        if window.iter().zip(&old_trimmed).all(|(a, b)| a.trim_end() == *b) {
+            let mut result = String::new();
+            for line in &orig_lines[..start] {
+                result.push_str(line);
+                result.push('\n');
+            }
+            for line in &new_lines {
+                result.push_str(line);
+                result.push('\n');
+            }
+            for line in &orig_lines[start + old_trimmed.len()..] {
+                result.push_str(line);
+                result.push('\n');
+            }
+            return Ok(result);
+        }
+    }
+
+    Err("failed to apply patch: could not locate the target content in the file".to_string())
+}
+
+/// This function fixes these issues so `diffy::Patch::from_str` can parse them.
+fn normalize_patch_for_diffy(patch: &str, path: &str) -> String {
+    let lines: Vec<&str> = patch.lines().collect();
+    if lines.is_empty() {
+        return patch.to_string();
+    }
+
+    // Check if this already looks like a valid unified diff that diffy can parse.
+    if diffy::Patch::from_str(patch).is_ok() {
+        return patch.to_string();
+    }
+
+    let mut has_file_headers = false;
+    let mut hunk_lines: Vec<&str> = Vec::new();
+    let mut pre_lines: Vec<String> = Vec::new();
+
+    for line in &lines {
+        if line.starts_with("--- ") {
+            has_file_headers = true;
+        }
+    }
+
+    // Collect lines that belong to the diff hunk (context, +, - lines).
+    let mut in_hunk = false;
+    for line in &lines {
+        if line.starts_with("diff --git") || line.starts_with("--- ") || line.starts_with("+++ ") {
+            pre_lines.push(line.to_string());
+            continue;
+        }
+        if line.starts_with("@@ ") {
+            in_hunk = true;
+            continue; // We'll regenerate the hunk header.
+        }
+        if in_hunk || line.starts_with('+') || line.starts_with('-') || line.starts_with(' ') {
+            in_hunk = true;
+            hunk_lines.push(line);
+        }
+    }
+
+    if hunk_lines.is_empty() {
+        return patch.to_string();
+    }
+
+    // Count old/new lines for the hunk header.
+    let mut old_count = 0u32;
+    let mut new_count = 0u32;
+    for line in &hunk_lines {
+        if line.starts_with('-') {
+            old_count += 1;
+        } else if line.starts_with('+') {
+            new_count += 1;
+        } else {
+            // Context line.
+            old_count += 1;
+            new_count += 1;
+        }
+    }
+
+    let mut out = String::new();
+
+    // Add file headers if missing.
+    if !has_file_headers {
+        out.push_str(&format!("--- a/{path}\n"));
+        out.push_str(&format!("+++ b/{path}\n"));
+    } else {
+        for pl in &pre_lines {
+            if pl.starts_with("--- ") || pl.starts_with("+++ ") {
+                out.push_str(pl);
+                out.push('\n');
+            }
+        }
+    }
+
+    // Write corrected hunk header.
+    out.push_str(&format!("@@ -1,{old_count} +1,{new_count} @@\n"));
+
+    // Write hunk body.
+    for line in &hunk_lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    out
 }
 
 fn resolve_path_scoped(workdir: &Path, input: &str) -> anyhow::Result<PathBuf> {

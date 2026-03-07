@@ -952,6 +952,25 @@ fn inline_tool_call_json_is_parsed() {
 }
 
 #[test]
+fn wrapped_tool_call_with_literal_newlines_in_string_is_parsed() {
+    // Models often emit literal newlines inside JSON string values instead of \n escapes.
+    let raw = "[TOOL_CALL]\n{\"name\":\"apply_patch\",\"arguments\":{\"path\":\"main.rs\",\"patch\":\"fn answer() -> i32 {\n    return 2;\n}\"}}\n[END_TOOL_CALL]";
+    let mut allowed = std::collections::BTreeSet::new();
+    allowed.insert("apply_patch".to_string());
+    let calls = crate::agent_tool_exec::extract_wrapped_tool_calls(raw, 1, &allowed);
+    assert_eq!(calls.len(), 1, "should parse tool call with literal newlines in string value");
+    assert_eq!(calls[0].name, "apply_patch");
+    assert_eq!(
+        calls[0].arguments["path"].as_str().unwrap(),
+        "main.rs"
+    );
+    assert!(
+        calls[0].arguments["patch"].as_str().unwrap().contains("return 2"),
+        "patch content should be preserved"
+    );
+}
+
+#[test]
 fn inline_tool_call_fenced_json_is_parsed() {
     let raw = "```json\n{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}\n```";
     let mut allowed = std::collections::BTreeSet::new();

@@ -312,7 +312,50 @@ pub(crate) fn parse_jsonish(raw: &str) -> Option<serde_json::Value> {
             return Some(v);
         }
     }
+    // Fallback: repair unescaped newlines inside JSON string values.
+    // Small models often emit literal newlines inside strings instead of \n.
+    let repaired = repair_json_unescaped_newlines(trimmed);
+    if repaired != trimmed {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&repaired) {
+            return Some(v);
+        }
+    }
     None
+}
+
+/// Escape literal newlines (and carriage returns) that appear inside JSON string values.
+/// Walks the input character-by-character, tracking whether we are inside a quoted string.
+fn repair_json_unescaped_newlines(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 32);
+    let mut in_string = false;
+    let mut escape_next = false;
+    for ch in raw.chars() {
+        if escape_next {
+            out.push(ch);
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            out.push(ch);
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            out.push(ch);
+            continue;
+        }
+        if in_string && ch == '\n' {
+            out.push_str("\\n");
+            continue;
+        }
+        if in_string && ch == '\r' {
+            out.push_str("\\r");
+            continue;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 pub(crate) fn contains_tool_wrapper_markers(s: &str) -> bool {

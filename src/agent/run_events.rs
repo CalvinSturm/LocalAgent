@@ -72,6 +72,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     pub(super) fn emit_tool_exec_start_events(&mut self, run_id: &str, step: u32, tc: &ToolCall) {
+        eprintln!("[DEBUG] tool_exec_start: step={step} name={} id={}", tc.name, tc.id);
         self.emit_event(
             run_id,
             step,

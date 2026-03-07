@@ -2,7 +2,7 @@ use crate::gate::GateEvent;
 use crate::providers::ModelProvider;
 use crate::taint::TaintState;
 use crate::tools::tool_side_effects;
-use crate::types::{Message, TokenUsage, ToolCall};
+use crate::types::{Message, Role, TokenUsage, ToolCall};
 
 use super::agent_types::ToolDecisionRecord;
 use super::tool_helpers::{
@@ -166,6 +166,12 @@ impl<P: ModelProvider> Agent<P> {
         });
         if final_ok {
             failed_repeat_counts.remove(repeat_key);
+            // A successful call earns back per-name headroom so the model can
+            // recover from earlier failures without hitting the name limit.
+            let name_key = format!("name::{}", tc.name);
+            if let Some(nn) = failed_repeat_counts.get_mut(&name_key) {
+                *nn = nn.saturating_sub(1);
+            }
             if tc.name == "apply_patch" {
                 invalid_patch_format_attempts.remove(repeat_key);
             }
@@ -196,6 +202,31 @@ impl<P: ModelProvider> Agent<P> {
             }),
         );
         messages.push(tool_msg);
+        // When a tool fails, inject a recovery hint to steer the model toward
+        // a different strategy instead of blindly repeating the same call.
+        if !final_ok {
+            let hint = match tc.name.as_str() {
+                "shell" => Some(
+                    "The shell command failed. Before retrying, use read_file or grep to inspect the relevant source files and diagnose the issue. Fix the code with apply_patch first, then re-run the command.",
+                ),
+                "read_file" => Some(
+                    "The file was not found. Use list_dir or glob to discover the correct file paths in this repository before retrying read_file.",
+                ),
+                "apply_patch" => Some(
+                    "The patch failed to apply. Use read_file to re-read the current file contents, then emit a corrected apply_patch with an accurate unified diff that matches the file.",
+                ),
+                _ => None,
+            };
+            if let Some(text) = hint {
+                messages.push(Message {
+                    role: Role::Developer,
+                    content: Some(text.to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                });
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -673,6 +673,11 @@ pub(crate) async fn drive_tui_active_turn_loop(
             _ = tokio::time::sleep(Duration::from_millis(base_run.tui_refresh_ms)) => None,
         };
         if let Some(res) = maybe_res {
+            // Drain any events that arrived between the last try_recv and future completion,
+            // so late tool rows (e.g. apply_patch) are not lost from ui_state.
+            while let Ok(ev) = rx.try_recv() {
+                ui_state.apply_event(&ev);
+            }
             match res {
                 Ok(out) => {
                     let outcome = out.outcome;
