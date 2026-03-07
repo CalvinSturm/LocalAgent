@@ -129,6 +129,7 @@ impl<P: ModelProvider> Agent<P> {
         let mut taint_state = TaintState::new();
         let mut active_plan_step_idx: usize = 0;
         let mut blocked_runtime_completion_count: u32 = 0;
+        let mut post_write_guard_retry_count: u32 = 0;
         let mut operator_delivery_count: u32 = 0;
         let mut blocked_control_envelope_count: u32 = 0;
         let mut blocked_tool_only_count: u32 = 0;
@@ -1167,27 +1168,42 @@ impl<P: ModelProvider> Agent<P> {
             }
 
             if enforce_implementation_integrity_guard && successful_write_tool_ok_this_step {
-                return self
+                match self
                     .finalize_verified_write_step_or_error(
-                        run_id,
+                        run_id.clone(),
                         step as u32,
-                        started_at,
+                        started_at.clone(),
                         user_prompt,
-                        observed_tool_calls,
+                        observed_tool_calls.clone(),
                         &mut observed_tool_executions,
-                        observed_tool_decisions,
-                        messages,
+                        observed_tool_decisions.clone(),
+                        messages.clone(),
                         request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
+                        last_compaction_report.clone(),
+                        hook_invocations.clone(),
                         provider_retry_count,
                         provider_error_count,
                         saw_token_usage,
                         &total_token_usage,
                         &taint_state,
                         enforce_implementation_integrity_guard,
+                        post_write_guard_retry_count,
                     )
-                    .await;
+                    .await
+                {
+                    runtime_completion::VerifiedWriteResult::Done(outcome) => return outcome,
+                    runtime_completion::VerifiedWriteResult::RetryWithMessage(corrective) => {
+                        post_write_guard_retry_count += 1;
+                        messages.push(Message {
+                            role: Role::Developer,
+                            content: Some(corrective),
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_calls: None,
+                        });
+                        continue 'agent_steps;
+                    }
+                }
             }
         }
 

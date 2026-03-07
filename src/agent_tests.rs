@@ -4307,3 +4307,98 @@ taint:
     assert_eq!(spans[0].source, "file");
     assert!(spans[0].detail.contains("matched taint glob"));
 }
+
+#[test]
+fn prompt_allows_new_file_create_backtick_pattern() {
+    // C1 prompt uses "Create `src/hello.txt`" phrasing
+    let calls = vec![crate::types::ToolCall {
+        id: "tc1".to_string(),
+        name: "write_file".to_string(),
+        arguments: json!({"path":"src/hello.txt","content":"hello"}),
+    }];
+    let executions = vec![
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "write_file".to_string(),
+            path: Some("src/hello.txt".to_string()),
+            ok: true,
+            changed: Some(true),
+        },
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some("src/hello.txt".to_string()),
+            ok: true,
+            changed: None,
+        },
+    ];
+    let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+        "Create `src/hello.txt` containing \"hello\"",
+        "done",
+        &calls,
+        &executions,
+        true,
+    );
+    assert!(
+        err.is_none(),
+        "create backtick pattern should allow write_file without prior read: {err:?}"
+    );
+}
+
+#[test]
+fn prompt_allows_new_file_create_the_file_pattern() {
+    let calls = vec![crate::types::ToolCall {
+        id: "tc1".to_string(),
+        name: "write_file".to_string(),
+        arguments: json!({"path":"app.js","content":"console.log('hi')"}),
+    }];
+    let executions = vec![
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "write_file".to_string(),
+            path: Some("app.js".to_string()),
+            ok: true,
+            changed: Some(true),
+        },
+        crate::agent_impl_guard::ToolExecutionRecord {
+            name: "read_file".to_string(),
+            path: Some("app.js".to_string()),
+            ok: true,
+            changed: None,
+        },
+    ];
+    let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+        "Create the file app.js with a hello world script",
+        "done",
+        &calls,
+        &executions,
+        true,
+    );
+    assert!(
+        err.is_none(),
+        "create the file pattern should allow write_file without prior read: {err:?}"
+    );
+}
+
+#[test]
+fn prompt_rejects_update_backtick_without_read() {
+    let calls = vec![crate::types::ToolCall {
+        id: "tc1".to_string(),
+        name: "write_file".to_string(),
+        arguments: json!({"path":"src/hello.txt","content":"updated"}),
+    }];
+    let executions = vec![crate::agent_impl_guard::ToolExecutionRecord {
+        name: "write_file".to_string(),
+        path: Some("src/hello.txt".to_string()),
+        ok: true,
+        changed: Some(true),
+    }];
+    let err = crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
+        "Update `src/hello.txt` with new content",
+        "done",
+        &calls,
+        &executions,
+        true,
+    );
+    assert!(
+        err.is_some(),
+        "update prompt should still require prior read_file"
+    );
+}

@@ -28,7 +28,9 @@ impl<P: ModelProvider> Agent<P> {
         total_token_usage: &TokenUsage,
         taint_state: &TaintState,
         enforce_implementation_integrity_guard: bool,
-    ) -> AgentOutcome {
+        post_write_guard_retry_count: u32,
+    ) -> super::runtime_completion::VerifiedWriteResult {
+        use super::runtime_completion::VerifiedWriteResult;
         let final_output = if verified_paths.is_empty() {
             "Applied requested file changes and verified.".to_string()
         } else {
@@ -46,6 +48,26 @@ impl<P: ModelProvider> Agent<P> {
                 enforce_implementation_integrity_guard,
             )
         {
+            let is_retryable = reason.contains("requires prior read_file")
+                || reason.contains("post-write verification missing");
+            if is_retryable && post_write_guard_retry_count < 1 {
+                self.emit_event(
+                    &run_id,
+                    step,
+                    EventKind::Error,
+                    serde_json::json!({
+                        "error": reason,
+                        "source": "implementation_integrity_guard",
+                        "reason_code": "post_write_guard_retry"
+                    }),
+                );
+                let corrective = if reason.contains("requires prior read_file") {
+                    "You must read_file on a path before editing it. Use read_file to inspect the file contents first, then apply your changes, then read_file again to verify."
+                } else {
+                    "Post-write verification requires a read_file call after writing. Use read_file on the modified path to verify your changes."
+                };
+                return VerifiedWriteResult::RetryWithMessage(corrective.to_string());
+            }
             self.emit_event(
                 &run_id,
                 step,
@@ -55,7 +77,7 @@ impl<P: ModelProvider> Agent<P> {
                     "source": "implementation_integrity_guard"
                 }),
             );
-            return self.finalize_planner_error_with_end(
+            return VerifiedWriteResult::Done(self.finalize_planner_error_with_end(
                 step,
                 run_id,
                 started_at,
@@ -71,9 +93,9 @@ impl<P: ModelProvider> Agent<P> {
                 saw_token_usage,
                 total_token_usage,
                 taint_state,
-            );
+            ));
         }
-        self.finalize_ok_with_end(
+        VerifiedWriteResult::Done(self.finalize_ok_with_end(
             step,
             run_id,
             started_at,
@@ -89,7 +111,7 @@ impl<P: ModelProvider> Agent<P> {
             saw_token_usage,
             total_token_usage,
             taint_state,
-        )
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -447,13 +469,19 @@ impl<P: ModelProvider> Agent<P> {
         total_token_usage: &TokenUsage,
         taint_state: &TaintState,
     ) -> AgentOutcome {
+        let final_output = messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, crate::types::Role::Assistant))
+            .and_then(|m| m.content.clone())
+            .unwrap_or_default();
         self.finalize_run_outcome_with_end(
             step,
             AgentOutcomeBuilderInput {
                 run_id,
                 started_at,
                 exit_reason: super::AgentExitReason::PlannerError,
-                final_output: String::new(),
+                final_output,
                 error: Some(error),
                 messages,
                 tool_calls,

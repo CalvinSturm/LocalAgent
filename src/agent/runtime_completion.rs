@@ -413,7 +413,8 @@ impl<P: ModelProvider> Agent<P> {
         total_token_usage: &TokenUsage,
         taint_state: &TaintState,
         enforce_implementation_integrity_guard: bool,
-    ) -> super::agent_types::AgentOutcome {
+        post_write_guard_retry_count: u32,
+    ) -> VerifiedWriteResult {
         const MAX_POST_WRITE_VERIFY_PATHS: usize = 10;
         let post_write_verify_timeout_ms = self.effective_post_write_verify_timeout_ms();
         let pending_post_write_paths =
@@ -435,6 +436,23 @@ impl<P: ModelProvider> Agent<P> {
             {
                 Ok(record) => observed_tool_executions.push(record),
                 Err(reason) => {
+                    if reason.contains("requires prior read_file")
+                        && post_write_guard_retry_count < 1
+                    {
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::Error,
+                            serde_json::json!({
+                                "error": reason,
+                                "source": "implementation_integrity_guard",
+                                "reason_code": "post_write_guard_retry"
+                            }),
+                        );
+                        return VerifiedWriteResult::RetryWithMessage(
+                            "You must read_file on a path before editing it. Use read_file to inspect the file contents first, then apply your changes, then read_file again to verify.".to_string(),
+                        );
+                    }
                     self.emit_event(
                         &run_id,
                         step,
@@ -444,7 +462,7 @@ impl<P: ModelProvider> Agent<P> {
                             "source": "implementation_integrity_guard"
                         }),
                     );
-                    return self.finalize_planner_error_with_end(
+                    return VerifiedWriteResult::Done(self.finalize_planner_error_with_end(
                         step,
                         run_id,
                         started_at,
@@ -460,7 +478,7 @@ impl<P: ModelProvider> Agent<P> {
                         saw_token_usage,
                         total_token_usage,
                         taint_state,
-                    );
+                    ));
                 }
             }
         }
@@ -483,6 +501,12 @@ impl<P: ModelProvider> Agent<P> {
             total_token_usage,
             taint_state,
             enforce_implementation_integrity_guard,
+            post_write_guard_retry_count,
         )
     }
+}
+
+pub(super) enum VerifiedWriteResult {
+    Done(super::agent_types::AgentOutcome),
+    RetryWithMessage(String),
 }

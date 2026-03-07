@@ -171,6 +171,8 @@ fn prompt_allows_new_file_without_read(prompt: &str) -> bool {
         || p.contains("create new file")
         || p.contains("new file at")
         || p.contains("add new file")
+        || p.contains("create `")
+        || p.contains("create the file")
 }
 
 pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
