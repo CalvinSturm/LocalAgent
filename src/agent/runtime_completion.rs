@@ -290,10 +290,12 @@ impl<P: ModelProvider> Agent<P> {
                         enforce_implementation_integrity_guard,
                     )
                 {
-                    let saw_successful_write = observed_tool_executions
-                        .iter()
-                        .any(|e| e.ok && matches!(e.name.as_str(), "apply_patch" | "write_file"));
-                    let is_retryable = (!saw_successful_write
+                    let saw_effective_write = observed_tool_executions.iter().any(|e| {
+                        e.ok
+                            && matches!(e.name.as_str(), "apply_patch" | "write_file")
+                            && e.changed != Some(false)
+                    });
+                    let is_retryable = (!saw_effective_write
                         && reason.contains("without an effective write"))
                         || reason.contains("requires prior read_file");
                     if is_retryable && blocked_runtime_completion_count < 2 {
