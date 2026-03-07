@@ -270,6 +270,16 @@ impl Policy {
                         path: "safe_default".to_string(),
                     },
                 },
+                CompiledRule {
+                    tool_pattern: "str_replace".to_string(),
+                    tool: ToolMatcher::Exact("str_replace".to_string()),
+                    decision: PolicyDecision::RequireApproval,
+                    when: Vec::new(),
+                    reason: None,
+                    source: RuleSource {
+                        path: "safe_default".to_string(),
+                    },
+                },
             ],
         }
     }
@@ -367,7 +377,7 @@ impl Policy {
 }
 
 pub fn safe_default_policy_repr() -> &'static str {
-    "version:1;default:deny;rules:[allow list_dir,allow read_file,allow glob,allow grep,require_approval shell,require_approval write_file,require_approval apply_patch]"
+    "version:1;default:deny;rules:[allow list_dir,allow read_file,allow glob,allow grep,require_approval shell,require_approval write_file,require_approval apply_patch,require_approval str_replace]"
 }
 
 #[derive(Default)]
@@ -818,7 +828,7 @@ taint:
     #[test]
     fn safe_default_policy_repr_includes_glob_and_grep_in_order() {
         let repr = super::safe_default_policy_repr();
-        let expected = "version:1;default:deny;rules:[allow list_dir,allow read_file,allow glob,allow grep,require_approval shell,require_approval write_file,require_approval apply_patch]";
+        let expected = "version:1;default:deny;rules:[allow list_dir,allow read_file,allow glob,allow grep,require_approval shell,require_approval write_file,require_approval apply_patch,require_approval str_replace]";
         assert_eq!(repr, expected);
     }
 }

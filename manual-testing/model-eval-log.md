@@ -175,11 +175,26 @@ Settings: `--provider lmstudio --enable-write-tools --allow-write --allow-shell 
 5. **C4**: model uses `grep` to find the file instead of `read_file`, then the impl guard blocks `str_replace` because no prior `read_file` on that path. This is a valid guard enforcement — model should `read_file` before editing.
 6. **Glob assertion fix**: `matches_pattern` was not recognizing `{a,b}` brace expansion — fixed by adding `{` to the glob-trigger check.
 
+#### Run 4 — after gate/trust fix for str_replace
+
+`str_replace` was missing from `gate.rs` hard gate and `trust/policy.rs` default rules, causing all `str_replace` calls to exit `denied`. After adding `str_replace` alongside `apply_patch` in both:
+
+| Task | Exit | Steps | Tool Sequence | bytes_written | Notes |
+|------|------|-------|---------------|---------------|-------|
+| C1 | planner_error | 1 | `write_file` | 6 | Same guard issue |
+| C2 | ok | 4 | `read_file → apply_patch ×3` | 60 | Tools work, output miss |
+| C3 | ok | 3 | `read_file → read_file → str_replace` | 419 | str_replace succeeded! Didn't run cargo test |
+| C4 | planner_error | 6 | `grep → read_file → str_replace → grep` | 0 | str_replace ran but no match |
+| C5 | planner_error | 7 | `shell → read_file → grep ×3` | 0 | Never used a write tool |
+
+**Gate fix unblocked C3**: `denied` → `ok` with successful file edit (419 bytes written).
+
 #### Artifacts
 
-- `.localagent/eval/results_2026-03-07T03-02-06.4234611Z.json` (run 2)
+- `.localagent/eval/results_2026-03-07T03-02-06.4234611Z.json` (run 1)
 - `.localagent/eval/results_2026-03-07T05-11-06.7849613Z.json` (run 2 after assertion fix)
 - `.localagent/eval/results_2026-03-07T05-32-30.3361591Z.json` (run 3)
+- `.localagent/eval/results_2026-03-07T05-47-47.3497653Z.json` (run 4 after gate/trust fix)
 
 ## Current Temp State
 

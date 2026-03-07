@@ -186,7 +186,7 @@ impl ToolGate for NoGate {
                 escalation_reason: None,
             };
         }
-        if (call.name == "write_file" || call.name == "apply_patch")
+        if (call.name == "write_file" || call.name == "apply_patch" || call.name == "str_replace")
             && !ctx.allow_write
             && !ctx.unsafe_bypass_allow_flags
         {
@@ -280,7 +280,7 @@ impl ToolGate for TrustGate {
                 escalation_reason: None,
             };
         }
-        if (call.name == "write_file" || call.name == "apply_patch")
+        if (call.name == "write_file" || call.name == "apply_patch" || call.name == "str_replace")
             && !ctx.allow_write
             && !ctx.unsafe_bypass_allow_flags
         {
