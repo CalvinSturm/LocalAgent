@@ -74,7 +74,9 @@ pub fn minimal_builtin_example(tool_name: &str) -> Option<Value> {
         "shell" => Some(json!({"cmd":"echo","args":["hello"]})),
         "write_file" => Some(json!({"path":"notes.txt","content":"hello"})),
         "apply_patch" => Some(json!({"path":"src/main.rs","patch":"@@ -1 +1 @@\n-a\n+b\n"})),
-        "str_replace" => Some(json!({"path":"src/main.rs","old_string":"println!(\"helo\")","new_string":"println!(\"hello\")"})),
+        "str_replace" => Some(
+            json!({"path":"src/main.rs","old_string":"println!(\"helo\")","new_string":"println!(\"hello\")"}),
+        ),
         _ => None,
     }
 }

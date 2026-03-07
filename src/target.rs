@@ -345,13 +345,7 @@ impl ExecTarget for HostTarget {
         let normalized_patch = normalize_patch_for_diffy(&req.patch, &req.path);
         let patched = match apply_patch_lenient(&original, &normalized_patch) {
             Ok(p) => p,
-            Err(e) => {
-                return TargetResult::failed(
-                    ExecTargetKind::Host,
-                    format!("{e}"),
-                    None,
-                )
-            }
+            Err(e) => return TargetResult::failed(ExecTargetKind::Host, format!("{e}"), None),
         };
         if let Some(parent) = full.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
@@ -833,7 +827,11 @@ fn apply_patch_lenient(original: &str, normalized_patch: &str) -> Result<String,
     let mut old_lines: Vec<String> = Vec::new();
     let mut new_lines: Vec<String> = Vec::new();
     for line in normalized_patch.lines() {
-        if line.starts_with("--- ") || line.starts_with("+++ ") || line.starts_with("@@ ") || line.starts_with("diff ") {
+        if line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("@@ ")
+            || line.starts_with("diff ")
+        {
             continue;
         }
         if let Some(rest) = line.strip_prefix('-') {
@@ -873,7 +871,11 @@ fn apply_patch_lenient(original: &str, normalized_patch: &str) -> Result<String,
             break;
         }
         let window = &orig_lines[start..start + old_trimmed.len()];
-        if window.iter().zip(&old_trimmed).all(|(a, b)| a.trim_end() == *b) {
+        if window
+            .iter()
+            .zip(&old_trimmed)
+            .all(|(a, b)| a.trim_end() == *b)
+        {
             let mut result = String::new();
             for line in &orig_lines[..start] {
                 result.push_str(line);

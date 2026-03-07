@@ -958,14 +958,18 @@ fn wrapped_tool_call_with_literal_newlines_in_string_is_parsed() {
     let mut allowed = std::collections::BTreeSet::new();
     allowed.insert("apply_patch".to_string());
     let calls = crate::agent_tool_exec::extract_wrapped_tool_calls(raw, 1, &allowed);
-    assert_eq!(calls.len(), 1, "should parse tool call with literal newlines in string value");
-    assert_eq!(calls[0].name, "apply_patch");
     assert_eq!(
-        calls[0].arguments["path"].as_str().unwrap(),
-        "main.rs"
+        calls.len(),
+        1,
+        "should parse tool call with literal newlines in string value"
     );
+    assert_eq!(calls[0].name, "apply_patch");
+    assert_eq!(calls[0].arguments["path"].as_str().unwrap(), "main.rs");
     assert!(
-        calls[0].arguments["patch"].as_str().unwrap().contains("return 2"),
+        calls[0].arguments["patch"]
+            .as_str()
+            .unwrap()
+            .contains("return 2"),
         "patch content should be preserved"
     );
 }

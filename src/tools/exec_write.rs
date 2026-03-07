@@ -188,7 +188,10 @@ pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecu
         return failed_exec(
             rt,
             SideEffects::FilesystemWrite,
-            format!("str_replace: could not read file '{path}': {}", read_out.content),
+            format!(
+                "str_replace: could not read file '{path}': {}",
+                read_out.content
+            ),
             None,
         );
     }
@@ -230,7 +233,10 @@ pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecu
         return failed_exec(
             rt,
             SideEffects::FilesystemWrite,
-            format!("str_replace: could not write file '{path}': {}", write_out.content),
+            format!(
+                "str_replace: could not write file '{path}': {}",
+                write_out.content
+            ),
             None,
         );
     }

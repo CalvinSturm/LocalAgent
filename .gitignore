@@ -4,3 +4,6 @@ target/
 /.localagent/
 /.tmp/
 /.manual_test_temp/
+.claude/
+manual-testing/eval-*.json
+docs/archive/

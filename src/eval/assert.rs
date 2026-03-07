@@ -126,7 +126,11 @@ pub fn evaluate_assertions(
 }
 
 fn matches_pattern(name: &str, pattern: &str) -> bool {
-    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') || pattern.contains('{') {
+    if pattern.contains('*')
+        || pattern.contains('?')
+        || pattern.contains('[')
+        || pattern.contains('{')
+    {
         Glob::new(pattern)
             .map(|g| g.compile_matcher().is_match(name))
             .unwrap_or(false)

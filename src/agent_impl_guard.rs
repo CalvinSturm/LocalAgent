@@ -66,7 +66,10 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
         if !execution.ok {
             continue;
         }
-        if matches!(execution.name.as_str(), "apply_patch" | "write_file" | "str_replace") {
+        if matches!(
+            execution.name.as_str(),
+            "apply_patch" | "write_file" | "str_replace"
+        ) {
             let actually_changed = execution.changed.unwrap_or(true);
             if actually_changed {
                 saw_effective_write = true;
