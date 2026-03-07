@@ -160,8 +160,8 @@ fn coding_tasks() -> Vec<EvalTask> {
                 Assertion::ToolUsedGlob {
                     pattern: "read_file".to_string(),
                 },
-                Assertion::ToolUsed {
-                    name: "apply_patch".to_string(),
+                Assertion::ToolUsedGlob {
+                    pattern: "{apply_patch,str_replace}".to_string(),
                 },
                 Assertion::ToolArgContains {
                     tool: "shell".to_string(),
@@ -204,8 +204,8 @@ fn coding_tasks() -> Vec<EvalTask> {
                 Assertion::ToolUsedGlob {
                     pattern: "read_file".to_string(),
                 },
-                Assertion::ToolUsed {
-                    name: "apply_patch".to_string(),
+                Assertion::ToolUsedGlob {
+                    pattern: "{apply_patch,str_replace}".to_string(),
                 },
                 Assertion::FileContains {
                     path: "src/messages.rs".to_string(),
@@ -240,8 +240,8 @@ fn coding_tasks() -> Vec<EvalTask> {
                 Assertion::ToolUsedGlob {
                     pattern: "read_file".to_string(),
                 },
-                Assertion::ToolUsed {
-                    name: "apply_patch".to_string(),
+                Assertion::ToolUsedGlob {
+                    pattern: "{apply_patch,str_replace}".to_string(),
                 },
                 Assertion::ToolArgContains {
                     tool: "shell".to_string(),
