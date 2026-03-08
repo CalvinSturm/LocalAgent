@@ -1,9 +1,14 @@
 # /learn Workflow Reference
 
 Version context: LocalAgent `v0.3.1` (2026-02-28)
-Status: Draft
+Status: Historical draft, not current canonical reference
 Owner: LocalAgent maintainers  
 Last reviewed: 2026-02-28
+
+Warning:
+- This document is historical draft material and is not the current source of truth for `/learn`.
+- For live command surface and defaults, use [CLI_REFERENCE.md](C:/Users/Calvin/Software%20Projects/LocalAgent/docs/reference/CLI_REFERENCE.md) and `src/cli_args.rs`.
+- The examples here may still be useful for workflow context, but they have not been fully updated to the current crate/docs baseline.
 
 ## 1. What `/learn` is for
 

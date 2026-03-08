@@ -166,6 +166,7 @@ pub(crate) async fn build_tui_normal_submit_launch(
                     &paths,
                     Some(tx),
                     Some(queue_rx),
+                    None,
                     shared_chat_mcp_registry,
                     true,
                 )
@@ -186,6 +187,7 @@ pub(crate) async fn build_tui_normal_submit_launch(
                     &paths,
                     Some(tx),
                     Some(queue_rx),
+                    None,
                     shared_chat_mcp_registry,
                     true,
                 )
@@ -203,6 +205,7 @@ pub(crate) async fn build_tui_normal_submit_launch(
                     &paths,
                     Some(tx),
                     Some(queue_rx),
+                    None,
                     shared_chat_mcp_registry,
                     true,
                 )

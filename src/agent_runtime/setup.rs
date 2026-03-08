@@ -7,6 +7,8 @@ use tokio::sync::watch;
 use crate::events::Event;
 use crate::gate::{ApprovalMode, GateContext, ProviderKind};
 use crate::hooks::runner::{HookManager, HookRuntimeConfig};
+use crate::lsp_context;
+use crate::lsp_context_provider;
 use crate::mcp::registry::McpRegistry;
 use crate::ops_helpers;
 use crate::packs;
@@ -35,6 +37,7 @@ pub(super) struct ContextAugmentations {
     pub(super) instruction_resolution: crate::instructions::InstructionResolution,
     pub(super) project_guidance_resolution: Option<project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<repo_map::ResolvedRepoMap>,
+    pub(super) lsp_context_resolution: Option<lsp_context::ResolvedLspContext>,
     pub(super) activated_packs: Vec<packs::ActivatedPack>,
 }
 
@@ -55,6 +58,7 @@ pub(super) struct UiRuntimeSetupInput<'a> {
     pub(super) policy_hash_hex: &'a Option<String>,
     pub(super) mcp_tool_catalog_hash_hex: &'a Option<String>,
     pub(super) external_ui_tx: Option<Sender<Event>>,
+    pub(super) external_cancel_pair: Option<(watch::Sender<bool>, watch::Receiver<bool>)>,
     pub(super) suppress_stdout_stream: bool,
 }
 
@@ -225,6 +229,10 @@ pub(super) fn build_context_augmentations(
     } else {
         None
     };
+    let lsp_context_resolution = lsp_context_provider::resolve_default_lsp_context(
+        &args.workdir,
+        lsp_context::LspContextLimits::default(),
+    )?;
     let activated_packs = if args.packs.is_empty() {
         Vec::new()
     } else {
@@ -234,6 +242,7 @@ pub(super) fn build_context_augmentations(
         instruction_resolution,
         project_guidance_resolution,
         repo_map_resolution,
+        lsp_context_resolution,
         activated_packs,
     })
 }
@@ -247,7 +256,9 @@ pub(super) fn build_ui_runtime_setup(
     } else {
         (input.external_ui_tx, None)
     };
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = input
+        .external_cancel_pair
+        .unwrap_or_else(|| watch::channel(false));
     let cancel_tx_for_tui = cancel_tx.clone();
     let ui_join = if let Some(rx) = ui_rx {
         let approvals_path = input.paths.approvals_path.clone();

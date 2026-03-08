@@ -64,6 +64,7 @@ pub(super) struct ReplanResumeRunInput<'a, P: ModelProvider> {
     pub(super) base_instruction_messages: &'a [Message],
     pub(super) project_guidance_message: &'a Option<Message>,
     pub(super) repo_map_message: &'a Option<Message>,
+    pub(super) lsp_context_message: &'a Option<Message>,
     pub(super) pack_guidance_message: &'a Option<Message>,
     pub(super) base_task_memory: &'a Option<Message>,
     pub(super) replan_handoff: String,
@@ -108,6 +109,7 @@ pub(super) struct PlannerBootstrapInput<'a, P: ModelProvider> {
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<&'a crate::repo_map::ResolvedRepoMap>,
+    pub(super) lsp_context_resolution: Option<&'a crate::lsp_context::ResolvedLspContext>,
     pub(super) activated_packs: &'a [crate::packs::ActivatedPack],
 }
 
@@ -125,6 +127,7 @@ pub(super) struct ReplanOrchestrationInput<'a, P: ModelProvider> {
     pub(super) base_instruction_messages: &'a [Message],
     pub(super) project_guidance_message: &'a Option<Message>,
     pub(super) repo_map_message: &'a Option<Message>,
+    pub(super) lsp_context_message: &'a Option<Message>,
     pub(super) pack_guidance_message: &'a Option<Message>,
     pub(super) base_task_memory: &'a Option<Message>,
     pub(super) resolved_settings: &'a session::RunSettingResolution,
@@ -272,6 +275,7 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                         instruction_resolution: input.instruction_resolution,
                         project_guidance_resolution: input.project_guidance_resolution,
                         repo_map_resolution: input.repo_map_resolution,
+                        lsp_context_resolution: input.lsp_context_resolution,
                         activated_packs: input.activated_packs,
                     })?;
                 let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
@@ -417,6 +421,7 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     instruction_resolution: input.instruction_resolution,
                     project_guidance_resolution: input.project_guidance_resolution,
                     repo_map_resolution: input.repo_map_resolution,
+                    lsp_context_resolution: input.lsp_context_resolution,
                     activated_packs: input.activated_packs,
                 })?;
             let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
@@ -527,6 +532,7 @@ pub(super) async fn maybe_handle_worker_replan<P: ModelProvider>(
                 base_instruction_messages: input.base_instruction_messages,
                 project_guidance_message: input.project_guidance_message,
                 repo_map_message: input.repo_map_message,
+                lsp_context_message: input.lsp_context_message,
                 pack_guidance_message: input.pack_guidance_message,
                 base_task_memory: input.base_task_memory,
                 replan_handoff,
@@ -609,6 +615,7 @@ pub(super) async fn run_replan_resume_with_cancel<P: ModelProvider>(
         input.base_instruction_messages.to_vec(),
         input.project_guidance_message.clone(),
         input.repo_map_message.clone(),
+        input.lsp_context_message.clone(),
         input.pack_guidance_message.clone(),
         input.base_task_memory.clone(),
         Some(Message {

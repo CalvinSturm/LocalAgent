@@ -1,0 +1,21 @@
+Edit `main.rs` using `apply_patch` so that this function:
+
+fn score() -> i32 {
+    41
+}
+
+becomes:
+
+fn score() -> i32 {
+    42
+}
+
+Do not use `write_file`.
+Do not make unrelated edits.
+
+Before finishing, verify that `main.rs` contains the updated function exactly.
+
+Your final answer must be exactly:
+
+verified=yes
+file=main.rs

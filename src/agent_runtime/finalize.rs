@@ -71,6 +71,7 @@ pub(super) struct RunCliFingerprintBuildInput<'a> {
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<&'a crate::repo_map::ResolvedRepoMap>,
+    pub(super) lsp_context_resolution: Option<&'a crate::lsp_context::ResolvedLspContext>,
     pub(super) activated_packs: &'a [crate::packs::ActivatedPack],
 }
 
@@ -101,6 +102,7 @@ pub(super) struct FinalizeRunArtifactsInput<'a> {
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<&'a crate::repo_map::ResolvedRepoMap>,
+    pub(super) lsp_context_resolution: Option<&'a crate::lsp_context::ResolvedLspContext>,
     pub(super) activated_packs: &'a [crate::packs::ActivatedPack],
     pub(super) outcome: &'a agent::AgentOutcome,
     pub(super) planner_record: Option<PlannerRunRecord>,
@@ -303,6 +305,7 @@ pub(super) fn build_run_cli_config_fingerprint_bundle(
         instructions: input.instruction_resolution,
         project_guidance: input.project_guidance_resolution,
         repo_map: input.repo_map_resolution,
+        lsp_context: input.lsp_context_resolution,
         activated_packs: input.activated_packs,
     });
     let config_fingerprint = runtime_paths::build_config_fingerprint(
@@ -358,6 +361,7 @@ pub(super) fn finalize_run_artifacts(
             instruction_resolution: input.instruction_resolution,
             project_guidance_resolution: input.project_guidance_resolution,
             repo_map_resolution: input.repo_map_resolution,
+            lsp_context_resolution: input.lsp_context_resolution,
             activated_packs: input.activated_packs,
         })?;
     let repro_record = build_and_emit_repro_snapshot(

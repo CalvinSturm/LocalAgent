@@ -75,7 +75,7 @@ Useful operator commands:
 Use explicit flags for reproducible investigation:
 
 ```bash
-localagent --provider <provider> --model <model> --workdir <isolated-workdir> --state-dir <isolated-state-dir> --no-session --events run-events.jsonl run --prompt "..."
+localagent --provider <provider> --model <model> --workdir <isolated-workdir> --state-dir <isolated-state-dir> --no-session --events run-events.jsonl --prompt "..." run
 ```
 
 For interactive investigation:

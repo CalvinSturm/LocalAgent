@@ -367,6 +367,17 @@ mod tests {
                 repo_map_bytes_kept: 0,
                 repo_map_file_count_included: 0,
                 repo_map_injected: false,
+                lsp_context_provider: None,
+                lsp_context_schema_version: None,
+                lsp_context_truncated: false,
+                lsp_context_truncation_reason: None,
+                lsp_context_bytes_kept: 0,
+                lsp_context_diagnostics_included: 0,
+                lsp_context_symbol_query: None,
+                lsp_context_symbols_included: 0,
+                lsp_context_definitions_included: 0,
+                lsp_context_references_included: 0,
+                lsp_context_injected: false,
                 active_profile: None,
                 profile_source: None,
                 profile_hash_hex: None,
@@ -404,6 +415,8 @@ mod tests {
         assert_eq!(loaded.mode, "single");
         assert_eq!(loaded.config_hash_hex, "cfg_hash");
         assert_eq!(loaded.cli.exec_target, "host");
+        assert_eq!(loaded.cli.lsp_context_provider, None);
+        assert!(!loaded.cli.lsp_context_injected);
         assert_eq!(
             loaded
                 .taint
@@ -582,6 +595,17 @@ mod tests {
                 repo_map_bytes_kept: 0,
                 repo_map_file_count_included: 0,
                 repo_map_injected: false,
+                lsp_context_provider: None,
+                lsp_context_schema_version: None,
+                lsp_context_truncated: false,
+                lsp_context_truncation_reason: None,
+                lsp_context_bytes_kept: 0,
+                lsp_context_diagnostics_included: 0,
+                lsp_context_symbol_query: None,
+                lsp_context_symbols_included: 0,
+                lsp_context_definitions_included: 0,
+                lsp_context_references_included: 0,
+                lsp_context_injected: false,
                 active_profile: None,
                 profile_source: None,
                 profile_hash_hex: None,
@@ -729,6 +753,17 @@ mod tests {
             instruction_model_profile: String::new(),
             instruction_task_profile: String::new(),
             instruction_message_count: 0,
+            lsp_context_provider: String::new(),
+            lsp_context_schema_version: String::new(),
+            lsp_context_truncated: false,
+            lsp_context_truncation_reason: String::new(),
+            lsp_context_bytes_kept: 0,
+            lsp_context_diagnostics_included: 0,
+            lsp_context_symbol_query: String::new(),
+            lsp_context_symbols_included: 0,
+            lsp_context_definitions_included: 0,
+            lsp_context_references_included: 0,
+            lsp_context_injected: false,
         };
         let b = a.clone();
         let ha = config_hash_hex(&a).expect("hash a");
@@ -748,6 +783,12 @@ mod tests {
         e.agent_mode = "plan".to_string();
         let he = config_hash_hex(&e).expect("hash e");
         assert_ne!(hb, he);
+
+        let mut f = b.clone();
+        f.lsp_context_injected = true;
+        f.lsp_context_provider = "mock_lsp".to_string();
+        let hf = config_hash_hex(&f).expect("hash f");
+        assert_ne!(hb, hf);
     }
 
     #[test]

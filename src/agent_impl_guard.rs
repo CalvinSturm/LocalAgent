@@ -180,6 +180,7 @@ pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
     p.contains("apply_patch")
         || p.contains("write_file")
         || p.contains("edit ")
+        || p.contains("fix ")
         || p.contains("modify ")
         || p.contains("update ")
         || p.contains("change ")

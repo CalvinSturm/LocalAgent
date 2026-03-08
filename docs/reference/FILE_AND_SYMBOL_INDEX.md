@@ -10,7 +10,7 @@ Last reviewed: 2026-03-07
 - Planner-worker mode: two-phase planner + worker run orchestration.
 - Trust gate: policy + approvals + audit decision engine for tool calls.
 - MCP: Model Context Protocol server/tool integration over stdio JSON-RPC.
-- Run artifact: persisted JSON record of a run under `.localagent/runs`.
+- Run artifact: persisted JSON record of a run under the resolved state dir; commonly `.localagent/runs` for persistent state, but one-shot `run` / `exec` default to an ephemeral temp state dir unless `--state-dir` is set.
 - Repro snapshot: reproducibility fingerprint of runtime/environment config.
 - Check runner: deterministic pass/fail runner for markdown-defined checks.
 - Task graph: DAG taskfile execution with checkpoints and per-node runs.

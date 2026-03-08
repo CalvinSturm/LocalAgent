@@ -33,6 +33,10 @@ pub(crate) enum Commands {
 
     Exec,
 
+    Serve(ServeArgs),
+
+    Attach(AttachArgs),
+
     Version(VersionArgs),
 
     Init(InitArgs),
@@ -74,6 +78,24 @@ pub(crate) enum Commands {
     Tui(TuiArgs),
 
     Tasks(TasksArgs),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub(crate) struct ServeArgs {
+    #[arg(long, default_value = "127.0.0.1")]
+    pub(crate) bind: String,
+
+    #[arg(long, default_value_t = 7070)]
+    pub(crate) port: u16,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub(crate) struct AttachArgs {
+    #[arg(long, default_value = "http://127.0.0.1:7070")]
+    pub(crate) server_url: String,
+
+    #[arg(long)]
+    pub(crate) session_id: String,
 }
 
 #[derive(Debug, Parser)]

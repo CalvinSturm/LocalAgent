@@ -412,6 +412,17 @@ fn minimal_cli_config_for_mcp_test() -> RunCliConfig {
         repo_map_bytes_kept: 0,
         repo_map_file_count_included: 0,
         repo_map_injected: false,
+        lsp_context_provider: None,
+        lsp_context_schema_version: None,
+        lsp_context_truncated: false,
+        lsp_context_truncation_reason: None,
+        lsp_context_bytes_kept: 0,
+        lsp_context_diagnostics_included: 0,
+        lsp_context_symbol_query: None,
+        lsp_context_symbols_included: 0,
+        lsp_context_definitions_included: 0,
+        lsp_context_references_included: 0,
+        lsp_context_injected: false,
         active_profile: None,
         profile_source: None,
         profile_hash_hex: None,
@@ -504,6 +515,97 @@ async fn write_file_on_existing_file_is_blocked_without_explicit_overwrite() {
         .contains("write_file on 'chess.html' requires prior read_file"));
     let on_disk = tokio::fs::read_to_string(&chess).await.expect("read");
     assert_eq!(on_disk, "<html>old</html>");
+}
+
+#[tokio::test]
+async fn create_prompt_can_write_missing_file_without_prior_read() {
+    let tmp = tempdir().expect("tempdir");
+    let notes_dir = tmp.path().join("notes");
+    tokio::fs::create_dir_all(&notes_dir)
+        .await
+        .expect("create notes dir");
+    let status = notes_dir.join("status.txt");
+
+    let provider = ScriptedProvider {
+        steps: vec![
+            ScriptStep::Tool {
+                id: "tc1",
+                name: "write_file",
+                arguments: serde_json::json!({"path":"notes/status.txt","content":"ready\n"}),
+            },
+            ScriptStep::Final("verified=yes\nfile=notes/status.txt\nbytes=6"),
+        ],
+        next: AtomicUsize::new(0),
+    };
+    let mut agent = make_agent(
+        provider,
+        tmp.path(),
+        Box::new(NoGate::new()),
+        false,
+        true,
+        true,
+    );
+    let out = agent
+        .run(
+            "Create a new file at `notes/status.txt` containing exactly `ready` followed by a newline.",
+            vec![],
+            Vec::new(),
+        )
+        .await;
+
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok));
+    assert!(out.error.is_none(), "unexpected error: {out:?}");
+    let on_disk = tokio::fs::read_to_string(&status).await.expect("read");
+    assert_eq!(on_disk, "ready\n");
+}
+
+#[tokio::test]
+async fn create_prompt_is_blocked_when_target_file_already_exists() {
+    let tmp = tempdir().expect("tempdir");
+    let notes_dir = tmp.path().join("notes");
+    tokio::fs::create_dir_all(&notes_dir)
+        .await
+        .expect("create notes dir");
+    let status = notes_dir.join("status.txt");
+    tokio::fs::write(&status, "stale\n")
+        .await
+        .expect("seed status");
+
+    let provider = ScriptedProvider {
+        steps: vec![
+            ScriptStep::Tool {
+                id: "tc1",
+                name: "write_file",
+                arguments: serde_json::json!({"path":"notes/status.txt","content":"ready\n"}),
+            },
+            ScriptStep::Final("verified=yes\nfile=notes/status.txt\nbytes=6"),
+        ],
+        next: AtomicUsize::new(0),
+    };
+    let mut agent = make_agent(
+        provider,
+        tmp.path(),
+        Box::new(NoGate::new()),
+        false,
+        true,
+        true,
+    );
+    let out = agent
+        .run(
+            "Create a new file at `notes/status.txt` containing exactly `ready` followed by a newline.",
+            vec![],
+            Vec::new(),
+        )
+        .await;
+
+    assert!(matches!(out.exit_reason, AgentExitReason::PlannerError));
+    assert!(out
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("write_file on 'notes/status.txt' requires prior read_file"));
+    let on_disk = tokio::fs::read_to_string(&status).await.expect("read");
+    assert_eq!(on_disk, "stale\n");
 }
 
 #[tokio::test]

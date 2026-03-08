@@ -501,22 +501,22 @@ impl<P: ModelProvider> Agent<P> {
                     );
                     return VerifiedWriteResult::Done(Box::new(
                         self.finalize_planner_error_with_end(
-                        step,
-                        run_id,
-                        started_at,
-                        reason,
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
-                    ),
+                            step,
+                            run_id,
+                            started_at,
+                            reason,
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ),
                     ));
                 }
             }

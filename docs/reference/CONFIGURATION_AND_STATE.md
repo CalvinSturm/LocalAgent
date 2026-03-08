@@ -25,6 +25,21 @@ Related runtime state commonly used during debugging:
 * `Evidence: src/store.rs#StatePaths`
 * `Evidence: src/taskgraph.rs#checkpoint_default_path`
 
+## Command-Specific State Behavior
+
+The resolved state layout is not used the same way by every command.
+
+- bare startup/bootstrap and persistent project workflows use the resolved state dir directly, typically `<workdir>/.localagent`
+- one-shot `run` and `exec` default to an ephemeral temp state dir and also force `--no-session` unless `--state-dir` or `--no-session` is explicitly provided
+- eval/check/tasks use their own command-specific execution and artifact behavior; review the owning command docs before making stronger claims
+
+This means `.localagent/` is the default state layout model, but it is not the default persisted artifact location for one-shot `run` / `exec` invocations.
+
+* `Evidence: src/cli_dispatch.rs#apply_run_command_defaults`
+* `Evidence: src/store.rs#resolve_state_paths`
+* `Evidence: src/main_tests.rs#run_command_defaults_to_no_session_and_derived_state_dir`
+* `Evidence: src/main_tests.rs#bare_localagent_invocation_defaults_to_sessionless_and_ephemeral_state`
+
 ## Config Inputs
 
 Primary config inputs:
@@ -86,6 +101,8 @@ Policy, approvals, and audit paths all derive from the resolved state layout unl
 ## State-dir Behavior
 
 `--state-dir` changes where LocalAgent stores runtime state and artifacts. Isolating `--state-dir` is recommended for repeatable testing and incident reproduction.
+
+For one-shot `run` / `exec`, `--state-dir` is also how you opt out of ephemeral temp state and keep artifacts after the command exits.
 
 `--workdir` controls tool/workspace scope. For clean repros, isolate both:
 - `--workdir` to isolate files and relative-path context

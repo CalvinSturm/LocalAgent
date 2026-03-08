@@ -327,6 +327,28 @@ pub struct RunCliConfig {
     #[serde(default)]
     pub repo_map_injected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp_context_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp_context_schema_version: Option<String>,
+    #[serde(default)]
+    pub lsp_context_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp_context_truncation_reason: Option<String>,
+    #[serde(default)]
+    pub lsp_context_bytes_kept: u64,
+    #[serde(default)]
+    pub lsp_context_diagnostics_included: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp_context_symbol_query: Option<String>,
+    #[serde(default)]
+    pub lsp_context_symbols_included: u64,
+    #[serde(default)]
+    pub lsp_context_definitions_included: u64,
+    #[serde(default)]
+    pub lsp_context_references_included: u64,
+    #[serde(default)]
+    pub lsp_context_injected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active_profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_source: Option<String>,
@@ -450,6 +472,28 @@ pub struct ConfigFingerprintV1 {
     pub instruction_model_profile: String,
     pub instruction_task_profile: String,
     pub instruction_message_count: usize,
+    #[serde(default)]
+    pub lsp_context_provider: String,
+    #[serde(default)]
+    pub lsp_context_schema_version: String,
+    #[serde(default)]
+    pub lsp_context_truncated: bool,
+    #[serde(default)]
+    pub lsp_context_truncation_reason: String,
+    #[serde(default)]
+    pub lsp_context_bytes_kept: u64,
+    #[serde(default)]
+    pub lsp_context_diagnostics_included: u64,
+    #[serde(default)]
+    pub lsp_context_symbol_query: String,
+    #[serde(default)]
+    pub lsp_context_symbols_included: u64,
+    #[serde(default)]
+    pub lsp_context_definitions_included: u64,
+    #[serde(default)]
+    pub lsp_context_references_included: u64,
+    #[serde(default)]
+    pub lsp_context_injected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

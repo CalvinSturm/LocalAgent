@@ -206,6 +206,17 @@ impl<P: ModelProvider> Agent<P> {
         }
     }
 
+    pub(super) fn assistant_content_has_protocol_artifacts(
+        &self,
+        assistant_content: Option<&str>,
+    ) -> bool {
+        let text = assistant_content.unwrap_or_default();
+        let upper = text.to_ascii_uppercase();
+        crate::agent_tool_exec::contains_tool_wrapper_markers(text)
+            || upper.contains("[TOOL_RESULT]")
+            || upper.contains("[END_TOOL_RESULT]")
+    }
+
     pub(super) fn control_envelope_reminder_message(&self) -> String {
         format!(
             "Return control JSON only using schema_version '{}'. Include step_id, status, and optional user_output for final response.",
@@ -260,9 +271,11 @@ Tool use contract:\n\
 - If no tool is needed, return a direct final answer.\n\
 \n\
 Edit workflow (required):\n\
-- Always use read_file on a path BEFORE editing it with apply_patch, str_replace, or write_file.\n\
+- Always use read_file on a path BEFORE editing it with apply_patch or str_replace.\n\
+- When creating a brand-new file with write_file, a prior read_file is not required if the path does not already exist.\n\
+- If the path already exists, read_file it first and prefer apply_patch for in-place edits. Use overwrite_existing=true only for an explicit full rewrite.\n\
 - After editing, use read_file again to verify your changes.\n\
-- Prefer str_replace for small targeted edits (exact match and replace). Use apply_patch for larger multi-hunk changes. Only use write_file for new files.\n\
+- Prefer str_replace for small targeted edits (exact match and replace). Use apply_patch for larger multi-hunk changes. Only use write_file for new files or explicit full rewrites.\n\
 \n\
 Fallback when native tool calls are unavailable:\n\
 - Emit exactly one wrapper block:\n\

@@ -1,0 +1,13 @@
+Fix the parser so that both of these cases succeed:
+
+- parse_count("7") returns 7
+- parse_count(" 7 \n") returns 7
+
+Do not make unrelated edits.
+Before finishing, run `cargo test` successfully.
+
+Your final answer must be exactly:
+
+verified=yes
+command=cargo test
+result=passed

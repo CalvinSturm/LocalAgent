@@ -876,6 +876,106 @@ fn output_mode_json_parses() {
 }
 
 #[test]
+fn parser_derived_run_defaults_match_cli_reference() {
+    let cli = Cli::parse_from(["localagent"]);
+    assert_eq!(cli.run.http_timeout_ms, 120_000);
+    assert_eq!(cli.run.http_stream_idle_timeout_ms, 30_000);
+    assert_eq!(cli.run.http_connect_timeout_ms, 2_000);
+    assert_eq!(cli.run.http_max_retries, 2);
+}
+
+#[test]
+fn parser_derived_eval_defaults_match_cli_surface() {
+    let cli = Cli::parse_from(["localagent", "eval"]);
+    let Some(Commands::Eval(eval)) = cli.command else {
+        panic!("expected eval command");
+    };
+    assert!(matches!(eval.run.provider, crate::ProviderKind::Ollama));
+    assert!(matches!(eval.run.trust, crate::gate::TrustMode::On));
+    assert!(matches!(
+        eval.run.approval_mode,
+        crate::gate::ApprovalMode::Auto
+    ));
+    assert!(eval.run.no_session);
+    assert_eq!(eval.run.http_timeout_ms, 120_000);
+    assert_eq!(eval.run.http_stream_idle_timeout_ms, 30_000);
+}
+
+#[test]
+fn canonical_cli_reference_run_example_parses_with_global_flags_before_run() {
+    let cli = Cli::parse_from([
+        "localagent",
+        "--provider",
+        "lmstudio",
+        "--model",
+        "example-model",
+        "--prompt",
+        "hello",
+        "run",
+    ]);
+    assert!(matches!(cli.command, Some(Commands::Run)));
+    assert!(matches!(
+        cli.run.provider,
+        Some(crate::ProviderKind::Lmstudio)
+    ));
+    assert_eq!(cli.run.model.as_deref(), Some("example-model"));
+    assert_eq!(cli.run.prompt.as_deref(), Some("hello"));
+}
+
+#[test]
+fn llm_setup_guide_chat_tui_example_parses_correctly() {
+    let cli = Cli::parse_from([
+        "localagent",
+        "--provider",
+        "lmstudio",
+        "--model",
+        "example-model",
+        "chat",
+        "--tui",
+    ]);
+    assert!(matches!(cli.command, Some(Commands::Chat(_))));
+    assert!(matches!(
+        cli.run.provider,
+        Some(crate::ProviderKind::Lmstudio)
+    ));
+    assert_eq!(cli.run.model.as_deref(), Some("example-model"));
+}
+
+#[test]
+fn serve_command_parses_bind_and_port() {
+    let cli = Cli::parse_from([
+        "localagent",
+        "serve",
+        "--bind",
+        "127.0.0.1",
+        "--port",
+        "8080",
+    ]);
+    let Some(Commands::Serve(args)) = cli.command else {
+        panic!("expected serve command");
+    };
+    assert_eq!(args.bind, "127.0.0.1");
+    assert_eq!(args.port, 8080);
+}
+
+#[test]
+fn attach_command_parses_server_url_and_session_id() {
+    let cli = Cli::parse_from([
+        "localagent",
+        "attach",
+        "--server-url",
+        "http://127.0.0.1:7070",
+        "--session-id",
+        "s_123",
+    ]);
+    let Some(Commands::Attach(args)) = cli.command else {
+        panic!("expected attach command");
+    };
+    assert_eq!(args.server_url, "http://127.0.0.1:7070");
+    assert_eq!(args.session_id, "s_123");
+}
+
+#[test]
 fn planner_mode_and_agent_mode_can_be_set_together() {
     let cli = Cli::parse_from([
         "localagent",
@@ -992,10 +1092,125 @@ fn run_cli_config_persists_agent_mode() {
         instructions: &crate::instructions::InstructionResolution::empty(),
         project_guidance: None,
         repo_map: None,
+        lsp_context: None,
         activated_packs: &[],
     });
     assert_eq!(cli.agent_mode, "build");
     assert_eq!(cli.output_mode, "human");
+}
+
+#[test]
+fn run_cli_config_includes_lsp_context_metadata_when_present() {
+    let args = default_run_args();
+    let resolved = crate::session::RunSettingResolution {
+        max_context_chars: 0,
+        compaction_mode: crate::compaction::CompactionMode::Off,
+        compaction_keep_last: 20,
+        tool_result_persist: crate::compaction::ToolResultPersist::Digest,
+        tool_args_strict: crate::tools::ToolArgsStrict::On,
+        caps_mode: crate::session::CapsMode::Off,
+        hooks_mode: crate::hooks::config::HooksMode::Off,
+        sources: std::collections::BTreeMap::new(),
+    };
+    let diag = crate::diagnostics::Diagnostic {
+        schema_version: crate::diagnostics::DIAGNOSTIC_SCHEMA_VERSION.to_string(),
+        code: "E001".to_string(),
+        severity: crate::diagnostics::Severity::Error,
+        message: "bad thing".to_string(),
+        path: Some(std::path::PathBuf::from("src/main.rs")),
+        line: Some(7),
+        col: Some(1),
+        hint: None,
+        details: None,
+    };
+    let lsp_context = crate::lsp_context::ResolvedLspContext {
+        schema_version: crate::lsp_context::LSP_CONTEXT_SCHEMA_VERSION.to_string(),
+        provider: "mock_lsp".to_string(),
+        generated_at: "2026-03-08T00:00:00Z".to_string(),
+        workdir: std::path::PathBuf::from("."),
+        diagnostics_snapshot: Some(crate::lsp_context::DiagnosticsSnapshot {
+            schema_version: crate::lsp_context::LSP_DIAGNOSTICS_SCHEMA_VERSION.to_string(),
+            source: "lsp".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
+            language: Some("rust".to_string()),
+            items: vec![diag],
+            total_count: 1,
+            included_count: 1,
+            truncated: false,
+            truncation_reason: None,
+        }),
+        symbol_context: Some(crate::lsp_context::SymbolContext {
+            schema_version: crate::lsp_context::LSP_SYMBOL_CONTEXT_SCHEMA_VERSION.to_string(),
+            source: "lsp".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
+            query: "parse_count".to_string(),
+            symbols: vec![crate::lsp_context::SymbolLocation {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                line: Some(3),
+                col: Some(1),
+                label: "fn parse_count".to_string(),
+            }],
+            definitions: vec![crate::lsp_context::SymbolLocation {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                line: Some(3),
+                col: Some(1),
+                label: "fn parse_count".to_string(),
+            }],
+            references: vec![crate::lsp_context::SymbolLocation {
+                path: std::path::PathBuf::from("tests/lib.rs"),
+                line: Some(8),
+                col: Some(1),
+                label: "parse_count(\"7\")".to_string(),
+            }],
+            symbol_count_total: 1,
+            definition_count_total: 1,
+            reference_count_total: 1,
+            truncated: false,
+            truncation_reason: None,
+        }),
+        truncated: false,
+        truncation_reason: None,
+        bytes_kept: 123,
+    };
+    let cli = crate::runtime_paths::build_run_cli_config(crate::runtime_paths::RunCliConfigInput {
+        provider_kind: crate::gate::ProviderKind::Mock,
+        base_url: "http://localhost:11434",
+        model: "model",
+        args: &args,
+        resolved_settings: &resolved,
+        hooks_config_path: std::path::Path::new("hooks.yaml"),
+        mcp_config_path: std::path::Path::new("mcp_servers.json"),
+        tool_catalog: Vec::new(),
+        mcp_tool_snapshot: Vec::new(),
+        mcp_tool_catalog_hash_hex: None,
+        policy_version: None,
+        includes_resolved: Vec::new(),
+        mcp_allowlist: None,
+        mode: crate::planner::RunMode::Single,
+        planner_model: None,
+        worker_model: None,
+        planner_max_steps: None,
+        planner_output: None,
+        planner_strict: None,
+        enforce_plan_tools: None,
+        instructions: &crate::instructions::InstructionResolution::empty(),
+        project_guidance: None,
+        repo_map: None,
+        lsp_context: Some(&lsp_context),
+        activated_packs: &[],
+    });
+    assert_eq!(cli.lsp_context_provider.as_deref(), Some("mock_lsp"));
+    assert_eq!(
+        cli.lsp_context_schema_version.as_deref(),
+        Some(crate::lsp_context::LSP_CONTEXT_SCHEMA_VERSION)
+    );
+    assert_eq!(cli.lsp_context_bytes_kept, 123);
+    assert_eq!(cli.lsp_context_diagnostics_included, 1);
+    assert_eq!(cli.lsp_context_symbol_query.as_deref(), Some("parse_count"));
+    assert_eq!(cli.lsp_context_symbols_included, 1);
+    assert_eq!(cli.lsp_context_definitions_included, 1);
+    assert_eq!(cli.lsp_context_references_included, 1);
+    assert!(cli.lsp_context_injected);
 }
 
 fn default_run_args() -> super::RunArgs {

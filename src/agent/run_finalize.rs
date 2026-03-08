@@ -31,7 +31,7 @@ impl<P: ModelProvider> Agent<P> {
         post_write_guard_retry_count: u32,
     ) -> super::runtime_completion::VerifiedWriteResult {
         use super::runtime_completion::VerifiedWriteResult;
-        let continuation_message = if verified_paths.is_empty() {
+        let post_verify_note = if verified_paths.is_empty() {
             "Runtime note: post-write verification succeeded. Prefer finishing now. If the requested change is complete, provide the final answer immediately and do not call another write tool. Only call another tool if the prompt still has an unfinished required step, such as running tests or inspecting another file.".to_string()
         } else {
             format!(
@@ -42,7 +42,7 @@ impl<P: ModelProvider> Agent<P> {
         if let Some(reason) =
             crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
                 user_prompt,
-                &continuation_message,
+                &post_verify_note,
                 &observed_tool_calls,
                 observed_tool_executions,
                 enforce_implementation_integrity_guard,
@@ -95,7 +95,34 @@ impl<P: ModelProvider> Agent<P> {
                 taint_state,
             )));
         }
-        VerifiedWriteResult::ContinueWithMessage(continuation_message)
+        let final_output = messages
+            .iter()
+            .rev()
+            .filter(|m| matches!(m.role, crate::types::Role::Assistant))
+            .filter_map(|m| m.content.as_deref())
+            .map(str::trim)
+            .find(|content| {
+                !content.is_empty() && !self.assistant_content_has_protocol_artifacts(Some(content))
+            })
+            .unwrap_or_default()
+            .to_string();
+        VerifiedWriteResult::Done(Box::new(self.finalize_ok_with_end(
+            step,
+            run_id,
+            started_at,
+            final_output,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            request_context_chars,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+        )))
     }
 
     #[allow(clippy::too_many_arguments)]

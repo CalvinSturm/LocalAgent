@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::gate::ProviderKind;
 use crate::instructions::InstructionResolution;
+use crate::lsp_context::ResolvedLspContext;
 use crate::packs::ActivatedPack;
 use crate::planner;
 use crate::project_guidance::ResolvedProjectGuidance;
@@ -19,6 +20,7 @@ pub(crate) fn merge_injected_messages(
     mut instruction_messages: Vec<Message>,
     project_guidance: Option<Message>,
     repo_map: Option<Message>,
+    lsp_context: Option<Message>,
     pack_guidance: Option<Message>,
     task_memory: Option<Message>,
     planner_handoff: Option<Message>,
@@ -27,6 +29,9 @@ pub(crate) fn merge_injected_messages(
         instruction_messages.push(m);
     }
     if let Some(m) = repo_map {
+        instruction_messages.push(m);
+    }
+    if let Some(m) = lsp_context {
         instruction_messages.push(m);
     }
     if let Some(m) = pack_guidance {
@@ -65,6 +70,7 @@ pub(crate) struct RunCliConfigInput<'a> {
     pub instructions: &'a InstructionResolution,
     pub project_guidance: Option<&'a ResolvedProjectGuidance>,
     pub repo_map: Option<&'a ResolvedRepoMap>,
+    pub lsp_context: Option<&'a ResolvedLspContext>,
     pub activated_packs: &'a [ActivatedPack],
 }
 
@@ -93,6 +99,7 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         instructions,
         project_guidance,
         repo_map,
+        lsp_context,
         activated_packs,
     } = input;
     let docker_config_summary = if matches!(args.exec_target, ExecTargetKind::Docker) {
@@ -237,6 +244,34 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         repo_map_bytes_kept: repo_map.map(|m| m.bytes_kept).unwrap_or(0),
         repo_map_file_count_included: repo_map.map(|m| m.file_count_included).unwrap_or(0),
         repo_map_injected: repo_map.is_some(),
+        lsp_context_provider: lsp_context.map(|c| c.provider.clone()),
+        lsp_context_schema_version: lsp_context.map(|c| c.schema_version.clone()),
+        lsp_context_truncated: lsp_context.map(|c| c.truncated).unwrap_or(false),
+        lsp_context_truncation_reason: lsp_context.and_then(|c| c.truncation_reason.clone()),
+        lsp_context_bytes_kept: lsp_context.map(|c| c.bytes_kept).unwrap_or(0),
+        lsp_context_diagnostics_included: lsp_context
+            .and_then(|c| {
+                c.diagnostics_snapshot
+                    .as_ref()
+                    .map(|d| d.included_count as u64)
+            })
+            .unwrap_or(0),
+        lsp_context_symbol_query: lsp_context
+            .and_then(|c| c.symbol_context.as_ref().map(|s| s.query.clone())),
+        lsp_context_symbols_included: lsp_context
+            .and_then(|c| c.symbol_context.as_ref().map(|s| s.symbols.len() as u64))
+            .unwrap_or(0),
+        lsp_context_definitions_included: lsp_context
+            .and_then(|c| {
+                c.symbol_context
+                    .as_ref()
+                    .map(|s| s.definitions.len() as u64)
+            })
+            .unwrap_or(0),
+        lsp_context_references_included: lsp_context
+            .and_then(|c| c.symbol_context.as_ref().map(|s| s.references.len() as u64))
+            .unwrap_or(0),
+        lsp_context_injected: lsp_context.is_some(),
         active_profile: args.reliability_profile.clone(),
         profile_source: args.resolved_reliability_profile_source.clone(),
         profile_hash_hex: args.resolved_reliability_profile_hash_hex.clone(),
@@ -397,6 +432,26 @@ pub(crate) fn build_config_fingerprint(
             .clone()
             .unwrap_or_default(),
         instruction_message_count: cli_config.instruction_message_count,
+        lsp_context_provider: cli_config.lsp_context_provider.clone().unwrap_or_default(),
+        lsp_context_schema_version: cli_config
+            .lsp_context_schema_version
+            .clone()
+            .unwrap_or_default(),
+        lsp_context_truncated: cli_config.lsp_context_truncated,
+        lsp_context_truncation_reason: cli_config
+            .lsp_context_truncation_reason
+            .clone()
+            .unwrap_or_default(),
+        lsp_context_bytes_kept: cli_config.lsp_context_bytes_kept,
+        lsp_context_diagnostics_included: cli_config.lsp_context_diagnostics_included,
+        lsp_context_symbol_query: cli_config
+            .lsp_context_symbol_query
+            .clone()
+            .unwrap_or_default(),
+        lsp_context_symbols_included: cli_config.lsp_context_symbols_included,
+        lsp_context_definitions_included: cli_config.lsp_context_definitions_included,
+        lsp_context_references_included: cli_config.lsp_context_references_included,
+        lsp_context_injected: cli_config.lsp_context_injected,
     }
 }
 

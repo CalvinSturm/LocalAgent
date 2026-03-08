@@ -1,0 +1,10 @@
+Create a new file at `notes/status.txt` containing exactly `ready` followed by a newline. Use the `write_file` tool.
+
+Do not make unrelated edits.
+Before finishing, verify the file content and exact byte length.
+
+Your final answer must be exactly:
+
+verified=yes
+file=notes/status.txt
+bytes=6

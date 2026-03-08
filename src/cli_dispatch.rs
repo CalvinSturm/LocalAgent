@@ -127,6 +127,16 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
     match &cli.command {
         Some(Commands::Run) | Some(Commands::Exec) => {}
 
+        Some(Commands::Serve(args)) => {
+            crate::server::run_server(args, &paths).await?;
+            return Ok(());
+        }
+
+        Some(Commands::Attach(args)) => {
+            crate::server::run_attach_client(args).await?;
+            return Ok(());
+        }
+
         Some(Commands::Version(args)) => {
             let info = version_info();
 

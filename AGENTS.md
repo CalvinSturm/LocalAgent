@@ -5,7 +5,7 @@ LocalAgent is a single-crate Rust CLI/runtime for local-first agent execution wi
 
 - Main entrypoint: `main -> cli_dispatch::run_cli -> run_agent/run_agent_with_ui`.
 - Default safety posture is conservative: `trust off`, shell disabled, and write tools disabled unless the operator enables them.
-- Runtime state lives under `.localagent/` for runs, sessions, approvals, policy, audit, eval, and task artifacts.
+- Runtime state resolves through `resolve_state_paths`, but one-shot `run` / `exec` default to an ephemeral temp state dir plus `--no-session` unless `--state-dir` or `--no-session` is set explicitly.
 
 * `Evidence: Cargo.toml#<config:package.name>`
 * `Evidence: src/main.rs#main`
@@ -18,6 +18,7 @@ LocalAgent is a single-crate Rust CLI/runtime for local-first agent execution wi
 1. Read the crate and CLI entrypoints first: `Cargo.toml`, `src/cli_args.rs`, `src/cli_dispatch.rs`, `src/agent_runtime.rs`.
 2. Identify whether your change touches shared runtime-loop behavior, tool/runtime policy, or only a narrower surface.
 3. Read the deeper doc that matches the task instead of extending this file.
+4. For CLI/defaults questions, treat `src/cli_args.rs` and `src/cli_dispatch.rs` as the source of truth over prose docs.
 
 * `Evidence: Cargo.toml#<config:package.default-run>`
 * `Evidence: src/cli_args.rs#Cli`

@@ -1,0 +1,6 @@
+[package]
+name = "d3-parse-int"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]

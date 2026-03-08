@@ -49,6 +49,8 @@ localagent --provider lmstudio --model <model> chat --tui
 
 ## Global Options (All-Mode)
 
+This section describes the shared top-level flag surface, not a guarantee that every command uses identical defaults. In particular, `eval` has its own argument struct and command-specific defaults; review the eval section and `src/cli_args.rs` before assuming parity with `run`.
+
 - `--provider <lmstudio|llamacpp|ollama|mock>`
 - `--model <MODEL>`
 - `--base-url <BASE_URL>`
@@ -65,10 +67,15 @@ localagent --provider lmstudio --model <model> chat --tui
 ### Tool/Execution Safety
 
 - `--allow-shell`
+- `--allow-shell-in-workdir`
 - `--allow-write`
 - `--enable-write-tools`
 - `--max-tool-output-bytes <N>` (default: `200000`)
 - `--max-read-bytes <N>` (default: `200000`)
+
+Notes:
+- `--allow-shell` enables shell tool use broadly, subject to the trust gate.
+- `--allow-shell-in-workdir` is narrower: it allows shell only when cwd is omitted or remains under the current workdir.
 
 ### Execution Target
 
@@ -149,9 +156,9 @@ localagent --provider lmstudio --model <model> chat --tui
 ### Provider HTTP Resilience
 
 - `--http-max-retries <N>` (default: `2`)
-- `--http-timeout-ms <N>` (default: `0`)
+- `--http-timeout-ms <N>` (default: `120000`)
 - `--http-connect-timeout-ms <N>` (default: `2000`)
-- `--http-stream-idle-timeout-ms <N>` (default: `0`)
+- `--http-stream-idle-timeout-ms <N>` (default: `30000`)
 - `--http-max-response-bytes <N>` (default: `10000000`)
 - `--http-max-line-bytes <N>` (default: `200000`)
 
@@ -180,6 +187,10 @@ localagent run
 
 Runs one-shot execution using global flags (`--prompt` required for practical use).
 
+State/session note:
+- `run` defaults to an ephemeral temp `--state-dir` plus `--no-session` unless you explicitly provide `--state-dir` or `--no-session`.
+- If you want persistent run artifacts, set `--state-dir <PATH>` explicitly.
+
 JSON output mode:
 - `--output json` emits JSONL run events (`openagent.run_event.v1`) to stdout.
 - `--output json` is non-interactive and cannot be combined with `--tui`.
@@ -188,6 +199,9 @@ JSON output mode:
 ### `exec`
 
 Alias of `run`.
+
+State/session note:
+- `exec` uses the same ephemeral-state and session-default behavior as `run`.
 
 ### `chat`
 

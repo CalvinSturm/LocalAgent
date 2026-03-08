@@ -360,7 +360,10 @@ fn repair_json_unescaped_newlines(raw: &str) -> String {
 
 pub(crate) fn contains_tool_wrapper_markers(s: &str) -> bool {
     let u = s.to_ascii_uppercase();
-    u.contains("[TOOL_CALL]") || u.contains("[END_TOOL_CALL]")
+    u.contains("[TOOL_CALL]")
+        || u.contains("[END_TOOL_CALL]")
+        || u.contains("<|BEGIN_OF_BOX|>")
+        || u.contains("<|END_OF_BOX|>")
 }
 
 pub(crate) fn extract_content_tool_calls(

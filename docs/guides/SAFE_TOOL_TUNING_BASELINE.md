@@ -154,7 +154,8 @@ localagent `
   --use-session-settings `
   --instruction-model-profile qwen_tooling_v1 `
   --instruction-task-profile coding_safe_v1 `
-  run --prompt "..."
+  --prompt "..." `
+  run
 ```
 
 For tasks requiring edits/shell checks:
@@ -169,7 +170,8 @@ localagent `
   --allow-shell-in-workdir `
   --session tool_tuning_v1 `
   --use-session-settings `
-  run --prompt "..."
+  --prompt "..." `
+  run
 ```
 
 ## 6) Evaluation Scorecard (Use This Every Iteration)

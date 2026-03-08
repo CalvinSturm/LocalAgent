@@ -1,9 +1,14 @@
 # /learn Output Contract
 
 Version context: LocalAgent `v0.3.1` (2026-02-28)
-Status: Draft (proposed authoritative contract)
+Status: Historical draft, not current canonical reference
 Owner: LocalAgent maintainers  
 Last reviewed: 2026-02-28
+
+Warning:
+- This document is historical draft material and is not the current source of truth for `/learn`.
+- For the live command surface, use [CLI_REFERENCE.md](C:/Users/Calvin/Software%20Projects/LocalAgent/docs/reference/CLI_REFERENCE.md) and `src/cli_args.rs`.
+- Treat this document as design context, not current repo truth.
 
 ## 1. Purpose
 

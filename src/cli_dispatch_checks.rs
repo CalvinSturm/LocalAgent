@@ -471,6 +471,7 @@ async fn execute_check_agent_run(
                 None,
                 None,
                 None,
+                None,
                 true,
             )
             .await
@@ -491,6 +492,7 @@ async fn execute_check_agent_run(
                 None,
                 None,
                 None,
+                None,
                 true,
             )
             .await
@@ -505,6 +507,7 @@ async fn execute_check_agent_run(
                 prompt,
                 run_args,
                 paths,
+                None,
                 None,
                 None,
                 None,

@@ -37,6 +37,9 @@ mod cli_dispatch_misc_ops;
 
 mod compaction;
 
+#[allow(dead_code)]
+mod diagnostics;
+
 mod eval;
 
 mod events;
@@ -52,6 +55,10 @@ mod instructions;
 mod mcp;
 
 mod learning;
+
+#[allow(dead_code)]
+mod lsp_context;
+mod lsp_context_provider;
 
 mod ops_helpers;
 
@@ -87,6 +94,7 @@ mod runtime_paths;
 mod runtime_wiring;
 
 mod scaffold;
+mod server;
 
 mod session;
 

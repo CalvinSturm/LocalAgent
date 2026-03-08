@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use tokio::sync::watch;
 
 use crate::agent::{self, Agent, AgentExitReason, ToolCallBudget};
 use crate::compaction::CompactionSettings;
 use crate::events::{Event, EventKind};
 use crate::gate::ProviderKind;
+use crate::lsp_context;
 use crate::mcp::registry::McpRegistry;
 use crate::packs;
 use crate::planner;
@@ -53,6 +55,7 @@ pub(crate) async fn run_agent<P: ModelProvider>(
         None,
         None,
         None,
+        None,
         false,
     )
     .await
@@ -71,6 +74,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     external_operator_queue_rx: Option<
         std::sync::mpsc::Receiver<crate::operator_queue::QueueSubmitRequest>,
     >,
+    external_cancel_pair: Option<(watch::Sender<bool>, watch::Receiver<bool>)>,
     shared_mcp_registry: Option<std::sync::Arc<McpRegistry>>,
     suppress_stdout_stream: bool,
 ) -> anyhow::Result<RunExecutionResult> {
@@ -82,6 +86,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         args,
         paths,
         external_ui_tx,
+        external_cancel_pair,
         shared_mcp_registry,
         suppress_stdout_stream,
     )
@@ -110,6 +115,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         instruction_resolution,
         project_guidance_resolution,
         repo_map_resolution,
+        lsp_context_resolution,
         activated_packs,
         mcp_config_path,
         mcp_registry,
@@ -179,6 +185,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             instruction_resolution: &instruction_resolution,
             project_guidance_resolution: project_guidance_resolution.as_ref(),
             repo_map_resolution: repo_map_resolution.as_ref(),
+            lsp_context_resolution: lsp_context_resolution.as_ref(),
             activated_packs: &activated_packs,
         })
         .await?
@@ -280,12 +287,16 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     let repo_map_message = repo_map_resolution
         .as_ref()
         .and_then(repo_map::repo_map_message);
+    let lsp_context_message = lsp_context_resolution
+        .as_ref()
+        .and_then(lsp_context::lsp_context_message);
     let pack_guidance_message = packs::pack_guidance_message(&activated_packs);
     let base_task_memory = task_memory.clone();
     let initial_injected_messages = runtime_paths::merge_injected_messages(
         base_instruction_messages.clone(),
         project_guidance_message.clone(),
         repo_map_message.clone(),
+        lsp_context_message.clone(),
         pack_guidance_message.clone(),
         base_task_memory.clone(),
         planner_injected_message.clone(),
@@ -321,6 +332,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             base_instruction_messages: &base_instruction_messages,
             project_guidance_message: &project_guidance_message,
             repo_map_message: &repo_map_message,
+            lsp_context_message: &lsp_context_message,
             pack_guidance_message: &pack_guidance_message,
             base_task_memory: &base_task_memory,
             resolved_settings: &resolved_settings,
@@ -385,6 +397,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         instruction_resolution: &instruction_resolution,
         project_guidance_resolution: project_guidance_resolution.as_ref(),
         repo_map_resolution: repo_map_resolution.as_ref(),
+        lsp_context_resolution: lsp_context_resolution.as_ref(),
         activated_packs: &activated_packs,
         outcome: &outcome,
         planner_record,

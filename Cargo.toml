@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
+axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -36,3 +37,4 @@ ulid = "1"
 
 [dev-dependencies]
 tempfile = "3"
+tower = "0.5"

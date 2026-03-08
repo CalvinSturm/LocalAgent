@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc::Sender, Arc};
 
 use anyhow::Context;
+use tokio::sync::watch;
 
 use crate::agent::{PlanToolEnforcementMode, PolicyLoadedInfo};
 use crate::events::{Event, EventKind};
@@ -49,6 +50,7 @@ pub(super) struct RuntimeLaunch {
     pub(super) project_guidance_resolution:
         Option<crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<crate::repo_map::ResolvedRepoMap>,
+    pub(super) lsp_context_resolution: Option<crate::lsp_context::ResolvedLspContext>,
     pub(super) activated_packs: Vec<packs::ActivatedPack>,
     pub(super) mcp_config_path: PathBuf,
     pub(super) mcp_registry: Option<Arc<McpRegistry>>,
@@ -81,6 +83,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
     args: &RunArgs,
     paths: &store::StatePaths,
     external_ui_tx: Option<Sender<Event>>,
+    external_cancel_pair: Option<(watch::Sender<bool>, watch::Receiver<bool>)>,
     shared_mcp_registry: Option<Arc<McpRegistry>>,
     suppress_stdout_stream: bool,
 ) -> anyhow::Result<RuntimeLaunch> {
@@ -147,6 +150,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         instruction_resolution,
         project_guidance_resolution,
         repo_map_resolution,
+        lsp_context_resolution,
         activated_packs,
     } = build_context_augmentations(&args, paths, &worker_model)?;
     validate_runtime_owned_http_timeouts(
@@ -204,6 +208,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         policy_hash_hex: &gate_build.policy_hash_hex,
         mcp_tool_catalog_hash_hex: &prep.mcp_tool_catalog_hash_hex,
         external_ui_tx,
+        external_cancel_pair,
         suppress_stdout_stream,
     })?;
 
@@ -228,6 +233,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         instruction_resolution,
         project_guidance_resolution,
         repo_map_resolution,
+        lsp_context_resolution,
         activated_packs,
         mcp_config_path,
         mcp_registry,

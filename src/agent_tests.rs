@@ -108,6 +108,110 @@ fn runtime_completion_decision_runtime_complete_returns_finalize_ok() {
     assert!(matches!(d, super::RuntimeCompletionDecision::FinalizeOk));
 }
 
+#[test]
+fn edit_workflow_system_prompt_matches_write_file_contract() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let provider = MockProvider {
+        generate_calls: Arc::new(AtomicUsize::new(0)),
+        stream_calls: Arc::new(AtomicUsize::new(0)),
+        seen_messages: Arc::new(Mutex::new(Vec::new())),
+    };
+    let agent = Agent {
+        provider,
+        model: "m".to_string(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        tools: Vec::new(),
+        max_steps: 1,
+        tool_rt: ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_write: true,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Mock,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        mcp_registry: None,
+        stream: false,
+        event_sink: None,
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    };
+
+    let messages = agent.build_initial_messages("Create `notes/status.txt`.", vec![], Vec::new());
+    let system = messages
+        .first()
+        .and_then(|m| m.content.as_deref())
+        .unwrap_or_default();
+    assert!(system.contains(
+        "Always use read_file on a path BEFORE editing it with apply_patch or str_replace."
+    ));
+    assert!(system.contains(
+        "When creating a brand-new file with write_file, a prior read_file is not required if the path does not already exist."
+    ));
+    assert!(system.contains(
+        "If the path already exists, read_file it first and prefer apply_patch for in-place edits."
+    ));
+}
+
 #[async_trait]
 impl ModelProvider for MockProvider {
     async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
@@ -938,7 +1042,17 @@ fn wrapper_marker_detection_works() {
     assert!(super::contains_tool_wrapper_markers(
         "[TOOL_CALL]\n[END_TOOL_CALL]"
     ));
+    assert!(super::contains_tool_wrapper_markers(
+        "<|begin_of_box|>wrapped<|end_of_box|>"
+    ));
     assert!(!super::contains_tool_wrapper_markers("plain response"));
+}
+
+#[test]
+fn prompt_requires_effective_write_for_fix_prompt() {
+    assert!(crate::agent_impl_guard::prompt_requires_effective_write(
+        "Fix src/lib.rs so the parser handles empty input."
+    ));
 }
 
 #[test]
@@ -1251,6 +1365,18 @@ struct ReadThenDoneThenPatchThenDoneProvider {
     calls: Arc<AtomicUsize>,
 }
 
+struct PatchWithoutReadThenRepairProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+struct WriteThenEchoToolResultThenDoneProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+struct WriteThenEchoBoxWrapperThenDoneProvider {
+    calls: Arc<AtomicUsize>,
+}
+
 #[async_trait]
 impl ModelProvider for ReadNoopPatchThenDoneProvider {
     async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
@@ -1369,6 +1495,77 @@ impl ModelProvider for ReadThenDoneThenPatchThenDoneProvider {
 }
 
 #[async_trait]
+impl ModelProvider for PatchWithoutReadThenRepairProvider {
+    async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        match n {
+            0 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_patch_no_read".to_string(),
+                    name: "apply_patch".to_string(),
+                    arguments: serde_json::json!({
+                        "path":"main.rs",
+                        "patch":"@@ -1,3 +1,3 @@\n fn answer() -> i32 {\n-    return 1;\n+    return 2;\n }\n"
+                    }),
+                }],
+                usage: None,
+            }),
+            1 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_read_fix".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path":"main.rs"}),
+                }],
+                usage: None,
+            }),
+            2 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_patch_fix".to_string(),
+                    name: "apply_patch".to_string(),
+                    arguments: serde_json::json!({
+                        "path":"main.rs",
+                        "patch":"@@ -1,3 +1,3 @@\n fn answer() -> i32 {\n-    return 2;\n+    return 3;\n }\n"
+                    }),
+                }],
+                usage: None,
+            }),
+            _ => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("done".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            }),
+        }
+    }
+}
+
+#[async_trait]
 impl ModelProvider for ReadThenDoneProvider {
     async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -1400,6 +1597,70 @@ impl ModelProvider for ReadThenDoneProvider {
                 tool_calls: Vec::new(),
                 usage: None,
             })
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProvider for WriteThenEchoToolResultThenDoneProvider {
+    async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        match n {
+            0 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(
+                        "[TOOL_RESULT]{\"schema_version\":\"openagent.tool_result.v1\"}[END_TOOL_RESULT]".to_string(),
+                    ),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            }),
+            _ => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("done: src/hello.txt".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProvider for WriteThenEchoBoxWrapperThenDoneProvider {
+    async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        match n {
+            0 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("<|begin_of_box|>done: src/hello.txt<|end_of_box|>".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            }),
+            _ => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("done: src/hello.txt".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            }),
         }
     }
 }
@@ -3259,6 +3520,224 @@ async fn runtime_post_write_verification_allows_finalize_without_model_read_back
 }
 
 #[tokio::test]
+async fn echoed_tool_result_wrapper_is_blocked_before_finalization() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::create_dir_all(tmp.path().join("src"))
+        .await
+        .expect("src");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut agent = Agent {
+        provider: WriteThenEchoToolResultThenDoneProvider {
+            calls: calls.clone(),
+        },
+        model: "m".to_string(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        tools: vec![crate::types::ToolDef {
+            name: "write_file".to_string(),
+            description: "d".to_string(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "properties":{"path":{"type":"string"},"content":{"type":"string"}},
+                "required":["path","content"]
+            }),
+            side_effects: crate::types::SideEffects::FilesystemWrite,
+        }],
+        max_steps: 6,
+        tool_rt: ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_write: true,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Ollama,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        mcp_registry: None,
+        stream: false,
+        event_sink: None,
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    };
+    let out = agent
+        .run("Reply with exactly `done: src/hello.txt`.", vec![], vec![])
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    assert_eq!(out.final_output, "done: src/hello.txt");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "provider should be called again after echoed tool-result wrapper"
+    );
+}
+
+#[tokio::test]
+async fn echoed_box_wrapper_is_blocked_before_finalization() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::create_dir_all(tmp.path().join("src"))
+        .await
+        .expect("src");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut agent = Agent {
+        provider: WriteThenEchoBoxWrapperThenDoneProvider {
+            calls: calls.clone(),
+        },
+        model: "m".to_string(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        tools: vec![crate::types::ToolDef {
+            name: "write_file".to_string(),
+            description: "d".to_string(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "properties":{"path":{"type":"string"},"content":{"type":"string"}},
+                "required":["path","content"]
+            }),
+            side_effects: crate::types::SideEffects::FilesystemWrite,
+        }],
+        max_steps: 6,
+        tool_rt: ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_write: true,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Ollama,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        mcp_registry: None,
+        stream: false,
+        event_sink: None,
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    };
+    let out = agent
+        .run("Reply with exactly `done: src/hello.txt`.", vec![], vec![])
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    assert_eq!(out.final_output, "done: src/hello.txt");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "provider should be called again after echoed box wrapper"
+    );
+}
+
+#[tokio::test]
 async fn runtime_noop_apply_patch_does_not_finalize_ok() {
     let tmp = tempfile::tempdir().expect("tmp");
     tokio::fs::write(
@@ -3410,6 +3889,7 @@ async fn runtime_read_then_done_recovers_with_corrective_write_instruction() {
     .await
     .expect("seed");
     let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
     let mut agent = Agent {
         provider: ReadThenDoneThenPatchThenDoneProvider {
             calls: calls.clone(),
@@ -3481,7 +3961,9 @@ async fn runtime_read_then_done_recovers_with_corrective_write_instruction() {
         },
         mcp_registry: None,
         stream: false,
-        event_sink: None,
+        event_sink: Some(Box::new(EventCaptureSink {
+            events: events.clone(),
+        })),
         compaction_settings: CompactionSettings {
             max_context_chars: 0,
             mode: CompactionMode::Off,
@@ -3534,6 +4016,196 @@ async fn runtime_read_then_done_recovers_with_corrective_write_instruction() {
     assert!(
         calls.load(Ordering::SeqCst) >= 3,
         "expected corrective continuation before successful write"
+    );
+    let evs = events.lock().expect("lock");
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::Error)
+            && e.data
+                .get("reason_code")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "implementation_requires_effective_write")
+    }));
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::StepBlocked)
+            && e.data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "implementation_requires_effective_write")
+    }));
+}
+
+#[tokio::test]
+async fn runtime_post_write_guard_retry_is_machine_classified() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let mut agent = Agent {
+        provider: PatchWithoutReadThenRepairProvider {
+            calls: calls.clone(),
+        },
+        model: "m".to_string(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        tools: vec![
+            crate::types::ToolDef {
+                name: "read_file".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "properties":{"path":{"type":"string"}},
+                    "required":["path"]
+                }),
+                side_effects: crate::types::SideEffects::FilesystemRead,
+            },
+            crate::types::ToolDef {
+                name: "apply_patch".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "properties":{"path":{"type":"string"},"patch":{"type":"string"}},
+                    "required":["path","patch"]
+                }),
+                side_effects: crate::types::SideEffects::FilesystemWrite,
+            },
+        ],
+        max_steps: 8,
+        tool_rt: ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_write: true,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Ollama,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        mcp_registry: None,
+        stream: false,
+        event_sink: Some(Box::new(EventCaptureSink {
+            events: events.clone(),
+        })),
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    };
+    let out = agent
+        .run(
+            "Edit main.rs to return 3.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    assert!(
+        matches!(out.exit_reason, AgentExitReason::PlannerError),
+        "{out:?}"
+    );
+    let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
+        .await
+        .expect("read main");
+    assert!(main.contains("return 3;"), "{main}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "expected exactly one retry attempt after classified post-write guard failure"
+    );
+    let evs = events.lock().expect("lock");
+    let retry_errors = evs
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, crate::events::EventKind::Error)
+                && e.data
+                    .get("reason_code")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s == "post_write_guard_retry")
+        })
+        .count();
+    assert_eq!(
+        retry_errors, 1,
+        "expected exactly one classified post-write retry"
+    );
+    assert!(
+        !evs.iter().any(|e| {
+            matches!(e.kind, crate::events::EventKind::StepBlocked)
+                && e.data
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s == "post_write_guard_retry")
+        }),
+        "post_write_guard_retry should be classified on the error event, not as a generic step-blocked reason"
+    );
+    assert!(
+        out.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("requires prior read_file"),
+        "final failure should preserve the guard cause: {out:?}"
     );
 }
 
