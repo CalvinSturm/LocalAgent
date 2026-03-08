@@ -59,6 +59,7 @@ mod learning;
 #[allow(dead_code)]
 mod lsp_context;
 mod lsp_context_provider;
+mod lsp_context_typescript;
 
 mod ops_helpers;
 

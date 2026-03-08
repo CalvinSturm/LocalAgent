@@ -1149,6 +1149,12 @@ pub(crate) struct RunArgs {
     #[arg(long, default_value_t = 32 * 1024)]
     pub(crate) repomap_max_bytes: usize,
 
+    #[arg(long, value_enum)]
+    pub(crate) lsp_provider: Option<LspProviderKind>,
+
+    #[arg(long)]
+    pub(crate) lsp_command: Option<PathBuf>,
+
     #[arg(long = "reliability-profile")]
     pub(crate) reliability_profile: Option<String>,
 
@@ -1300,6 +1306,11 @@ pub(crate) enum AgentMode {
 pub(crate) enum RunOutputMode {
     Human,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum LspProviderKind {
+    Typescript,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

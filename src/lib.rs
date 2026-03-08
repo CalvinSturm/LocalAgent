@@ -19,6 +19,8 @@ pub mod hooks;
 pub mod instructions;
 pub mod learning;
 pub mod lsp_context;
+#[doc(hidden)]
+pub mod lsp_context_typescript;
 pub mod mcp;
 pub mod operator_queue;
 pub mod packs;

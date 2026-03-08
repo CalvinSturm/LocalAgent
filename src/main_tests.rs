@@ -959,6 +959,26 @@ fn serve_command_parses_bind_and_port() {
 }
 
 #[test]
+fn lsp_provider_command_parses_for_typescript() {
+    let cli = super::Cli::parse_from([
+        "localagent",
+        "--lsp-provider",
+        "typescript",
+        "--lsp-command",
+        "C:\\tools\\tslsp.cmd",
+        "run",
+    ]);
+    assert!(matches!(
+        cli.run.lsp_provider,
+        Some(crate::cli_args::LspProviderKind::Typescript)
+    ));
+    assert_eq!(
+        cli.run.lsp_command,
+        Some(std::path::PathBuf::from("C:\\tools\\tslsp.cmd"))
+    );
+}
+
+#[test]
 fn attach_command_parses_server_url_and_session_id() {
     let cli = Cli::parse_from([
         "localagent",
@@ -1320,6 +1340,8 @@ fn default_run_args() -> super::RunArgs {
         use_repomap: false,
 
         repomap_max_bytes: 32 * 1024,
+        lsp_provider: None,
+        lsp_command: None,
         reliability_profile: None,
 
         compaction_mode: crate::compaction::CompactionMode::Off,

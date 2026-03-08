@@ -230,7 +230,7 @@ pub(super) fn build_context_augmentations(
         None
     };
     let lsp_context_resolution = lsp_context_provider::resolve_default_lsp_context(
-        &args.workdir,
+        args,
         lsp_context::LspContextLimits::default(),
     )?;
     let activated_packs = if args.packs.is_empty() {

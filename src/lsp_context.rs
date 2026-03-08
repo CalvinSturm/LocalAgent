@@ -307,6 +307,33 @@ fn build_diagnostics_snapshot(
     }
 }
 
+pub(crate) fn build_diagnostics_snapshot_for_provider(
+    workspace_root: PathBuf,
+    language: Option<String>,
+    diagnostics_in: Vec<Diagnostic>,
+    limits: LspContextLimits,
+) -> DiagnosticsSnapshot {
+    build_diagnostics_snapshot(workspace_root, language, diagnostics_in, limits)
+}
+
+pub(crate) fn build_symbol_context_for_provider(
+    workspace_root: PathBuf,
+    query: String,
+    symbols: Vec<SymbolLocation>,
+    definitions: Vec<SymbolLocation>,
+    references: Vec<SymbolLocation>,
+    limits: LspContextLimits,
+) -> SymbolContext {
+    build_symbol_context(
+        workspace_root,
+        query,
+        symbols,
+        definitions,
+        references,
+        limits,
+    )
+}
+
 fn build_symbol_context(
     workspace_root: PathBuf,
     query: String,
