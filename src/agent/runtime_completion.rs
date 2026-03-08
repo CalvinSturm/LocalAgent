@@ -224,6 +224,43 @@ impl<P: ModelProvider> Agent<P> {
                         };
                     }
                 }
+                if self.assistant_content_has_protocol_artifacts(assistant_content) {
+                    let blocked_runtime_completion_count =
+                        blocked_runtime_completion_count.saturating_add(1);
+                    let corrective_instruction =
+                        "Your last message repeated tool protocol artifacts instead of a user-facing answer. Do not echo [TOOL_CALL] or [TOOL_RESULT] blocks. If the task is complete, reply with the final answer only.";
+                    self.emit_event(
+                        &run_id,
+                        step,
+                        crate::events::EventKind::Error,
+                        serde_json::json!({
+                            "error": corrective_instruction,
+                            "source": "tool_protocol_guard",
+                            "reason_code": "assistant_protocol_artifact_echo",
+                            "blocked_count": blocked_runtime_completion_count
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step,
+                        crate::events::EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": "assistant_protocol_artifact_echo",
+                            "blocked_count": blocked_runtime_completion_count
+                        }),
+                    );
+                    messages.push(Message {
+                        role: crate::types::Role::Developer,
+                        content: Some(corrective_instruction.to_string()),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    });
+                    return RuntimeCompletionAction::ContinueAgentStep {
+                        blocked_runtime_completion_count,
+                        operator_delivery_count,
+                    };
+                }
                 let final_output =
                     self.final_output_for_completion(last_user_output_raw, assistant_content);
                 if enforce_implementation_integrity_guard {
@@ -449,7 +486,7 @@ impl<P: ModelProvider> Agent<P> {
                                 "reason_code": "post_write_guard_retry"
                             }),
                         );
-                        return VerifiedWriteResult::RetryWithMessage(
+                        return VerifiedWriteResult::ContinueWithMessage(
                             "You must read_file on a path before editing it. Use read_file to inspect the file contents first, then apply your changes, then read_file again to verify.".to_string(),
                         );
                     }
@@ -462,7 +499,8 @@ impl<P: ModelProvider> Agent<P> {
                             "source": "implementation_integrity_guard"
                         }),
                     );
-                    return VerifiedWriteResult::Done(self.finalize_planner_error_with_end(
+                    return VerifiedWriteResult::Done(Box::new(
+                        self.finalize_planner_error_with_end(
                         step,
                         run_id,
                         started_at,
@@ -478,6 +516,7 @@ impl<P: ModelProvider> Agent<P> {
                         saw_token_usage,
                         total_token_usage,
                         taint_state,
+                    ),
                     ));
                 }
             }
@@ -507,6 +546,6 @@ impl<P: ModelProvider> Agent<P> {
 }
 
 pub(super) enum VerifiedWriteResult {
-    Done(super::agent_types::AgentOutcome),
-    RetryWithMessage(String),
+    Done(Box<super::agent_types::AgentOutcome>),
+    ContinueWithMessage(String),
 }

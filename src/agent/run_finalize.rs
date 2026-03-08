@@ -31,18 +31,18 @@ impl<P: ModelProvider> Agent<P> {
         post_write_guard_retry_count: u32,
     ) -> super::runtime_completion::VerifiedWriteResult {
         use super::runtime_completion::VerifiedWriteResult;
-        let final_output = if verified_paths.is_empty() {
-            "Applied requested file changes and verified.".to_string()
+        let continuation_message = if verified_paths.is_empty() {
+            "Runtime note: post-write verification succeeded. Prefer finishing now. If the requested change is complete, provide the final answer immediately and do not call another write tool. Only call another tool if the prompt still has an unfinished required step, such as running tests or inspecting another file.".to_string()
         } else {
             format!(
-                "Applied requested file changes and verified: {}.",
+                "Runtime note: post-write verification succeeded for {}. Prefer finishing now. If the requested change is complete, provide the final answer immediately and do not call another write tool for that path. Only call another tool if the prompt still has an unfinished required step, such as running tests or inspecting another file.",
                 verified_paths.join(", ")
             )
         };
         if let Some(reason) =
             crate::agent_impl_guard::implementation_integrity_violation_with_tool_executions(
                 user_prompt,
-                &final_output,
+                &continuation_message,
                 &observed_tool_calls,
                 observed_tool_executions,
                 enforce_implementation_integrity_guard,
@@ -66,7 +66,7 @@ impl<P: ModelProvider> Agent<P> {
                 } else {
                     "Post-write verification requires a read_file call after writing. Use read_file on the modified path to verify your changes."
                 };
-                return VerifiedWriteResult::RetryWithMessage(corrective.to_string());
+                return VerifiedWriteResult::ContinueWithMessage(corrective.to_string());
             }
             self.emit_event(
                 &run_id,
@@ -77,7 +77,7 @@ impl<P: ModelProvider> Agent<P> {
                     "source": "implementation_integrity_guard"
                 }),
             );
-            return VerifiedWriteResult::Done(self.finalize_planner_error_with_end(
+            return VerifiedWriteResult::Done(Box::new(self.finalize_planner_error_with_end(
                 step,
                 run_id,
                 started_at,
@@ -93,25 +93,9 @@ impl<P: ModelProvider> Agent<P> {
                 saw_token_usage,
                 total_token_usage,
                 taint_state,
-            ));
+            )));
         }
-        VerifiedWriteResult::Done(self.finalize_ok_with_end(
-            step,
-            run_id,
-            started_at,
-            final_output,
-            messages,
-            observed_tool_calls,
-            observed_tool_decisions,
-            request_context_chars,
-            last_compaction_report,
-            hook_invocations,
-            provider_retry_count,
-            provider_error_count,
-            saw_token_usage,
-            total_token_usage,
-            taint_state,
-        ))
+        VerifiedWriteResult::ContinueWithMessage(continuation_message)
     }
 
     #[allow(clippy::too_many_arguments)]

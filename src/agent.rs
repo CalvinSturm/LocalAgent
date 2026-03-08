@@ -1191,12 +1191,19 @@ impl<P: ModelProvider> Agent<P> {
                     )
                     .await
                 {
-                    runtime_completion::VerifiedWriteResult::Done(outcome) => return outcome,
-                    runtime_completion::VerifiedWriteResult::RetryWithMessage(corrective) => {
-                        post_write_guard_retry_count += 1;
+                    runtime_completion::VerifiedWriteResult::Done(outcome) => return *outcome,
+                    runtime_completion::VerifiedWriteResult::ContinueWithMessage(message) => {
+                        if message.contains("You must read_file")
+                            || message.contains("Post-write verification requires")
+                        {
+                            post_write_guard_retry_count += 1;
+                        } else {
+                            post_write_guard_retry_count = 0;
+                        }
+                        blocked_runtime_completion_count = 0;
                         messages.push(Message {
                             role: Role::Developer,
-                            content: Some(corrective),
+                            content: Some(message),
                             tool_call_id: None,
                             tool_name: None,
                             tool_calls: None,

@@ -345,7 +345,7 @@ impl ExecTarget for HostTarget {
         let normalized_patch = normalize_patch_for_diffy(&req.patch, &req.path);
         let patched = match apply_patch_lenient(&original, &normalized_patch) {
             Ok(p) => p,
-            Err(e) => return TargetResult::failed(ExecTargetKind::Host, format!("{e}"), None),
+            Err(e) => return TargetResult::failed(ExecTargetKind::Host, e.to_string(), None),
         };
         if let Some(parent) = full.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
