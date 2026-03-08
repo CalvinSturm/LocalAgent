@@ -208,9 +208,17 @@ For full install, updates, Windows troubleshooting, and verification steps, see:
 
 ## Docs
 
+Quick docs map:
+
 * [Install guide](docs/guides/INSTALL.md)
 * [Provider setup](docs/guides/LLM_SETUP.md)
+* [Repo entry guide](AGENTS.md)
+* [Runtime architecture](docs/architecture/RUNTIME_ARCHITECTURE.md)
+* [Operational runbook](docs/operations/OPERATIONAL_RUNBOOK.md)
+* [Configuration and state](docs/reference/CONFIGURATION_AND_STATE.md)
 * [CLI reference](docs/reference/CLI_REFERENCE.md)
+* [Runtime loop policy](docs/policy/AGENT_RUNTIME_PRINCIPLES_2026.md)
+* [Runtime change review template](docs/policy/AGENT_RUNTIME_CHANGE_REVIEW_TEMPLATE.md)
 * [Templates](docs/guides/TEMPLATES.md)
 * [Changelog](CHANGELOG.md)
 

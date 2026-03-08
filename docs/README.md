@@ -7,8 +7,11 @@ Last reviewed: 2026-03-03
 This docs tree is organized by document type.
 
 Normative docs (source of truth for users/operators):
+- `docs/architecture/`
+- `docs/operations/`
 - `docs/guides/`
 - `docs/reference/`
+- `docs/policy/`
 - `docs/adr/`
 
 Non-normative docs (contributor context/history only):
@@ -19,8 +22,11 @@ Non-normative docs (contributor context/history only):
 
 | Path | Status | Owner | Last reviewed | Notes |
 |---|---|---|---|---|
-| `docs/guides/*` | current | LocalAgent maintainers | 2026-02-27 | User/operator how-to docs |
-| `docs/reference/*` | current | LocalAgent maintainers | 2026-02-27 | Runtime and CLI source-of-truth docs |
+| `docs/architecture/*` | current | LocalAgent maintainers | 2026-03-07 | Deep system maps and critical execution flows |
+| `docs/operations/*` | current | LocalAgent maintainers | 2026-03-07 | Operational debugging, repro, and incident docs |
+| `docs/guides/*` | current | LocalAgent maintainers | 2026-03-07 | User/operator how-to docs |
+| `docs/reference/*` | current | LocalAgent maintainers | 2026-03-07 | Runtime, state, and CLI reference docs |
+| `docs/policy/*` | current | LocalAgent maintainers | 2026-03-07 | Repo-local runtime policy and review requirements |
 | `docs/adr/*` | current | LocalAgent maintainers | 2026-02-27 | Decision records |
 | `docs/research/*` | historical | LocalAgent maintainers | 2026-02-27 | Non-normative research and exploration |
 | `docs/archive/*` | historical | LocalAgent maintainers | 2026-03-03 | Historical planning/audit snapshots |
@@ -28,20 +34,37 @@ Non-normative docs (contributor context/history only):
 | `docs/OOTB_AGENT_EFFECTIVENESS_AUDIT.md` | historical redirect | LocalAgent maintainers | 2026-03-03 | Moved to `docs/archive/OOTB_AGENT_EFFECTIVENESS_AUDIT.md` |
 | `docs/TOOL_CALL_ACCURACY_SPEC.md` | historical redirect | LocalAgent maintainers | 2026-03-03 | Moved to `docs/archive/TOOL_CALL_ACCURACY_SPEC.md` |
 
+Root-level redirect stubs in `docs/` are compatibility shims only. They should not receive new substantive edits; new or maintained content belongs in the current canonical doc under `architecture/`, `operations/`, `reference/`, `policy/`, `guides/`, `adr/`, `research/`, or `archive/` as appropriate.
+
+## Architecture
+
+- [Runtime Architecture](architecture/RUNTIME_ARCHITECTURE.md)
+
+## Operations
+
+- [Operational Runbook](operations/OPERATIONAL_RUNBOOK.md)
+
 ## Guides
 
 - [Install](guides/INSTALL.md)
 - [LLM Provider Setup](guides/LLM_SETUP.md)
 - [Templates](guides/TEMPLATES.md)
+- [Instruction Profiles](guides/INSTRUCTION_PROFILES.md)
+- [Safe Tool Tuning Baseline](guides/SAFE_TOOL_TUNING_BASELINE.md)
+- [Human-in-the-Loop Checklist](guides/HUMAN_IN_THE_LOOP_CHECKLIST.md)
 
 ## Reference
 
 - [CLI Reference](reference/CLI_REFERENCE.md)
+- [Configuration and State](reference/CONFIGURATION_AND_STATE.md)
+- [File and Symbol Index](reference/FILE_AND_SYMBOL_INDEX.md)
 - [Learn Workflow Reference](reference/LEARN_WORKFLOW_REFERENCE.md)
 - [Learn Output Contract](reference/LEARN_OUTPUT_CONTRACT.md)
-- [Runtime Architecture](reference/RUNTIME_ARCHITECTURE.md)
-- [Instruction Profiles](reference/INSTRUCTION_PROFILES.md)
-- [Safe Tool Tuning Profile](reference/SAFE_TOOL_TUNING_PROFILE.md)
+
+## Policy
+
+- [Runtime Loop Policy](policy/AGENT_RUNTIME_PRINCIPLES_2026.md)
+- [Runtime Change Review Template](policy/AGENT_RUNTIME_CHANGE_REVIEW_TEMPLATE.md)
 
 ## Research
 
@@ -91,6 +114,7 @@ Non-normative docs (contributor context/history only):
 
 ## Project Docs
 
+- [Repo Entry Guide](../AGENTS.md)
 - [Contributing](../CONTRIBUTING.md)
 - [Security Policy](../SECURITY.md)
 - [Code of Conduct](../CODE_OF_CONDUCT.md)

@@ -172,7 +172,7 @@ PowerShell helper (repo script) now applies a tuned preset for this model:
 
 - Models trained for both tool calling and reasoning usually perform better in MCP-heavy workflows.
 - Smaller models often need model-specific instruction tuning to format tool calls consistently.
-- See `docs/reference/INSTRUCTION_PROFILES.md` for per-model tuning guidance and examples.
+- See `INSTRUCTION_PROFILES.md` for per-model tuning guidance and examples.
 
 ## 3) llama.cpp Server Setup
 
@@ -303,7 +303,7 @@ What to do:
 2. Keep instructions short and explicit (tool JSON format, one call at a time, ask before guessing)
 3. Test the same prompt repeatedly and keep only changes that improve consistency
 
-See `docs/reference/INSTRUCTION_PROFILES.md` for examples and a recommended workflow.
+See `INSTRUCTION_PROFILES.md` for examples and a recommended workflow.
 
 ## 7) Optional: MCP Playwright for Browser Tasks
 

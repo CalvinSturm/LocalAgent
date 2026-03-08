@@ -2,10 +2,10 @@
 
 Status: Historical redirect
 
-This document has moved to:
+Current canonical destination:
 - [docs/archive/TOOL_CALL_ACCURACY_SPEC.md](archive/TOOL_CALL_ACCURACY_SPEC.md)
 
-For implemented tranche behavior, use:
+Historical tranche-specific follow-on specs:
 - [docs/archive/TOOL_CALL_ACCURACY_PR2_SPEC.md](archive/TOOL_CALL_ACCURACY_PR2_SPEC.md)
 - [docs/archive/TOOL_CALL_ACCURACY_PR3_SPEC.md](archive/TOOL_CALL_ACCURACY_PR3_SPEC.md)
 - [docs/archive/TOOL_CALL_ACCURACY_PR4_SPEC.md](archive/TOOL_CALL_ACCURACY_PR4_SPEC.md)

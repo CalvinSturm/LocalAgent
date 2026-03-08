@@ -15,6 +15,39 @@ Use it to answer:
 - Where are artifacts written?
 - Where should I change behavior X?
 
+## One-Screen Overview
+
+What this repo does:
+- Provides `localagent` CLI/runtime for local model providers (`lmstudio`, `llamacpp`, `ollama`, plus `mock`) with tool calling, trust/approval policy, MCP tools, replay/repro artifacts, eval/check workflows, and TUI chat.
+
+Who uses it:
+- Operators: run/chat, approvals, policy doctor/test, replay/eval/tasks/check commands.
+- Developers: extend runtime modules, tools, providers, policies, hooks, tests.
+
+Main runtime modes:
+- Single-run agent mode (`--mode single`).
+- Planner-worker orchestration (`--mode planner-worker`).
+- Agent behavior mode (`--agent-mode build|plan`).
+
+Core modules/crates:
+- `cli_dispatch` / `cli_args`: command parsing and routing.
+- `agent_runtime` / `agent`: orchestration and loop.
+- `tools` / `target`: tool execution and host/docker target.
+- `trust` / `gate`: policy, approvals, and audit decisions.
+- `mcp`: external tool registry and RPC client.
+- `store` / `repro` / `session`: state, artifacts, replay, reproducibility, session memory.
+
+* `Evidence: src/cli_args.rs#ProviderKind`
+* `Evidence: src/cli_args.rs#Commands`
+* `Evidence: src/provider_runtime.rs#default_base_url`
+* `Evidence: src/planner.rs#RunMode`
+* `Evidence: src/cli_args.rs#AgentMode`
+* `Evidence: src/lib.rs#agent`
+* `Evidence: src/lib.rs#mcp`
+* `Evidence: src/lib.rs#store`
+* `Evidence: src/lib.rs#trust`
+* `Evidence: src/lib.rs#session`
+
 ## Entry Points
 
 ### CLI bootstrap
@@ -33,6 +66,51 @@ Use it to answer:
   - Exposes reusable subsystems (`agent`, `gate`, `store`, `mcp`, `tui`, etc.)
 
 ## High-Level Runtime Flow
+
+## Architecture Map
+
+Components and responsibilities:
+1. CLI front door (`main`, `cli_args`, `cli_dispatch`).
+2. Runtime orchestrator (`agent_runtime`, `runtime_wiring`, `run_prep`).
+3. Execution kernel (`agent`, `tools`, `target`).
+4. Trust plane (`gate`, `trust/policy`, `trust/approvals`, `trust/audit`).
+5. Integrations (`providers/*`, `mcp/*`, `hooks/*`).
+6. State and observability (`store`, `events`, `runtime_events`, `repro`, `session`).
+7. UX surfaces (`startup_*`, `chat_*`, `tui/*`).
+
+Data/control flow, primary run path:
+`main -> run_cli -> provider selection -> run_agent -> run_agent_with_ui -> build_gate/build_event_sink -> prepare_tools_and_qualification -> Agent::run -> write_run_record`
+
+External integrations:
+- HTTP providers via `reqwest` (OpenAI-compatible plus Ollama).
+- MCP servers via spawned stdio process and JSON-RPC.
+- Optional Docker exec target for tool execution.
+
+Side effects model:
+- Filesystem read/write via built-in tools and state artifact writes.
+- Process spawn for shell tools, hooks, MCP servers, and optional Docker.
+- Network via provider HTTP and MCP remote endpoints behind MCP servers.
+
+Observability surfaces:
+- Event sinks: stdout JSON projection, JSONL file sink, TUI sink.
+- Run artifacts in `.localagent/runs` with config hash, fingerprint, and tool decisions.
+- Audit log appends (`audit.jsonl`) for trust decisions.
+
+* `Evidence: src/main.rs#main`
+* `Evidence: src/agent_runtime.rs#run_agent_with_ui`
+* `Evidence: src/tools.rs#execute_tool`
+* `Evidence: src/gate.rs#ToolGate`
+* `Evidence: src/providers/mod.rs#ModelProvider`
+* `Evidence: src/mcp/registry.rs#McpRegistry`
+* `Evidence: src/store/io.rs#write_run_record`
+* `Evidence: src/chat_tui_runtime.rs#run_chat_tui`
+* `Evidence: Cargo.toml#<config:dependencies.reqwest>`
+* `Evidence: src/providers/openai_compat.rs#OpenAiCompatProvider`
+* `Evidence: src/providers/ollama.rs#OllamaProvider`
+* `Evidence: src/mcp/client.rs#McpClient::spawn`
+* `Evidence: src/target.rs#DockerTarget`
+* `Evidence: src/hooks/runner.rs#invoke_hook`
+* `Evidence: src/trust/audit.rs#AuditLog::append`
 
 ### Standard run (`localagent ...`)
 
@@ -209,6 +287,92 @@ Use it to answer:
 3. Chat TUI runtime loop (`src/chat_tui_runtime.rs`) drives input + refresh
 4. Renderers (`src/chat_ui.rs`, `src/chat_ui/overlay.rs`, `src/chat_view_utils.rs`) draw panels/footer/banner/status
 
+## Critical Execution Flows
+
+### Flow 1: `localagent --provider ... --model ... --prompt ... run`
+1. Parse args and enforce top-level invariants (`--no-limits` requires `--unsafe`, sampling checks).
+2. Resolve workdir/state paths and optional auto-init.
+3. Select provider implementation and base URL.
+4. Call `run_agent`, then `run_agent_with_ui`.
+5. Build gate, event sink, session, context, MCP, tools, and hooks; run the agent loop; write artifact.
+6. Map provider failures to user-facing hints.
+
+Validation points:
+- Sampling and output-mode compatibility checks.
+- Gate hard checks for shell/write flags and policy.
+
+Side effects:
+- Reads and writes `.localagent/*`; may write events JSONL and audit JSONL.
+- May execute tools and processes depending on flags and decisions.
+
+* `Evidence: src/cli_dispatch.rs#validate_sampling_args`
+* `Evidence: src/cli_dispatch.rs#validate_run_output_mode`
+* `Evidence: src/cli_dispatch.rs#run_cli`
+* `Evidence: src/agent_runtime.rs#run_agent_with_ui`
+* `Evidence: src/runtime_wiring.rs#build_gate`
+* `Evidence: src/store/io.rs#write_run_record`
+
+### Flow 2: Config and state resolution before runtime
+1. `run_cli` canonicalizes workdir and applies ephemeral run defaults for run/exec when session/state-dir are not explicit.
+2. `resolve_state_paths` derives state, policy, approvals, audit, runs, and sessions locations.
+3. `startup_init::maybe_auto_init_state` ensures `.localagent` scaffolding when needed.
+4. `scaffold::run_init` can materialize templates (`policy.yaml`, `hooks.yaml`, `instructions.yaml`, `mcp_servers.json`, eval/task templates).
+
+* `Evidence: src/cli_dispatch.rs#apply_run_command_defaults`
+* `Evidence: src/store.rs#resolve_state_paths`
+* `Evidence: src/startup_init.rs#maybe_auto_init_state`
+* `Evidence: src/scaffold.rs#run_init`
+
+### Flow 3: Tool decision and execution path
+1. Agent produces `ToolCall`.
+2. Gate decides allow, deny, or require-approval (`TrustGate::decide`).
+3. If allowed: execute built-in tool (`execute_tool`) or MCP namespaced tool (`call_namespaced_tool`).
+4. Emit tool decision/execution events and audit entry.
+5. Tool result envelopes are appended to transcript; retries/guards may trigger protocol or repeat-block behavior.
+
+Validation points:
+- Tool arg schema checks.
+- Path scope checks.
+- Approval-key/version matching.
+
+* `Evidence: src/agent.rs#run`
+* `Evidence: src/gate.rs#TrustGate::decide`
+* `Evidence: src/tools.rs#execute_tool`
+* `Evidence: src/mcp/registry.rs#McpRegistry::call_namespaced_tool`
+* `Evidence: src/trust/audit.rs#AuditLog::append`
+
+### Flow 4: `localagent eval ...`
+1. CLI routes to `handle_eval_command`.
+2. Profile overrides applied; config validated and `EvalConfig` built.
+3. `run_eval` executes the task matrix (`models x tasks x runs`), creates per-run workdirs, runs the agent, and applies assertions/verifiers.
+4. Writes eval results JSON, optional JUnit/summary markdown, and optional baseline compare or bundle artifacts.
+
+Validation points:
+- Required `--models` and non-empty split.
+- Capability skip gates for write/shell/MCP requirements.
+
+* `Evidence: src/cli_dispatch_eval_replay.rs#handle_eval_command`
+* `Evidence: src/eval/runner.rs#run_eval`
+* `Evidence: src/eval/runner.rs#missing_capability_reason`
+* `Evidence: src/eval/report.rs#write_results`
+
+### Flow 5: `localagent tasks run --taskfile ...`
+1. Load taskfile and compute hash.
+2. Topologically order nodes and initialize or load checkpoint.
+3. For each runnable node: merge defaults/overrides into `RunArgs`, resolve node workdir, and optionally propagate summaries.
+4. Execute node via `run_agent`; persist checkpoint after status transitions.
+5. Emit taskgraph events and write taskgraph run artifact.
+
+Validation points:
+- Taskfile schema version and non-empty nodes.
+- Checkpoint taskfile hash consistency.
+
+* `Evidence: src/tasks_graph_runtime.rs#run_tasks_graph`
+* `Evidence: src/taskgraph.rs#load_taskfile`
+* `Evidence: src/taskgraph.rs#topo_order`
+* `Evidence: src/taskgraph.rs#write_checkpoint`
+* `Evidence: src/taskgraph.rs#write_graph_run_artifact`
+
 ## Where To Change X
 
 | Change you want | Primary file(s) |
@@ -237,3 +401,10 @@ Use it to answer:
 - Prefer adding tests at runtime seams when changing orchestration helpers (`runtime_*`, `run_prep`, `startup_*`).
 - Artifact schema changes should update the golden fixture in `tests/fixtures/artifacts/` intentionally.
 - Keep `src/main.rs` thin; route new CLI behavior through `src/cli_dispatch.rs` and `src/cli_args.rs`.
+
+## Related Docs
+
+- Operations: [../operations/OPERATIONAL_RUNBOOK.md](../operations/OPERATIONAL_RUNBOOK.md)
+- Configuration and state: [../reference/CONFIGURATION_AND_STATE.md](../reference/CONFIGURATION_AND_STATE.md)
+- CLI reference: [../reference/CLI_REFERENCE.md](../reference/CLI_REFERENCE.md)
+- Runtime policy: [../policy/AGENT_RUNTIME_PRINCIPLES_2026.md](../policy/AGENT_RUNTIME_PRINCIPLES_2026.md)

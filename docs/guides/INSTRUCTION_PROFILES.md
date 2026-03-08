@@ -174,3 +174,8 @@ Avoid:
 - More context increases memory pressure (KV cache) and can reduce stability/performance.
 - For many local agents, stronger tool discipline beats simply increasing context length.
 - Inference is typically GPU-heavy; CPU-only runs are often too slow for interactive agent workflows.
+
+## Related Docs
+
+- Safe tool tuning baseline: [SAFE_TOOL_TUNING_BASELINE.md](SAFE_TOOL_TUNING_BASELINE.md)
+- Human-in-the-loop checklist: [HUMAN_IN_THE_LOOP_CHECKLIST.md](HUMAN_IN_THE_LOOP_CHECKLIST.md)

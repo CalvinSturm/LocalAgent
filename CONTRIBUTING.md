@@ -41,6 +41,15 @@ python scripts/dev_harness.py --profile full
 - Update docs when flags/commands/workflows change.
 - Keep platform behavior cross-compatible (Windows/Linux/macOS) when possible.
 
+## Runtime Behavior Changes
+
+If your change affects shared runtime-loop behavior, finalize semantics, retry behavior, continuation policy, or related guard/validator behavior:
+
+- Read [AGENTS.md](AGENTS.md) first for the repo entry guidance.
+- Read [docs/policy/AGENT_RUNTIME_PRINCIPLES_2026.md](docs/policy/AGENT_RUNTIME_PRINCIPLES_2026.md) before changing runtime-loop semantics.
+- For substantial runtime-behavior PRs, use [docs/policy/AGENT_RUNTIME_CHANGE_REVIEW_TEMPLATE.md](docs/policy/AGENT_RUNTIME_CHANGE_REVIEW_TEMPLATE.md) in the PR description.
+- Preserve the repo default that verified successful write is terminal by default unless continuation is explicitly authorized by repo-local policy.
+
 ## Pull Request Checklist
 
 - [ ] `cargo fmt --check` passes

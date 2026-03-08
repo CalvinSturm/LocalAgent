@@ -1,4 +1,4 @@
-# Safe Tool Tuning Profile (V1)
+# Safe Tool Tuning Baseline
 
 Status: Active  
 Owner: LocalAgent maintainers  
@@ -215,3 +215,8 @@ Avoid changing multiple layers at once; you will not know what helped.
 4. Session compaction settings (stability on longer runs)
 
 This order gives the most signal with the least risk.
+
+## Related Docs
+
+- Instruction profiles: [INSTRUCTION_PROFILES.md](INSTRUCTION_PROFILES.md)
+- Human-in-the-loop checklist: [HUMAN_IN_THE_LOOP_CHECKLIST.md](HUMAN_IN_THE_LOOP_CHECKLIST.md)

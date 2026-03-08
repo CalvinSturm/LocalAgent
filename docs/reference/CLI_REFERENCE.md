@@ -443,5 +443,5 @@ Mode naming note:
 
 ---
 
-For provider install/setup walkthroughs, see `docs/guides/LLM_SETUP.md`.
+For provider install/setup walkthroughs, see `../guides/LLM_SETUP.md`.
 
