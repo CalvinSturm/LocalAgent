@@ -4,13 +4,14 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 use crate::gate::ProviderKind;
 use crate::providers::common::{
     build_http_client, build_tool_envelopes, format_http_error_body, map_token_usage_triplet,
     provider_payload_too_large_error, provider_stream_incomplete_error,
     provider_stream_payload_too_large_error, record_retry_and_sleep, truncate_error_display,
-    ProviderRetryStepInput, ToolEnvelope as SharedToolEnvelope,
+    truncate_for_error, ProviderRetryStepInput, ToolEnvelope as SharedToolEnvelope,
 };
 use crate::providers::http::{
     classify_reqwest_error, classify_status, HttpConfig, ProviderError, ProviderErrorKind,
@@ -32,6 +33,105 @@ pub struct OpenAiCompatProvider {
 enum OpenAiCompatMode {
     Standard,
     Lmstudio,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiCompatTrace {
+    schema_version: String,
+    provider: String,
+    base_url: String,
+    streaming: bool,
+    request: Value,
+    events: Vec<OpenAiCompatTraceEvent>,
+    result: OpenAiCompatTraceResult,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiCompatTraceEvent {
+    phase: String,
+    detail: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiCompatTraceResult {
+    outcome: String,
+    saw_done: bool,
+    emitted_any: bool,
+    content_bytes: usize,
+    partial_tool_calls: usize,
+    trailing_buffer_bytes: usize,
+    message: Option<String>,
+}
+
+struct OpenAiCompatTraceRecorder {
+    path: Option<PathBuf>,
+    trace: OpenAiCompatTrace,
+}
+
+impl OpenAiCompatTraceRecorder {
+    fn new(
+        compatibility: OpenAiCompatMode,
+        base_url: &str,
+        streaming: bool,
+        request: &OpenAiRequest,
+    ) -> Self {
+        let request_json = serde_json::to_value(request).unwrap_or(Value::Null);
+        Self {
+            path: resolve_openai_trace_path(),
+            trace: OpenAiCompatTrace {
+                schema_version: "openagent.openai_compat_trace.v1".to_string(),
+                provider: match compatibility {
+                    OpenAiCompatMode::Standard => "openai_compat".to_string(),
+                    OpenAiCompatMode::Lmstudio => "lmstudio".to_string(),
+                },
+                base_url: base_url.to_string(),
+                streaming,
+                request: request_json,
+                events: Vec::new(),
+                result: OpenAiCompatTraceResult {
+                    outcome: "in_progress".to_string(),
+                    saw_done: false,
+                    emitted_any: false,
+                    content_bytes: 0,
+                    partial_tool_calls: 0,
+                    trailing_buffer_bytes: 0,
+                    message: None,
+                },
+            },
+        }
+    }
+
+    fn push_event(&mut self, phase: &str, detail: Value) {
+        if self.path.is_none() {
+            return;
+        }
+        self.trace.events.push(OpenAiCompatTraceEvent {
+            phase: phase.to_string(),
+            detail,
+        });
+    }
+
+    fn finish(&mut self, result: OpenAiCompatTraceResult) {
+        self.trace.result = result;
+    }
+
+    fn write(&self) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(rendered) = serde_json::to_string_pretty(&self.trace) {
+            let _ = std::fs::write(path, rendered);
+        }
+    }
+}
+
+impl Drop for OpenAiCompatTraceRecorder {
+    fn drop(&mut self) {
+        self.write();
+    }
 }
 
 impl OpenAiCompatProvider {
@@ -247,10 +347,19 @@ impl ModelProvider for OpenAiCompatProvider {
     ) -> anyhow::Result<GenerateResponse> {
         let url = format!("{}/chat/completions", self.base_url);
         let payload = to_request(req, true, self.compatibility);
+        let mut trace =
+            OpenAiCompatTraceRecorder::new(self.compatibility, &self.base_url, true, &payload);
         let max_attempts = self.http.http_max_retries + 1;
         let mut retries = Vec::<RetryRecord>::new();
 
         for attempt in 1..=max_attempts {
+            trace.push_event(
+                "request_attempt",
+                serde_json::json!({
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                }),
+            );
             let mut request = self.client.post(&url).json(&payload);
             if let Some(key) = &self.api_key {
                 request = request.bearer_auth(key);
@@ -273,6 +382,15 @@ impl ModelProvider for OpenAiCompatProvider {
                         .await;
                         continue;
                     }
+                    trace.finish(OpenAiCompatTraceResult {
+                        outcome: "request_error".to_string(),
+                        saw_done: false,
+                        emitted_any: false,
+                        content_bytes: 0,
+                        partial_tool_calls: 0,
+                        trailing_buffer_bytes: 0,
+                        message: Some(format!("failed to call OpenAI-compatible endpoint: {e}")),
+                    });
                     return Err(anyhow!(ProviderError {
                         kind: cls.kind,
                         http_status: cls.status,
@@ -305,6 +423,19 @@ impl ModelProvider for OpenAiCompatProvider {
                     .await;
                     continue;
                 }
+                trace.finish(OpenAiCompatTraceResult {
+                    outcome: "http_error".to_string(),
+                    saw_done: false,
+                    emitted_any: false,
+                    content_bytes: 0,
+                    partial_tool_calls: 0,
+                    trailing_buffer_bytes: 0,
+                    message: Some(format!(
+                        "OpenAI-compatible endpoint returned HTTP {}: {}",
+                        status.as_u16(),
+                        format_http_error_body(&body)
+                    )),
+                });
                 return Err(anyhow!(ProviderError {
                     kind: cls.kind,
                     http_status: Some(status.as_u16()),
@@ -347,6 +478,15 @@ impl ModelProvider for OpenAiCompatProvider {
                                 .await;
                                 break;
                             }
+                            trace.finish(OpenAiCompatTraceResult {
+                                outcome: "stream_idle_timeout".to_string(),
+                                saw_done,
+                                emitted_any,
+                                content_bytes: content_accum.len(),
+                                partial_tool_calls: partials.len(),
+                                trailing_buffer_bytes: text_buf.len(),
+                                message: Some("stream idle timeout exceeded".to_string()),
+                            });
                             return Err(anyhow!(ProviderError {
                                 kind: ProviderErrorKind::Timeout,
                                 http_status: Some(status.as_u16()),
@@ -383,6 +523,15 @@ impl ModelProvider for OpenAiCompatProvider {
                             .await;
                             break;
                         }
+                        trace.finish(OpenAiCompatTraceResult {
+                            outcome: "stream_read_error".to_string(),
+                            saw_done,
+                            emitted_any,
+                            content_bytes: content_accum.len(),
+                            partial_tool_calls: partials.len(),
+                            trailing_buffer_bytes: text_buf.len(),
+                            message: Some(format!("failed reading stream chunk: {e}")),
+                        });
                         return Err(anyhow!(ProviderError {
                             kind: cls.kind,
                             http_status: cls.status.or(Some(status.as_u16())),
@@ -409,6 +558,13 @@ impl ModelProvider for OpenAiCompatProvider {
 
                 let mut chunk_text = String::from_utf8_lossy(&chunk).to_string();
                 chunk_text = chunk_text.replace("\r\n", "\n").replace('\r', "\n");
+                trace.push_event(
+                    "stream_chunk",
+                    serde_json::json!({
+                        "bytes": chunk.len(),
+                        "chunk_preview": truncate_for_error(&chunk_text, 2000),
+                    }),
+                );
                 text_buf.push_str(&chunk_text);
 
                 for raw_event in drain_sse_events(&mut text_buf) {
@@ -431,31 +587,71 @@ impl ModelProvider for OpenAiCompatProvider {
                         Ok(Some(payload_text)) => {
                             if payload_text == "[DONE]" {
                                 saw_done = true;
+                                trace.push_event("stream_done", serde_json::json!({}));
                                 continue;
                             }
-                            if let Err(e) = handle_openai_stream_json(
+                            match handle_openai_stream_json(
                                 &payload_text,
                                 on_delta,
                                 &mut content_accum,
                                 &mut partials,
                             ) {
-                                return Err(anyhow!(ProviderError {
-                                    kind: ProviderErrorKind::Parse,
-                                    http_status: Some(status.as_u16()),
-                                    retryable: false,
-                                    attempt,
-                                    max_attempts,
-                                    message: format!(
-                                        "malformed OpenAI-compatible stream event: {}",
-                                        truncate_error_display(&e, 200)
-                                    ),
-                                    retries,
-                                }));
+                                Ok(summary) => {
+                                    trace.push_event(
+                                        "stream_event",
+                                        serde_json::json!({
+                                            "payload_preview": truncate_for_error(&payload_text, 2000),
+                                            "content_delta_preview": summary.content_delta_preview,
+                                            "tool_fragments": summary.tool_fragments,
+                                            "finish_reason": summary.finish_reason,
+                                            "content_bytes_total": content_accum.len(),
+                                            "partial_tool_calls": partials.len(),
+                                        }),
+                                    );
+                                }
+                                Err(e) => {
+                                    trace.finish(OpenAiCompatTraceResult {
+                                        outcome: "stream_parse_error".to_string(),
+                                        saw_done,
+                                        emitted_any,
+                                        content_bytes: content_accum.len(),
+                                        partial_tool_calls: partials.len(),
+                                        trailing_buffer_bytes: text_buf.len(),
+                                        message: Some(format!(
+                                            "malformed OpenAI-compatible stream event: {}",
+                                            truncate_error_display(&e, 200)
+                                        )),
+                                    });
+                                    return Err(anyhow!(ProviderError {
+                                        kind: ProviderErrorKind::Parse,
+                                        http_status: Some(status.as_u16()),
+                                        retryable: false,
+                                        attempt,
+                                        max_attempts,
+                                        message: format!(
+                                            "malformed OpenAI-compatible stream event: {}",
+                                            truncate_error_display(&e, 200)
+                                        ),
+                                        retries,
+                                    }));
+                                }
                             }
                             emitted_any = true;
                         }
                         Ok(None) => {}
                         Err(e) => {
+                            trace.finish(OpenAiCompatTraceResult {
+                                outcome: "invalid_sse_event".to_string(),
+                                saw_done,
+                                emitted_any,
+                                content_bytes: content_accum.len(),
+                                partial_tool_calls: partials.len(),
+                                trailing_buffer_bytes: text_buf.len(),
+                                message: Some(format!(
+                                    "invalid SSE event: {}",
+                                    truncate_error_display(&e, 200)
+                                )),
+                            });
                             return Err(anyhow!(ProviderError {
                                 kind: ProviderErrorKind::Parse,
                                 http_status: Some(status.as_u16()),
@@ -491,6 +687,15 @@ impl ModelProvider for OpenAiCompatProvider {
             } else {
                 Some(content_accum)
             };
+            trace.finish(OpenAiCompatTraceResult {
+                outcome: "success".to_string(),
+                saw_done,
+                emitted_any,
+                content_bytes: content.as_deref().map(str::len).unwrap_or(0),
+                partial_tool_calls: tool_calls.len(),
+                trailing_buffer_bytes: text_buf.len(),
+                message: None,
+            });
             return Ok(GenerateResponse {
                 assistant: Message {
                     role: Role::Assistant,
@@ -668,18 +873,28 @@ fn parse_sse_event_payload(raw_event: &str) -> anyhow::Result<Option<String>> {
     Ok(Some(data_lines.join("\n")))
 }
 
+#[derive(Debug, Default)]
+struct OpenAiStreamEventSummary {
+    content_delta_preview: Option<String>,
+    tool_fragments: Vec<Value>,
+    finish_reason: Option<String>,
+}
+
 fn handle_openai_stream_json(
     payload: &str,
     on_delta: &mut (dyn FnMut(StreamDelta) + Send),
     content_accum: &mut String,
     partials: &mut Vec<PartialToolCall>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<OpenAiStreamEventSummary> {
     let item: OpenAiResponse =
         serde_json::from_str(payload).context("failed parsing OpenAI-compatible stream event")?;
+    let mut summary = OpenAiStreamEventSummary::default();
     if let Some(choice) = item.choices.into_iter().next() {
+        summary.finish_reason = choice.finish_reason.clone();
         if let Some(content) = choice.delta.content {
             if !content.is_empty() {
                 content_accum.push_str(&content);
+                summary.content_delta_preview = Some(truncate_for_error(&content, 256));
                 on_delta(StreamDelta::Content(content));
             }
         }
@@ -696,6 +911,13 @@ fn handle_openai_stream_json(
                 }
                 if let Some(fragment) = value_to_string_fragment(&tc.function.arguments) {
                     p.arguments.push_str(&fragment);
+                    summary.tool_fragments.push(serde_json::json!({
+                        "index": idx,
+                        "id": if p.id.is_empty() { Value::Null } else { Value::String(p.id.clone()) },
+                        "name": if p.name.is_empty() { Value::Null } else { Value::String(p.name.clone()) },
+                        "arguments_fragment_preview": truncate_for_error(&fragment, 256),
+                        "complete": choice.finish_reason.as_deref() == Some("tool_calls"),
+                    }));
                     on_delta(StreamDelta::ToolCallFragment(ToolCallFragment {
                         index: idx,
                         id: if p.id.is_empty() {
@@ -715,7 +937,7 @@ fn handle_openai_stream_json(
             }
         }
     }
-    Ok(())
+    Ok(summary)
 }
 
 fn ensure_partial_len(partials: &mut Vec<PartialToolCall>, len: usize) {
@@ -750,6 +972,15 @@ fn finalize_tool_calls(partials: Vec<PartialToolCall>) -> Vec<ToolCall> {
             },
         })
         .collect()
+}
+
+fn resolve_openai_trace_path() -> Option<PathBuf> {
+    let dir = std::env::var_os("LOCALAGENT_OPENAI_TRACE_DIR")?;
+    let base = Path::new(&dir);
+    let stamp = crate::trust::now_rfc3339()
+        .replace(':', "-")
+        .replace('.', "_");
+    Some(base.join(format!("openai-compat-trace-{stamp}.json")))
 }
 
 #[cfg(test)]
