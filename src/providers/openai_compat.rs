@@ -5,6 +5,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::gate::ProviderKind;
 use crate::providers::common::{
     build_http_client, build_tool_envelopes, format_http_error_body, map_token_usage_triplet,
     provider_payload_too_large_error, provider_stream_incomplete_error,
@@ -24,10 +25,18 @@ pub struct OpenAiCompatProvider {
     base_url: String,
     api_key: Option<String>,
     http: HttpConfig,
+    compatibility: OpenAiCompatMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenAiCompatMode {
+    Standard,
+    Lmstudio,
 }
 
 impl OpenAiCompatProvider {
     pub fn new(
+        provider_kind: ProviderKind,
         base_url: String,
         api_key: Option<String>,
         http: HttpConfig,
@@ -38,6 +47,12 @@ impl OpenAiCompatProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             http,
+            compatibility: match provider_kind {
+                ProviderKind::Lmstudio => OpenAiCompatMode::Lmstudio,
+                ProviderKind::Llamacpp | ProviderKind::Ollama | ProviderKind::Mock => {
+                    OpenAiCompatMode::Standard
+                }
+            },
         })
     }
 }
@@ -119,7 +134,7 @@ struct OpenAiFunctionCall {
 impl ModelProvider for OpenAiCompatProvider {
     async fn generate(&self, req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
         let url = format!("{}/chat/completions", self.base_url);
-        let payload = to_request(req, false);
+        let payload = to_request(req, false, self.compatibility);
         let max_attempts = self.http.http_max_retries + 1;
         let mut retries = Vec::<RetryRecord>::new();
         for attempt in 1..=max_attempts {
@@ -231,7 +246,7 @@ impl ModelProvider for OpenAiCompatProvider {
         on_delta: &mut (dyn FnMut(StreamDelta) + Send),
     ) -> anyhow::Result<GenerateResponse> {
         let url = format!("{}/chat/completions", self.base_url);
-        let payload = to_request(req, true);
+        let payload = to_request(req, true, self.compatibility);
         let max_attempts = self.http.http_max_retries + 1;
         let mut retries = Vec::<RetryRecord>::new();
 
@@ -502,11 +517,16 @@ fn drain_sse_events(buf: &mut String) -> Vec<String> {
     out
 }
 
-fn to_request(req: GenerateRequest, stream: bool) -> OpenAiRequest {
+fn to_request(
+    req: GenerateRequest,
+    stream: bool,
+    compatibility: OpenAiCompatMode,
+) -> OpenAiRequest {
     let tools = build_tool_envelopes(req.tools);
+    let messages = normalize_messages(req.messages, tools.is_some(), compatibility);
     OpenAiRequest {
         model: req.model,
-        messages: req.messages,
+        messages,
         tools,
         tool_choice: "auto".to_string(),
         temperature: req.temperature.unwrap_or(0.2),
@@ -515,6 +535,73 @@ fn to_request(req: GenerateRequest, stream: bool) -> OpenAiRequest {
         seed: req.seed,
         stream,
     }
+}
+
+fn normalize_messages(
+    messages: Vec<Message>,
+    has_tools: bool,
+    compatibility: OpenAiCompatMode,
+) -> Vec<Message> {
+    if compatibility != OpenAiCompatMode::Lmstudio {
+        return messages;
+    }
+
+    let mapped = messages
+        .into_iter()
+        .map(|mut message| {
+            if matches!(message.role, Role::Developer) {
+                message.role = Role::System;
+            }
+            message
+        })
+        .collect::<Vec<_>>();
+
+    if !has_tools {
+        return mapped;
+    }
+
+    collapse_pre_user_instruction_messages(mapped)
+}
+
+fn collapse_pre_user_instruction_messages(messages: Vec<Message>) -> Vec<Message> {
+    let first_user_index = messages
+        .iter()
+        .position(|message| matches!(message.role, Role::User));
+    let Some(first_user_index) = first_user_index else {
+        return messages;
+    };
+
+    let mut pre_user_chunks = Vec::new();
+    let mut normalized = Vec::with_capacity(messages.len());
+
+    for (index, message) in messages.into_iter().enumerate() {
+        if index < first_user_index && matches!(message.role, Role::System) {
+            if let Some(content) = message.content {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    pre_user_chunks.push(trimmed.to_string());
+                }
+            }
+            continue;
+        }
+
+        normalized.push(message);
+    }
+
+    if !pre_user_chunks.is_empty() {
+        normalized.insert(
+            0,
+            Message {
+                role: Role::System,
+                content: Some(pre_user_chunks.join("\n\n")),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            },
+        );
+    }
+
+    normalized
 }
 
 fn map_openai_response(resp: OpenAiResponse) -> anyhow::Result<GenerateResponse> {
@@ -668,11 +755,12 @@ fn finalize_tool_calls(partials: Vec<PartialToolCall>) -> Vec<ToolCall> {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_sse_events, finalize_tool_calls, handle_openai_stream_json, map_openai_response,
-        parse_sse_event_payload, to_request, OpenAiResponse, PartialToolCall,
+        collapse_pre_user_instruction_messages, drain_sse_events, finalize_tool_calls,
+        handle_openai_stream_json, map_openai_response, normalize_messages,
+        parse_sse_event_payload, to_request, OpenAiCompatMode, OpenAiResponse, PartialToolCall,
     };
     use crate::providers::StreamDelta;
-    use crate::types::GenerateRequest;
+    use crate::types::{GenerateRequest, Message, Role};
 
     #[test]
     fn parses_openai_stream_content_and_tool() {
@@ -771,6 +859,7 @@ mod tests {
                 seed: None,
             },
             false,
+            OpenAiCompatMode::Standard,
         );
         assert!((payload.temperature - 0.55).abs() < f32::EPSILON);
     }
@@ -788,6 +877,7 @@ mod tests {
                 seed: None,
             },
             false,
+            OpenAiCompatMode::Standard,
         );
         assert!((payload.temperature - 0.2).abs() < f32::EPSILON);
     }
@@ -805,9 +895,124 @@ mod tests {
                 seed: Some(42),
             },
             false,
+            OpenAiCompatMode::Standard,
         );
         assert_eq!(payload.top_p, Some(0.8));
         assert_eq!(payload.max_tokens, Some(256));
         assert_eq!(payload.seed, Some(42));
+    }
+
+    #[test]
+    fn normalize_messages_for_lmstudio_maps_developer_to_system() {
+        let normalized = normalize_messages(
+            vec![
+                Message {
+                    role: Role::Developer,
+                    content: Some("repair instruction".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some("hi".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+            ],
+            false,
+            OpenAiCompatMode::Lmstudio,
+        );
+
+        assert!(matches!(normalized[0].role, Role::System));
+        assert_eq!(normalized[0].content.as_deref(), Some("repair instruction"));
+    }
+
+    #[test]
+    fn collapse_pre_user_instruction_messages_merges_leading_system_blocks() {
+        let normalized = collapse_pre_user_instruction_messages(vec![
+            Message {
+                role: Role::System,
+                content: Some("base".to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            },
+            Message {
+                role: Role::System,
+                content: Some("project".to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            },
+            Message {
+                role: Role::User,
+                content: Some("task".to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            },
+        ]);
+
+        assert_eq!(normalized.len(), 2);
+        assert!(matches!(normalized[0].role, Role::System));
+        assert_eq!(normalized[0].content.as_deref(), Some("base\n\nproject"));
+        assert!(matches!(normalized[1].role, Role::User));
+    }
+
+    #[test]
+    fn to_request_collapses_lmstudio_pre_user_instructions_when_tools_present() {
+        let payload = to_request(
+            GenerateRequest {
+                model: "m".to_string(),
+                messages: vec![
+                    Message {
+                        role: Role::System,
+                        content: Some("base".to_string()),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    },
+                    Message {
+                        role: Role::Developer,
+                        content: Some("project".to_string()),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    },
+                    Message {
+                        role: Role::User,
+                        content: Some("task".to_string()),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    },
+                ],
+                tools: Some(vec![crate::types::ToolDef {
+                    name: "read_file".to_string(),
+                    description: "read".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {}
+                    }),
+                    side_effects: crate::types::SideEffects::FilesystemRead,
+                }]),
+                temperature: None,
+                top_p: None,
+                max_tokens: None,
+                seed: None,
+            },
+            false,
+            OpenAiCompatMode::Lmstudio,
+        );
+
+        assert_eq!(payload.messages.len(), 2);
+        assert!(matches!(payload.messages[0].role, Role::System));
+        assert_eq!(
+            payload.messages[0].content.as_deref(),
+            Some("base\n\nproject")
+        );
+        assert!(matches!(payload.messages[1].role, Role::User));
     }
 }

@@ -256,6 +256,7 @@ pub(crate) async fn run_chat_repl(
         match provider_kind {
             ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
                 let provider = OpenAiCompatProvider::new(
+                    provider_kind,
                     base_url.clone(),
                     turn_args.api_key.clone(),
                     provider_runtime::http_config_from_run_args(&turn_args),

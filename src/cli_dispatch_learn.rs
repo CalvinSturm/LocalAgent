@@ -375,6 +375,7 @@ async fn call_assist_model(
     let resp = match provider_kind {
         crate::ProviderKind::Lmstudio | crate::ProviderKind::Llamacpp => {
             let provider = crate::OpenAiCompatProvider::new(
+                provider_kind,
                 base_url.to_string(),
                 cli_run.api_key.clone(),
                 crate::provider_runtime::http_config_from_run_args(cli_run),

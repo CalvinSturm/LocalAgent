@@ -145,6 +145,7 @@ pub(crate) async fn run_tasks_graph(
         let result = match provider_kind {
             ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
                 let provider = OpenAiCompatProvider::new(
+                    provider_kind,
                     base_url.clone(),
                     node_args.api_key.clone(),
                     provider_runtime::http_config_from_run_args(&node_args),

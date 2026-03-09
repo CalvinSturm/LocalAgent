@@ -228,7 +228,7 @@ fn make_provider(
 ) -> anyhow::Result<EvalProvider> {
     match provider {
         ProviderKind::Lmstudio | ProviderKind::Llamacpp => Ok(EvalProvider::OpenAiCompat(
-            OpenAiCompatProvider::new(base_url.to_string(), api_key, http)?,
+            OpenAiCompatProvider::new(provider, base_url.to_string(), api_key, http)?,
         )),
         ProviderKind::Ollama => Ok(EvalProvider::Ollama(OllamaProvider::new(
             base_url.to_string(),

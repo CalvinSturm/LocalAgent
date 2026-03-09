@@ -152,6 +152,7 @@ pub(crate) async fn build_tui_normal_submit_launch(
         match provider_kind {
             ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
                 let provider = OpenAiCompatProvider::new(
+                    provider_kind,
                     base_url.clone(),
                     turn_args.api_key.clone(),
                     provider_runtime::http_config_from_run_args(&turn_args),

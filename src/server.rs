@@ -1072,6 +1072,7 @@ async fn execute_backend_run_inner(
     let result = match provider_kind {
         ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
             let provider = OpenAiCompatProvider::new(
+                provider_kind,
                 base_url.clone(),
                 args.api_key.clone(),
                 provider_runtime::http_config_from_run_args(&args),

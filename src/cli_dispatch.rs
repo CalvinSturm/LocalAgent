@@ -501,6 +501,7 @@ pub(crate) async fn run_cli() -> anyhow::Result<()> {
     match provider_kind {
         ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
             let provider = match OpenAiCompatProvider::new(
+                provider_kind,
                 base_url.clone(),
                 cli.run.api_key.clone(),
                 provider_runtime::http_config_from_run_args(&cli.run),

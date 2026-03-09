@@ -456,6 +456,7 @@ async fn execute_check_agent_run(
     match provider_kind {
         ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
             let provider = OpenAiCompatProvider::new(
+                provider_kind,
                 base_url.to_string(),
                 run_args.api_key.clone(),
                 provider_runtime::http_config_from_run_args(run_args),
