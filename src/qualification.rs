@@ -1,24 +1,26 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context};
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::gate::ProviderKind;
 use crate::providers::ModelProvider;
-use crate::store::provider_to_string;
+use crate::store::{provider_to_string, sha256_hex, write_json_atomic};
 use crate::types::{self, GenerateRequest, Message, Role};
 
 static ORCHESTRATOR_QUAL_CACHE: OnceLock<Mutex<std::collections::BTreeMap<String, bool>>> =
     OnceLock::new();
 
+const QUALIFICATION_PROBE_PROMPT: &str =
+    "Emit exactly one native tool call and no prose:\nname=list_dir\narguments={\"path\":\".\"}";
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn probe_response_to_tool_call(
     resp: &types::GenerateResponse,
 ) -> Option<types::ToolCall> {
-    if let Some(tc) = resp.tool_calls.first() {
-        return Some(tc.clone());
-    }
-    let content = resp.assistant.content.as_deref()?;
-    parse_wrapped_tool_call_from_content(content)
-        .or_else(|| parse_inline_tool_call_from_content(content))
+    analyze_probe_response(resp).tool_call
 }
 
 fn parse_wrapped_tool_call_from_content(content: &str) -> Option<types::ToolCall> {
@@ -87,11 +89,408 @@ fn persist_orchestrator_qual_cache(
     }
 }
 
+#[derive(Debug)]
+struct ProbeResponseAnalysis {
+    tool_call: Option<types::ToolCall>,
+    source: Option<&'static str>,
+}
+
+fn analyze_probe_response(resp: &types::GenerateResponse) -> ProbeResponseAnalysis {
+    if let Some(tc) = resp.tool_calls.first() {
+        return ProbeResponseAnalysis {
+            tool_call: Some(tc.clone()),
+            source: Some("native_tool_calls"),
+        };
+    }
+    let Some(content) = resp.assistant.content.as_deref() else {
+        return ProbeResponseAnalysis {
+            tool_call: None,
+            source: None,
+        };
+    };
+    if let Some(tc) = parse_wrapped_tool_call_from_content(content) {
+        return ProbeResponseAnalysis {
+            tool_call: Some(tc),
+            source: Some("wrapped_content"),
+        };
+    }
+    if let Some(tc) = parse_inline_tool_call_from_content(content) {
+        return ProbeResponseAnalysis {
+            tool_call: Some(tc),
+            source: Some("inline_content"),
+        };
+    }
+    ProbeResponseAnalysis {
+        tool_call: None,
+        source: None,
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationTraceRequest {
+    qualification_cache_key: String,
+    provider: String,
+    base_url: String,
+    model: String,
+    stream: bool,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    max_tokens: Option<u32>,
+    seed: Option<u64>,
+    stop_sequences: Option<Vec<String>>,
+    response_format: Option<String>,
+    provider_generate_mode: String,
+    tool_catalog: Vec<QualificationTraceTool>,
+    request: GenerateRequest,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationTraceTool {
+    name: String,
+    side_effects: String,
+    parameters: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationTraceResponseRaw {
+    raw_response: Option<Value>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationTraceResponseParsed {
+    assistant_content: Option<String>,
+    assistant_content_bytes: usize,
+    tool_calls: Vec<types::ToolCall>,
+    usage: Option<types::TokenUsage>,
+    finish_reason: Option<String>,
+    inferred_content_empty: bool,
+    inferred_tool_call_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationAttemptVerdict {
+    attempt: usize,
+    probe_tool_call_present: bool,
+    probe_tool_call_source: Option<String>,
+    tool_name_matches_expected: Option<bool>,
+    tool_path_matches_expected: Option<bool>,
+    verdict: String,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationTraceVerdict {
+    qualification_cache_key: String,
+    provider: String,
+    base_url: String,
+    model: String,
+    stream: bool,
+    cache_hit: bool,
+    cached_value: Option<bool>,
+    cache_written: bool,
+    cache_write_value: Option<bool>,
+    cache_write_reason: Option<String>,
+    final_verdict: String,
+    final_reason: String,
+    attempt_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct QualificationTraceSummary {
+    provider: String,
+    model: String,
+    base_url: String,
+    stream: bool,
+    qualification_cache_key: String,
+    request_prompt_hash: String,
+    response_text_length: Option<usize>,
+    finish_reason: Option<String>,
+    verdict: String,
+    cache_outcome: String,
+    artifact_files: QualificationTraceArtifactFiles,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct QualificationTraceArtifactFiles {
+    attempts: Vec<String>,
+    verdict: String,
+    summary: String,
+}
+
+struct QualificationTraceRecorder {
+    root_dir: Option<PathBuf>,
+    provider: String,
+    base_url: String,
+    model: String,
+    stream: bool,
+    qualification_cache_key: String,
+    request_prompt_hash: String,
+    artifact_files: QualificationTraceArtifactFiles,
+    attempt_count: usize,
+    response_text_length: Option<usize>,
+    finish_reason: Option<String>,
+    cache_hit: bool,
+    cached_value: Option<bool>,
+    cache_written: bool,
+    cache_write_value: Option<bool>,
+    cache_write_reason: Option<String>,
+    final_verdict: Option<String>,
+    final_reason: Option<String>,
+}
+
+impl QualificationTraceRecorder {
+    fn new(
+        provider_kind: ProviderKind,
+        base_url: &str,
+        model: &str,
+        stream: bool,
+        qualification_cache_key: &str,
+    ) -> Self {
+        let provider = provider_to_string(provider_kind);
+        let root_dir = resolve_qualification_trace_root(
+            &provider,
+            base_url,
+            model,
+            stream,
+            qualification_cache_key,
+        );
+        Self {
+            root_dir,
+            provider,
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+            stream,
+            qualification_cache_key: qualification_cache_key.to_string(),
+            request_prompt_hash: sha256_hex(QUALIFICATION_PROBE_PROMPT.as_bytes()),
+            artifact_files: QualificationTraceArtifactFiles {
+                verdict: "verdict.json".to_string(),
+                summary: "summary.json".to_string(),
+                ..QualificationTraceArtifactFiles::default()
+            },
+            attempt_count: 0,
+            response_text_length: None,
+            finish_reason: None,
+            cache_hit: false,
+            cached_value: None,
+            cache_written: false,
+            cache_write_value: None,
+            cache_write_reason: None,
+            final_verdict: None,
+            final_reason: None,
+        }
+    }
+
+    fn record_cache_hit(&mut self, value: bool) {
+        self.cache_hit = true;
+        self.cached_value = Some(value);
+    }
+
+    fn record_cache_write(&mut self, value: bool, reason: &str) {
+        self.cache_written = true;
+        self.cache_write_value = Some(value);
+        self.cache_write_reason = Some(reason.to_string());
+    }
+
+    fn write_attempt(
+        &mut self,
+        req: &GenerateRequest,
+        resp: &types::GenerateResponse,
+        analysis: &ProbeResponseAnalysis,
+        verdict: &QualificationAttemptVerdict,
+    ) {
+        let Some(root_dir) = &self.root_dir else {
+            return;
+        };
+        self.attempt_count = self.attempt_count.saturating_add(1);
+        let attempt_dir = root_dir.join(format!("attempt-{:02}", self.attempt_count));
+        let request = QualificationTraceRequest {
+            qualification_cache_key: self.qualification_cache_key.clone(),
+            provider: self.provider.clone(),
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            stream: self.stream,
+            temperature: req.temperature,
+            top_p: req.top_p,
+            max_tokens: req.max_tokens,
+            seed: req.seed,
+            stop_sequences: None,
+            response_format: None,
+            provider_generate_mode: "generate".to_string(),
+            tool_catalog: req
+                .tools
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|tool| QualificationTraceTool {
+                    name: tool.name,
+                    side_effects: format!("{:?}", tool.side_effects).to_lowercase(),
+                    parameters: tool.parameters,
+                })
+                .collect(),
+            request: req.clone(),
+        };
+        let raw = QualificationTraceResponseRaw {
+            raw_response: None,
+            note: Some(
+                "provider.generate() returns a parsed GenerateResponse in qualification; raw provider body is unavailable at this boundary"
+                    .to_string(),
+            ),
+        };
+        let parsed = QualificationTraceResponseParsed {
+            assistant_content: resp.assistant.content.clone(),
+            assistant_content_bytes: resp.assistant.content.as_deref().map(str::len).unwrap_or(0),
+            tool_calls: resp.tool_calls.clone(),
+            usage: resp.usage.clone(),
+            finish_reason: None,
+            inferred_content_empty: resp
+                .assistant
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .is_empty(),
+            inferred_tool_call_count: resp.tool_calls.len(),
+        };
+        self.response_text_length = Some(parsed.assistant_content_bytes);
+        self.finish_reason = None;
+        let _ = write_json_atomic(&attempt_dir.join("request.json"), &request);
+        let _ = write_json_atomic(&attempt_dir.join("response.raw.json"), &raw);
+        let _ = write_json_atomic(&attempt_dir.join("response.parsed.json"), &parsed);
+        let _ = write_json_atomic(&attempt_dir.join("verdict.json"), verdict);
+        let attempt_summary = QualificationTraceSummary {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            base_url: self.base_url.clone(),
+            stream: self.stream,
+            qualification_cache_key: self.qualification_cache_key.clone(),
+            request_prompt_hash: self.request_prompt_hash.clone(),
+            response_text_length: self.response_text_length,
+            finish_reason: self.finish_reason.clone(),
+            verdict: verdict.verdict.clone(),
+            cache_outcome: if self.cache_hit {
+                "hit".to_string()
+            } else if self.cache_written {
+                "write".to_string()
+            } else {
+                "miss".to_string()
+            },
+            artifact_files: QualificationTraceArtifactFiles {
+                attempts: vec![format!("attempt-{:02}/request.json", self.attempt_count)],
+                verdict: format!("attempt-{:02}/verdict.json", self.attempt_count),
+                summary: format!("attempt-{:02}/summary.json", self.attempt_count),
+            },
+        };
+        let _ = write_json_atomic(&attempt_dir.join("summary.json"), &attempt_summary);
+        self.artifact_files
+            .attempts
+            .push(format!("attempt-{:02}", self.attempt_count));
+        let _ = analysis;
+    }
+
+    fn finalize(&mut self, verdict: &str, reason: &str) {
+        self.final_verdict = Some(verdict.to_string());
+        self.final_reason = Some(reason.to_string());
+        let Some(root_dir) = &self.root_dir else {
+            return;
+        };
+        let verdict_json = QualificationTraceVerdict {
+            qualification_cache_key: self.qualification_cache_key.clone(),
+            provider: self.provider.clone(),
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            stream: self.stream,
+            cache_hit: self.cache_hit,
+            cached_value: self.cached_value,
+            cache_written: self.cache_written,
+            cache_write_value: self.cache_write_value,
+            cache_write_reason: self.cache_write_reason.clone(),
+            final_verdict: verdict.to_string(),
+            final_reason: reason.to_string(),
+            attempt_count: self.attempt_count,
+        };
+        let summary_json = QualificationTraceSummary {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            base_url: self.base_url.clone(),
+            stream: self.stream,
+            qualification_cache_key: self.qualification_cache_key.clone(),
+            request_prompt_hash: self.request_prompt_hash.clone(),
+            response_text_length: self.response_text_length,
+            finish_reason: self.finish_reason.clone(),
+            verdict: verdict.to_string(),
+            cache_outcome: if self.cache_hit {
+                format!(
+                    "hit:{}",
+                    self.cached_value
+                        .map(|v| if v { "true" } else { "false" })
+                        .unwrap_or("null")
+                )
+            } else if self.cache_written {
+                format!(
+                    "write:{}",
+                    self.cache_write_value
+                        .map(|v| if v { "true" } else { "false" })
+                        .unwrap_or("null")
+                )
+            } else {
+                "miss".to_string()
+            },
+            artifact_files: QualificationTraceArtifactFiles {
+                attempts: self.artifact_files.attempts.clone(),
+                verdict: self.artifact_files.verdict.clone(),
+                summary: self.artifact_files.summary.clone(),
+            },
+        };
+        let _ = write_json_atomic(&root_dir.join("verdict.json"), &verdict_json);
+        let _ = write_json_atomic(&root_dir.join("summary.json"), &summary_json);
+    }
+}
+
+fn resolve_qualification_trace_root(
+    provider: &str,
+    base_url: &str,
+    model: &str,
+    stream: bool,
+    qualification_cache_key: &str,
+) -> Option<PathBuf> {
+    let trace_dir = std::env::var_os("LOCALAGENT_QUAL_TRACE_DIR")?;
+    let timestamp = crate::trust::now_rfc3339()
+        .replace(':', "-")
+        .replace('.', "_");
+    let key_hash = sha256_hex(qualification_cache_key.as_bytes());
+    let mode = if stream { "stream-on" } else { "stream-off" };
+    let model_slug = slugify_for_path(model);
+    let provider_slug = slugify_for_path(provider);
+    let base_slug = slugify_for_path(base_url);
+    Some(Path::new(&trace_dir).join(format!(
+        "{timestamp}-{provider_slug}-{model_slug}-{mode}-{base_slug}-{}",
+        &key_hash[..12]
+    )))
+}
+
+fn slugify_for_path(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
     provider: &P,
     provider_kind: ProviderKind,
     base_url: &str,
     model: &str,
+    stream: bool,
     tools: &[types::ToolDef],
     cache_path: &std::path::Path,
 ) -> anyhow::Result<()> {
@@ -101,6 +500,7 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
         base_url,
         model
     );
+    let mut trace = QualificationTraceRecorder::new(provider_kind, base_url, model, stream, &key);
     let cache =
         ORCHESTRATOR_QUAL_CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
     if let Ok(mut m) = cache.lock() {
@@ -112,9 +512,12 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
         }
     }
     if let Some(passed) = cache.lock().ok().and_then(|m| m.get(&key).copied()) {
+        trace.record_cache_hit(passed);
         if passed {
+            trace.finalize("ok", "cache_hit_pass");
             return Ok(());
         }
+        trace.finalize("error", "cache_hit_fail");
         return Err(anyhow!(
             "orchestrator qualification failed previously for this model/session: {key}"
         ));
@@ -124,18 +527,18 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
             m.insert(key, false);
             persist_orchestrator_qual_cache(cache_path, &m);
         }
+        trace.record_cache_write(false, "list_dir_tool_missing");
+        trace.finalize("error", "list_dir_tool_missing");
         return Err(anyhow!(
             "orchestrator qualification failed: list_dir tool is not available"
         ));
     };
-    let probe_prompt =
-        "Emit exactly one native tool call and no prose:\nname=list_dir\narguments={\"path\":\".\"}";
-    for _ in 0..3 {
+    for attempt in 0..3 {
         let req = GenerateRequest {
             model: model.to_string(),
             messages: vec![Message {
                 role: Role::User,
-                content: Some(probe_prompt.to_string()),
+                content: Some(QUALIFICATION_PROBE_PROMPT.to_string()),
                 tool_call_id: None,
                 tool_name: None,
                 tool_calls: None,
@@ -147,14 +550,27 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
             seed: None,
         };
         let resp = provider
-            .generate(req)
+            .generate(req.clone())
             .await
             .with_context(|| "orchestrator qualification provider call failed")?;
-        let Some(tc) = probe_response_to_tool_call(&resp) else {
+        let analysis = analyze_probe_response(&resp);
+        let Some(tc) = analysis.tool_call.clone() else {
+            let verdict = QualificationAttemptVerdict {
+                attempt: attempt + 1,
+                probe_tool_call_present: false,
+                probe_tool_call_source: analysis.source.map(str::to_string),
+                tool_name_matches_expected: None,
+                tool_path_matches_expected: None,
+                verdict: "error".to_string(),
+                reason: "no_tool_call_returned".to_string(),
+            };
+            trace.write_attempt(&req, &resp, &analysis, &verdict);
             if let Ok(mut m) = cache.lock() {
                 m.insert(key.clone(), false);
                 persist_orchestrator_qual_cache(cache_path, &m);
             }
+            trace.record_cache_write(false, "no_tool_call_returned");
+            trace.finalize("error", "no_tool_call_returned");
             return Err(anyhow!(
                 "orchestrator qualification failed: no tool call returned by probe"
             ));
@@ -165,11 +581,32 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
             .and_then(|v| v.as_str())
             .map(|p| p == ".")
             .unwrap_or(false);
+        let tool_name_ok = tc.name == "list_dir";
+        let verdict = QualificationAttemptVerdict {
+            attempt: attempt + 1,
+            probe_tool_call_present: true,
+            probe_tool_call_source: analysis.source.map(str::to_string),
+            tool_name_matches_expected: Some(tool_name_ok),
+            tool_path_matches_expected: Some(path_ok),
+            verdict: if tool_name_ok && path_ok {
+                "ok".to_string()
+            } else {
+                "error".to_string()
+            },
+            reason: if tool_name_ok && path_ok {
+                "matched_expected_tool_call".to_string()
+            } else {
+                "unexpected_tool_call".to_string()
+            },
+        };
+        trace.write_attempt(&req, &resp, &analysis, &verdict);
         if tc.name != "list_dir" || !path_ok {
             if let Ok(mut m) = cache.lock() {
                 m.insert(key.clone(), false);
                 persist_orchestrator_qual_cache(cache_path, &m);
             }
+            trace.record_cache_write(false, "unexpected_tool_call");
+            trace.finalize("error", "unexpected_tool_call");
             return Err(anyhow!(
                 "orchestrator qualification failed: expected list_dir {{\"path\":\".\"}}"
             ));
@@ -179,14 +616,18 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
         m.insert(key, true);
         persist_orchestrator_qual_cache(cache_path, &m);
     }
+    trace.record_cache_write(true, "probe_passed");
+    trace.finalize("ok", "probe_passed");
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn qualify_or_enable_readonly_fallback<P: ModelProvider>(
     provider: &P,
     provider_kind: ProviderKind,
     base_url: &str,
     worker_model: &str,
+    stream: bool,
     write_requested: bool,
     all_tools: &mut Vec<types::ToolDef>,
     cache_path: &std::path::Path,
@@ -199,6 +640,7 @@ pub(crate) async fn qualify_or_enable_readonly_fallback<P: ModelProvider>(
         provider_kind,
         base_url,
         worker_model,
+        stream,
         all_tools,
         cache_path,
     )

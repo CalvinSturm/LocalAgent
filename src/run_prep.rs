@@ -79,6 +79,7 @@ pub(crate) async fn prepare_tools_and_qualification<P: ModelProvider>(
         provider_kind,
         base_url,
         worker_model,
+        args.stream,
         args.enable_write_tools || args.allow_write,
         &mut all_tools,
         &qual_cache_path,

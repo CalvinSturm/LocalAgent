@@ -1,12 +1,14 @@
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 
 use async_trait::async_trait;
 use clap::Parser;
 
 use tempfile::tempdir;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::providers::{ModelProvider, StreamDelta};
 
@@ -144,6 +146,27 @@ impl ModelProvider for QualificationTestProvider {
     ) -> anyhow::Result<GenerateResponse> {
         self.generate(req).await
     }
+}
+
+fn qualification_trace_env_lock() -> &'static AsyncMutex<()> {
+    static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| AsyncMutex::new(()))
+}
+
+fn qualification_trace_dir_for_model(root: &Path, model: &str) -> PathBuf {
+    let mut dirs = std::fs::read_dir(root)
+        .expect("read trace root")
+        .filter_map(|entry| entry.ok().map(|item| item.path()))
+        .filter(|path| path.is_dir() && path.join("summary.json").exists())
+        .collect::<Vec<_>>();
+    dirs.sort();
+    dirs.into_iter()
+        .find(|path| {
+            let summary = std::fs::read(path.join("summary.json")).expect("summary");
+            let json: serde_json::Value = serde_json::from_slice(&summary).expect("summary json");
+            json["model"] == model
+        })
+        .expect("trace dir for model")
 }
 
 #[test]
@@ -672,6 +695,7 @@ async fn qualification_failure_is_cached_and_short_circuits_future_attempts() {
         ProviderKind::Lmstudio,
         "http://localhost:1234/v1",
         &model,
+        false,
         &tools,
         &cache,
     )
@@ -695,6 +719,7 @@ async fn qualification_failure_is_cached_and_short_circuits_future_attempts() {
         ProviderKind::Lmstudio,
         "http://localhost:1234/v1",
         &model,
+        false,
         &tools,
         &cache,
     )
@@ -738,6 +763,7 @@ async fn qualification_fallback_disables_write_tools_and_continues() {
         ProviderKind::Lmstudio,
         "http://localhost:1234/v1",
         "fallback-model",
+        false,
         args.enable_write_tools || args.allow_write,
         &mut tools,
         &cache,
@@ -781,6 +807,7 @@ async fn qualification_fallback_keeps_write_tools_when_probe_passes() {
         ProviderKind::Lmstudio,
         "http://localhost:1234/v1",
         "pass-model",
+        false,
         args.enable_write_tools || args.allow_write,
         &mut tools,
         &cache,
@@ -793,6 +820,160 @@ async fn qualification_fallback_keeps_write_tools_when_probe_passes() {
     assert!(tools
         .iter()
         .any(|t| t.side_effects == crate::types::SideEffects::FilesystemWrite));
+}
+
+#[tokio::test]
+async fn qualification_trace_writes_attempt_bundle_when_enabled() {
+    let _guard = qualification_trace_env_lock().lock().await;
+    let tmp = tempdir().expect("tmp");
+    let trace_root = tmp.path().join("qualification-traces");
+    let cache = tmp.path().join("qual_cache.json");
+    let tools = crate::tools::builtin_tools_enabled(true, false);
+    let model = format!(
+        "qual_trace_model_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    );
+    let provider = QualificationTestProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        mode: QualificationProbeMode::InlinePass,
+    };
+
+    unsafe {
+        std::env::set_var("LOCALAGENT_QUAL_TRACE_DIR", &trace_root);
+    }
+    let result = super::qualification::ensure_orchestrator_qualified(
+        &provider,
+        ProviderKind::Lmstudio,
+        "http://localhost:1234/v1",
+        &model,
+        true,
+        &tools,
+        &cache,
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("LOCALAGENT_QUAL_TRACE_DIR");
+    }
+
+    result.expect("qualification should pass");
+
+    let trace_dir = qualification_trace_dir_for_model(&trace_root, &model);
+
+    let request: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(trace_dir.join("attempt-01").join("request.json")).expect("request"),
+    )
+    .expect("request json");
+    assert_eq!(request["model"], model);
+    assert_eq!(request["stream"], true);
+    assert_eq!(
+        request["qualification_cache_key"],
+        format!("lmstudio|http://localhost:1234/v1|{model}")
+    );
+    assert_eq!(
+        request["request"]["messages"][0]["content"],
+        "Emit exactly one native tool call and no prose:\nname=list_dir\narguments={\"path\":\".\"}"
+    );
+
+    let parsed: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(trace_dir.join("attempt-01").join("response.parsed.json"))
+            .expect("parsed response"),
+    )
+    .expect("parsed json");
+    assert_eq!(
+        parsed["assistant_content"],
+        "{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}"
+    );
+    assert_eq!(parsed["inferred_tool_call_count"], 0);
+    assert_eq!(parsed["finish_reason"], serde_json::Value::Null);
+
+    let verdict: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(trace_dir.join("verdict.json")).expect("verdict"))
+            .expect("verdict json");
+    assert_eq!(verdict["stream"], true);
+    assert_eq!(verdict["cache_hit"], false);
+    assert_eq!(verdict["cache_write_value"], true);
+    assert_eq!(verdict["final_verdict"], "ok");
+    assert_eq!(verdict["final_reason"], "probe_passed");
+
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(trace_dir.join("summary.json")).expect("summary"))
+            .expect("summary json");
+    assert_eq!(summary["stream"], true);
+    assert_eq!(summary["verdict"], "ok");
+    assert_eq!(summary["cache_outcome"], "write:true");
+    assert_eq!(summary["artifact_files"]["verdict"], "verdict.json");
+    assert_eq!(summary["artifact_files"]["summary"], "summary.json");
+}
+
+#[tokio::test]
+async fn qualification_trace_records_cache_hit_without_attempt_bundle() {
+    let _guard = qualification_trace_env_lock().lock().await;
+    let tmp = tempdir().expect("tmp");
+    let trace_root = tmp.path().join("qualification-traces");
+    let cache = tmp.path().join("qual_cache.json");
+    let tools = crate::tools::builtin_tools_enabled(true, false);
+    let model = format!(
+        "qual_trace_cached_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    );
+    std::fs::write(
+        &cache,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            format!("lmstudio|http://localhost:1234/v1|{model}"): true
+        }))
+        .expect("cache json"),
+    )
+    .expect("cache write");
+    let provider = QualificationTestProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        mode: QualificationProbeMode::FailNoTool,
+    };
+
+    unsafe {
+        std::env::set_var("LOCALAGENT_QUAL_TRACE_DIR", &trace_root);
+    }
+    let result = super::qualification::ensure_orchestrator_qualified(
+        &provider,
+        ProviderKind::Lmstudio,
+        "http://localhost:1234/v1",
+        &model,
+        false,
+        &tools,
+        &cache,
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("LOCALAGENT_QUAL_TRACE_DIR");
+    }
+
+    result.expect("cache hit should pass");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+    let trace_dir = qualification_trace_dir_for_model(&trace_root, &model);
+    assert!(!trace_dir.join("attempt-01").exists());
+
+    let verdict: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(trace_dir.join("verdict.json")).expect("verdict"))
+            .expect("verdict json");
+    assert_eq!(verdict["stream"], false);
+    assert_eq!(verdict["cache_hit"], true);
+    assert_eq!(verdict["cached_value"], true);
+    assert_eq!(verdict["cache_written"], false);
+    assert_eq!(verdict["final_reason"], "cache_hit_pass");
+
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(trace_dir.join("summary.json")).expect("summary"))
+            .expect("summary json");
+    assert_eq!(summary["stream"], false);
+    assert_eq!(summary["verdict"], "ok");
+    assert_eq!(summary["cache_outcome"], "hit:true");
+    assert_eq!(summary["artifact_files"]["attempts"], serde_json::json!([]));
 }
 
 #[test]
