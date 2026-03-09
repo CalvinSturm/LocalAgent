@@ -209,3 +209,38 @@ pub(crate) fn prompt_requires_tool_only(prompt: &str) -> bool {
             || p.contains("do not output code")
             || p.contains("do not explain"))
 }
+
+pub(crate) fn prompt_requires_post_write_follow_on(prompt: &str) -> bool {
+    let p = prompt.to_ascii_lowercase();
+    let requires_validation = [
+        "run test",
+        "run tests",
+        "cargo test",
+        "node --test",
+        "npm test",
+        "pnpm test",
+        "validate",
+        "validation",
+        "verify",
+        "confirm",
+        "check that",
+        "check the",
+        "before finishing",
+        "before you finish",
+        "before finalizing",
+    ]
+    .iter()
+    .any(|needle| p.contains(needle));
+    let requires_user_facing_closeout = [
+        "final answer",
+        "final response",
+        "summarize what changed",
+        "summarise what changed",
+        "explain what changed",
+        "tell me what changed",
+        "describe what changed",
+    ]
+    .iter()
+    .any(|needle| p.contains(needle));
+    requires_validation || requires_user_facing_closeout
+}

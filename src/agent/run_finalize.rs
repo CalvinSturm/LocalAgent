@@ -29,6 +29,7 @@ impl<P: ModelProvider> Agent<P> {
         taint_state: &TaintState,
         enforce_implementation_integrity_guard: bool,
         post_write_guard_retry_count: u32,
+        post_write_follow_on_turn_count: u32,
     ) -> super::runtime_completion::VerifiedWriteResult {
         use super::runtime_completion::VerifiedWriteResult;
         let post_verify_note = if verified_paths.is_empty() {
@@ -66,7 +67,7 @@ impl<P: ModelProvider> Agent<P> {
                 } else {
                     "Post-write verification requires a read_file call after writing. Use read_file on the modified path to verify your changes."
                 };
-                return VerifiedWriteResult::ContinueWithMessage(corrective.to_string());
+                return VerifiedWriteResult::GuardRetry(corrective.to_string());
             }
             self.emit_event(
                 &run_id,
@@ -106,6 +107,31 @@ impl<P: ModelProvider> Agent<P> {
             })
             .unwrap_or_default()
             .to_string();
+        let needs_follow_on_turn =
+            crate::agent_impl_guard::prompt_requires_post_write_follow_on(user_prompt)
+                && final_output.trim().is_empty();
+        if needs_follow_on_turn && post_write_follow_on_turn_count < 1 {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::StepBlocked,
+                serde_json::json!({
+                    "reason": "post_write_follow_on_required",
+                    "source": "runtime_post_write_follow_on",
+                    "follow_on_turn_count": post_write_follow_on_turn_count
+                }),
+            );
+            let follow_on_message = if verified_paths.is_empty() {
+                "Post-write verification succeeded. The user prompt still requires a follow-on step. Take exactly one more turn now: if the prompt asked for validation or tests, do that next if permitted; otherwise provide the final user-facing answer summarizing what changed. Do not call another write tool unless a still-unfinished required step makes it necessary."
+                    .to_string()
+            } else {
+                format!(
+                    "Post-write verification succeeded for {}. The user prompt still requires a follow-on step. Take exactly one more turn now: if the prompt asked for validation or tests, do that next if permitted; otherwise provide the final user-facing answer summarizing what changed. Do not call another write tool for those paths unless a still-unfinished required step makes it necessary.",
+                    verified_paths.join(", ")
+                )
+            };
+            return VerifiedWriteResult::FollowOnTurn(follow_on_message);
+        }
         VerifiedWriteResult::Done(Box::new(self.finalize_ok_with_end(
             step,
             run_id,

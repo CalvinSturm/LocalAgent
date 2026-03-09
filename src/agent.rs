@@ -130,6 +130,7 @@ impl<P: ModelProvider> Agent<P> {
         let mut active_plan_step_idx: usize = 0;
         let mut blocked_runtime_completion_count: u32 = 0;
         let mut post_write_guard_retry_count: u32 = 0;
+        let mut post_write_follow_on_turn_count: u32 = 0;
         let mut operator_delivery_count: u32 = 0;
         let mut blocked_control_envelope_count: u32 = 0;
         let mut blocked_tool_only_count: u32 = 0;
@@ -1188,18 +1189,26 @@ impl<P: ModelProvider> Agent<P> {
                         &taint_state,
                         enforce_implementation_integrity_guard,
                         post_write_guard_retry_count,
+                        post_write_follow_on_turn_count,
                     )
                     .await
                 {
                     runtime_completion::VerifiedWriteResult::Done(outcome) => return *outcome,
-                    runtime_completion::VerifiedWriteResult::ContinueWithMessage(message) => {
-                        if message.contains("You must read_file")
-                            || message.contains("Post-write verification requires")
-                        {
-                            post_write_guard_retry_count += 1;
-                        } else {
-                            post_write_guard_retry_count = 0;
-                        }
+                    runtime_completion::VerifiedWriteResult::GuardRetry(message) => {
+                        post_write_guard_retry_count += 1;
+                        blocked_runtime_completion_count = 0;
+                        messages.push(Message {
+                            role: Role::Developer,
+                            content: Some(message),
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_calls: None,
+                        });
+                        continue 'agent_steps;
+                    }
+                    runtime_completion::VerifiedWriteResult::FollowOnTurn(message) => {
+                        post_write_follow_on_turn_count += 1;
+                        post_write_guard_retry_count = 0;
                         blocked_runtime_completion_count = 0;
                         messages.push(Message {
                             role: Role::Developer,

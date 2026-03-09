@@ -451,6 +451,7 @@ impl<P: ModelProvider> Agent<P> {
         taint_state: &TaintState,
         enforce_implementation_integrity_guard: bool,
         post_write_guard_retry_count: u32,
+        post_write_follow_on_turn_count: u32,
     ) -> VerifiedWriteResult {
         const MAX_POST_WRITE_VERIFY_PATHS: usize = 10;
         let post_write_verify_timeout_ms = self.effective_post_write_verify_timeout_ms();
@@ -486,7 +487,7 @@ impl<P: ModelProvider> Agent<P> {
                                 "reason_code": "post_write_guard_retry"
                             }),
                         );
-                        return VerifiedWriteResult::ContinueWithMessage(
+                        return VerifiedWriteResult::GuardRetry(
                             "You must read_file on a path before editing it. Use read_file to inspect the file contents first, then apply your changes, then read_file again to verify.".to_string(),
                         );
                     }
@@ -541,11 +542,13 @@ impl<P: ModelProvider> Agent<P> {
             taint_state,
             enforce_implementation_integrity_guard,
             post_write_guard_retry_count,
+            post_write_follow_on_turn_count,
         )
     }
 }
 
 pub(super) enum VerifiedWriteResult {
     Done(Box<super::agent_types::AgentOutcome>),
-    ContinueWithMessage(String),
+    GuardRetry(String),
+    FollowOnTurn(String),
 }
