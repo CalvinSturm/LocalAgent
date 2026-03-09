@@ -172,3 +172,65 @@ Keep entries append-only and lightweight.
 - Notes:
   - The fix was intentionally narrow: one bounded post-write follow-on turn only when the task contract explicitly required more work.
   - This investigation closed the earlier “post-write terminalization is too eager” bug without reopening general runtime-loop semantics.
+
+---
+
+### 2026-03-09 - `qwen3.5-9b-ud` - `minimal T matrix`
+- Commit baseline:
+  - `1daaddd` Improve TypeScript LSP diagnostics robustness
+  - `e1cc450` Add OpenAI-compatible streaming trace artifact
+  - `bbac69a` Add qualification trace artifacts
+  - `a27f4cf` Accept textual fallback in qualification probe
+  - `34a2422` Make qualification success sticky within a session
+  - `b17bbb2` Add bounded post-write follow-on turn
+  - `d9567c6` Add non-stream OpenAI-compatible trace artifacts
+  - `48b1184` Add follow-up model investigation log entries
+  - `4c54740` Add local model eval runbook
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - qualification passed in all six runs
+  - T1 stream-off passed contract-cleanly
+  - T1 stream-on exited `ok` after recovering from an incorrect initial `str_replace`, but did not produce the required exact final answer
+  - T2 stream-on passed contract-cleanly
+  - T2 stream-off exited `ok` after `apply_patch`, but did not take the follow-on verification/final-answer turn
+  - T3 failed in both modes with `planner_error` before any effective write
+- First exact divergence:
+  - this model diverges earlier than `qwen/qwen3.5-9b`: it does not show a clean stream-vs-non-stream split first. Instead, both modes are unstable on contract-complete behavior, with streamed T1/T3 and non-stream T2/T3 failing to complete the full task contract even though qualification is clean.
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - qualification traces:
+    - T1 stream-on: [.tmp/qualification-traces/qwen35-9b-ud-clean-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen35-9b-ud-clean-t1-on)
+    - T1 stream-off: [.tmp/qualification-traces/qwen35-9b-ud-clean-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen35-9b-ud-clean-t1-off)
+    - T2 stream-on: [.tmp/qualification-traces/qwen35-9b-ud-clean-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen35-9b-ud-clean-t2-on)
+    - T2 stream-off: [.tmp/qualification-traces/qwen35-9b-ud-clean-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen35-9b-ud-clean-t2-off)
+    - T3 stream-on: [.tmp/qualification-traces/qwen35-9b-ud-clean-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen35-9b-ud-clean-t3-on)
+    - T3 stream-off: [.tmp/qualification-traces/qwen35-9b-ud-clean-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen35-9b-ud-clean-t3-off)
+  - run records:
+    - T1 stream-on: [40d5f87d-2792-4f3a-8b5c-aedfc8aa8a46.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen35-9b-ud-clean-t1-on/runs/40d5f87d-2792-4f3a-8b5c-aedfc8aa8a46.json)
+    - T1 stream-off: [940436c3-4ee7-4816-ac84-6c2911637cae.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen35-9b-ud-clean-t1-off/runs/940436c3-4ee7-4816-ac84-6c2911637cae.json)
+    - T2 stream-on: [6a3bfaf3-2da7-4269-87d7-f5ba89a4c9f6.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen35-9b-ud-clean-t2-on/runs/6a3bfaf3-2da7-4269-87d7-f5ba89a4c9f6.json)
+    - T2 stream-off: [6cba874b-c54e-48d2-bfa1-d1ae2721e40a.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen35-9b-ud-clean-t2-off/runs/6cba874b-c54e-48d2-bfa1-d1ae2721e40a.json)
+    - T3 stream-on: [97f95c85-8c27-4279-a93a-185ea476dceb.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen35-9b-ud-clean-t3-on/runs/97f95c85-8c27-4279-a93a-185ea476dceb.json)
+    - T3 stream-off: [22bfeea4-6559-4a6a-8c0a-f4c858f9bef9.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen35-9b-ud-clean-t3-off/runs/22bfeea4-6559-4a6a-8c0a-f4c858f9bef9.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/qwen35-9b-ud-clean-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen35-9b-ud-clean-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/qwen35-9b-ud-clean-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen35-9b-ud-clean-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/qwen35-9b-ud-clean-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen35-9b-ud-clean-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/qwen35-9b-ud-clean-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen35-9b-ud-clean-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/qwen35-9b-ud-clean-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen35-9b-ud-clean-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/qwen35-9b-ud-clean-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen35-9b-ud-clean-t3-off)
+- Notes:
+  - An earlier first pass of this matrix reused the same prepared task copy across stream-on/off pairs and was discarded as contaminated.
+  - The clean reruns used one fresh prepared control-pack instance per run.
+  - This model is materially weaker than `qwen/qwen3.5-9b` on the current LocalAgent contract-complete matrix.
+  - The failures are not qualification-driven; they happen after clean qualification in both modes.
