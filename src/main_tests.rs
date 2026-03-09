@@ -462,6 +462,62 @@ fn probe_parser_accepts_fenced_json_tool_call() {
     assert_eq!(tc.arguments, serde_json::json!({"path":"."}));
 }
 
+#[test]
+fn probe_parser_accepts_named_arguments_textual_tool_call() {
+    let resp = GenerateResponse {
+        assistant: Message {
+            role: Role::Assistant,
+
+            content: Some(
+                "<think>Need to emit the requested tool shape.</think>\n\nname=list_dir\narguments={\"path\":\".\"}"
+                    .to_string(),
+            ),
+
+            tool_call_id: None,
+
+            tool_name: None,
+
+            tool_calls: None,
+        },
+
+        tool_calls: Vec::new(),
+
+        usage: None,
+    };
+
+    let tc = super::qualification::probe_response_to_tool_call(&resp).expect("tool call");
+
+    assert_eq!(tc.name, "list_dir");
+
+    assert_eq!(tc.arguments, serde_json::json!({"path":"."}));
+}
+
+#[test]
+fn probe_parser_rejects_ambiguous_named_arguments_textual_tool_call() {
+    let resp = GenerateResponse {
+        assistant: Message {
+            role: Role::Assistant,
+
+            content: Some(
+                "name=list_dir\narguments={\"path\":\".\"}\n\nname=list_dir\narguments={\"path\":\"src\"}"
+                    .to_string(),
+            ),
+
+            tool_call_id: None,
+
+            tool_name: None,
+
+            tool_calls: None,
+        },
+
+        tool_calls: Vec::new(),
+
+        usage: None,
+    };
+
+    assert!(super::qualification::probe_response_to_tool_call(&resp).is_none());
+}
+
 #[tokio::test]
 
 async fn planner_phase_omits_tools_and_emits_tool_count_zero() {
@@ -820,6 +876,118 @@ async fn qualification_fallback_keeps_write_tools_when_probe_passes() {
     assert!(tools
         .iter()
         .any(|t| t.side_effects == crate::types::SideEffects::FilesystemWrite));
+}
+
+#[tokio::test]
+async fn qualification_accepts_named_arguments_textual_probe_fallback() {
+    let tmp = tempdir().expect("tmp");
+    let cache = tmp.path().join("qual_cache.json");
+    let tools = crate::tools::builtin_tools_enabled(true, false);
+    struct TextualQualificationProvider {
+        calls: Arc<AtomicUsize>,
+        content: String,
+    }
+
+    #[async_trait]
+    impl ModelProvider for TextualQualificationProvider {
+        async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(self.content.clone()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            })
+        }
+
+        async fn generate_streaming(
+            &self,
+            req: GenerateRequest,
+            _on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+        ) -> anyhow::Result<GenerateResponse> {
+            self.generate(req).await
+        }
+    }
+
+    let provider = TextualQualificationProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        content:
+            "<think>Need the requested shape.</think>\n\nname=list_dir\narguments={\"path\":\".\"}"
+                .to_string(),
+    };
+
+    super::qualification::ensure_orchestrator_qualified(
+        &provider,
+        ProviderKind::Lmstudio,
+        "http://localhost:1234/v1",
+        "textual-pass-model",
+        false,
+        &tools,
+        &cache,
+    )
+    .await
+    .expect("textual fallback should qualify");
+}
+
+#[tokio::test]
+async fn qualification_rejects_malformed_named_arguments_textual_probe() {
+    let tmp = tempdir().expect("tmp");
+    let cache = tmp.path().join("qual_cache.json");
+    let tools = crate::tools::builtin_tools_enabled(true, false);
+
+    struct TextualQualificationProvider {
+        content: String,
+    }
+
+    #[async_trait]
+    impl ModelProvider for TextualQualificationProvider {
+        async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+            Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(self.content.clone()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            })
+        }
+
+        async fn generate_streaming(
+            &self,
+            req: GenerateRequest,
+            _on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+        ) -> anyhow::Result<GenerateResponse> {
+            self.generate(req).await
+        }
+    }
+
+    let provider = TextualQualificationProvider {
+        content: "name=list_dir\narguments={\"path\":".to_string(),
+    };
+
+    let err = super::qualification::ensure_orchestrator_qualified(
+        &provider,
+        ProviderKind::Lmstudio,
+        "http://localhost:1234/v1",
+        "textual-malformed-model",
+        false,
+        &tools,
+        &cache,
+    )
+    .await
+    .expect_err("malformed textual fallback should fail");
+
+    assert!(err
+        .to_string()
+        .contains("textual probe tool call was malformed"));
 }
 
 #[tokio::test]

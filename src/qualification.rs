@@ -93,6 +93,65 @@ fn persist_orchestrator_qual_cache(
 struct ProbeResponseAnalysis {
     tool_call: Option<types::ToolCall>,
     source: Option<&'static str>,
+    failure_reason: Option<&'static str>,
+}
+
+enum TextualProbeParseResult {
+    Match(types::ToolCall),
+    Malformed(&'static str),
+    NoMatch,
+}
+
+fn parse_named_arguments_probe_tool_call(content: &str) -> TextualProbeParseResult {
+    let lines = content.lines().collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+
+    for (idx, raw_line) in lines.iter().enumerate() {
+        let line = raw_line.trim();
+        if !line.starts_with("name=") {
+            continue;
+        }
+
+        let Some(next_line) = lines
+            .iter()
+            .skip(idx + 1)
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+        else {
+            return TextualProbeParseResult::Malformed("textual_tool_call_malformed");
+        };
+
+        if !next_line.starts_with("arguments=") {
+            return TextualProbeParseResult::Malformed("textual_tool_call_malformed");
+        }
+
+        candidates.push((
+            line.trim_start_matches("name=").trim().to_string(),
+            next_line
+                .trim_start_matches("arguments=")
+                .trim()
+                .to_string(),
+        ));
+    }
+
+    match candidates.len() {
+        0 => TextualProbeParseResult::NoMatch,
+        1 => {
+            let (name, args_raw) = candidates.into_iter().next().expect("candidate");
+            let Ok(arguments) = serde_json::from_str::<Value>(&args_raw) else {
+                return TextualProbeParseResult::Malformed("textual_tool_call_malformed");
+            };
+            if !arguments.is_object() {
+                return TextualProbeParseResult::Malformed("textual_tool_call_malformed");
+            }
+            TextualProbeParseResult::Match(types::ToolCall {
+                id: "named_arguments_probe_tool_call".to_string(),
+                name,
+                arguments,
+            })
+        }
+        _ => TextualProbeParseResult::Malformed("textual_tool_call_ambiguous"),
+    }
 }
 
 fn analyze_probe_response(resp: &types::GenerateResponse) -> ProbeResponseAnalysis {
@@ -100,29 +159,46 @@ fn analyze_probe_response(resp: &types::GenerateResponse) -> ProbeResponseAnalys
         return ProbeResponseAnalysis {
             tool_call: Some(tc.clone()),
             source: Some("native_tool_calls"),
+            failure_reason: None,
         };
     }
     let Some(content) = resp.assistant.content.as_deref() else {
         return ProbeResponseAnalysis {
             tool_call: None,
             source: None,
+            failure_reason: None,
         };
     };
     if let Some(tc) = parse_wrapped_tool_call_from_content(content) {
         return ProbeResponseAnalysis {
             tool_call: Some(tc),
             source: Some("wrapped_content"),
+            failure_reason: None,
         };
     }
     if let Some(tc) = parse_inline_tool_call_from_content(content) {
         return ProbeResponseAnalysis {
             tool_call: Some(tc),
             source: Some("inline_content"),
+            failure_reason: None,
         };
     }
-    ProbeResponseAnalysis {
-        tool_call: None,
-        source: None,
+    match parse_named_arguments_probe_tool_call(content) {
+        TextualProbeParseResult::Match(tc) => ProbeResponseAnalysis {
+            tool_call: Some(tc),
+            source: Some("named_arguments_content"),
+            failure_reason: None,
+        },
+        TextualProbeParseResult::Malformed(reason) => ProbeResponseAnalysis {
+            tool_call: None,
+            source: Some("named_arguments_content"),
+            failure_reason: Some(reason),
+        },
+        TextualProbeParseResult::NoMatch => ProbeResponseAnalysis {
+            tool_call: None,
+            source: None,
+            failure_reason: None,
+        },
     }
 }
 
@@ -555,6 +631,7 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
             .with_context(|| "orchestrator qualification provider call failed")?;
         let analysis = analyze_probe_response(&resp);
         let Some(tc) = analysis.tool_call.clone() else {
+            let reason = analysis.failure_reason.unwrap_or("no_tool_call_returned");
             let verdict = QualificationAttemptVerdict {
                 attempt: attempt + 1,
                 probe_tool_call_present: false,
@@ -562,18 +639,25 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
                 tool_name_matches_expected: None,
                 tool_path_matches_expected: None,
                 verdict: "error".to_string(),
-                reason: "no_tool_call_returned".to_string(),
+                reason: reason.to_string(),
             };
             trace.write_attempt(&req, &resp, &analysis, &verdict);
             if let Ok(mut m) = cache.lock() {
                 m.insert(key.clone(), false);
                 persist_orchestrator_qual_cache(cache_path, &m);
             }
-            trace.record_cache_write(false, "no_tool_call_returned");
-            trace.finalize("error", "no_tool_call_returned");
-            return Err(anyhow!(
-                "orchestrator qualification failed: no tool call returned by probe"
-            ));
+            trace.record_cache_write(false, reason);
+            trace.finalize("error", reason);
+            let msg = match reason {
+                "textual_tool_call_malformed" => {
+                    "orchestrator qualification failed: textual probe tool call was malformed"
+                }
+                "textual_tool_call_ambiguous" => {
+                    "orchestrator qualification failed: textual probe tool call was ambiguous"
+                }
+                _ => "orchestrator qualification failed: no tool call returned by probe",
+            };
+            return Err(anyhow!(msg));
         };
         let path_ok = tc
             .arguments
@@ -594,7 +678,11 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
                 "error".to_string()
             },
             reason: if tool_name_ok && path_ok {
-                "matched_expected_tool_call".to_string()
+                if analysis.source == Some("native_tool_calls") {
+                    "probe_passed_native_tool_call".to_string()
+                } else {
+                    "probe_passed_textual_tool_call_fallback".to_string()
+                }
             } else {
                 "unexpected_tool_call".to_string()
             },
