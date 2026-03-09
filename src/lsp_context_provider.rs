@@ -15,7 +15,14 @@ pub(crate) fn resolve_default_lsp_context(
             let provider = TypescriptLspContextProvider::new(args.lsp_command.clone());
             match resolve_lsp_context(&args.workdir, &provider, limits) {
                 Ok(resolved) => Ok(resolved),
-                Err(_) => Ok(None),
+                Err(err) => {
+                    eprintln!(
+                        "WARN: failed resolving TypeScript LSP context for {}: {}",
+                        args.workdir.display(),
+                        err
+                    );
+                    Ok(None)
+                }
             }
         }
     }

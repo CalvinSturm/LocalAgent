@@ -33,7 +33,10 @@ fn stub_typescript_server_produces_bounded_diagnostics_and_symbol_context() {
     assert_eq!(symbols.reference_count_total, 2);
     assert_eq!(symbols.symbols[0].label, "value");
     assert_eq!(
-        symbols.definitions[0].path.file_name().and_then(|s| s.to_str()),
+        symbols.definitions[0]
+            .path
+            .file_name()
+            .and_then(|s| s.to_str()),
         Some("index.ts")
     );
 }

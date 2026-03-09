@@ -18,8 +18,10 @@ use crate::lsp_context::{
 
 const TYPESCRIPT_LSP_PROVIDER_NAME: &str = "typescript_language_server";
 const DEFAULT_TYPESCRIPT_LSP_COMMAND: &str = "typescript-language-server";
+const DEFAULT_TYPESCRIPT_TSC_COMMAND: &str = "tsc";
 const INITIALIZE_TIMEOUT_MS: u64 = 2_000;
-const DIAGNOSTICS_IDLE_TIMEOUT_MS: u64 = 250;
+const DIAGNOSTICS_TOTAL_TIMEOUT_MS: u64 = 3_000;
+const DIAGNOSTICS_IDLE_AFTER_FIRST_MS: u64 = 500;
 const MAX_TYPESCRIPT_OPEN_FILES: usize = 12;
 
 #[derive(Debug, Clone)]
@@ -45,7 +47,7 @@ impl TypescriptLspContextProvider {
             return Ok(None);
         }
 
-        let mut child = Command::new(&self.command)
+        let mut child = Command::new(resolve_spawn_command(&self.command))
             .arg("--stdio")
             .current_dir(workdir)
             .stdin(Stdio::piped())
@@ -106,12 +108,13 @@ impl TypescriptLspContextProvider {
         for file in &files {
             if let Some(language_id) = language_id_for_path(file) {
                 let text = fs::read_to_string(file).unwrap_or_default();
+                let uri = path_to_file_uri(file);
                 let did_open = json!({
                     "jsonrpc": "2.0",
                     "method": "textDocument/didOpen",
                     "params": {
                         "textDocument": {
-                            "uri": path_to_file_uri(file),
+                            "uri": uri.clone(),
                             "languageId": language_id,
                             "version": 1,
                             "text": text
@@ -119,14 +122,47 @@ impl TypescriptLspContextProvider {
                     }
                 });
                 write_lsp_message(&mut stdin, &did_open)?;
+                let did_save = json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didSave",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri
+                        }
+                    }
+                });
+                write_lsp_message(&mut stdin, &did_save)?;
             }
         }
 
         let mut mapped = Vec::new();
+        let started = std::time::Instant::now();
+        let mut last_diagnostics_at: Option<std::time::Instant> = None;
         loop {
-            match rx.recv_timeout(Duration::from_millis(DIAGNOSTICS_IDLE_TIMEOUT_MS)) {
+            let elapsed = started.elapsed();
+            if elapsed >= Duration::from_millis(DIAGNOSTICS_TOTAL_TIMEOUT_MS) {
+                break;
+            }
+            let timeout = if let Some(last_at) = last_diagnostics_at {
+                let idle_elapsed = last_at.elapsed();
+                if idle_elapsed >= Duration::from_millis(DIAGNOSTICS_IDLE_AFTER_FIRST_MS) {
+                    break;
+                }
+                let idle_remaining = Duration::from_millis(DIAGNOSTICS_IDLE_AFTER_FIRST_MS)
+                    .saturating_sub(idle_elapsed);
+                let total_remaining =
+                    Duration::from_millis(DIAGNOSTICS_TOTAL_TIMEOUT_MS).saturating_sub(elapsed);
+                std::cmp::min(idle_remaining, total_remaining)
+            } else {
+                Duration::from_millis(DIAGNOSTICS_TOTAL_TIMEOUT_MS).saturating_sub(elapsed)
+            };
+
+            match rx.recv_timeout(timeout) {
                 Ok(Ok(value)) => {
                     if let Some(diags) = maybe_map_publish_diagnostics(&value) {
+                        if !diags.is_empty() {
+                            last_diagnostics_at = Some(std::time::Instant::now());
+                        }
                         mapped.extend(diags);
                     }
                 }
@@ -153,6 +189,10 @@ impl TypescriptLspContextProvider {
         let _ = child.wait();
 
         if mapped.is_empty() {
+            mapped = collect_tsc_diagnostics(workdir, &files).unwrap_or_default();
+        }
+
+        if mapped.is_empty() {
             return Ok(None);
         }
 
@@ -175,7 +215,7 @@ impl TypescriptLspContextProvider {
             None => return Ok(None),
         };
 
-        let mut child = Command::new(&self.command)
+        let mut child = Command::new(resolve_spawn_command(&self.command))
             .arg("--stdio")
             .current_dir(workdir)
             .stdin(Stdio::piped())
@@ -272,16 +312,13 @@ impl TypescriptLspContextProvider {
         )?;
         let symbol_response = wait_for_response(&rx, 3)?;
         let symbols = map_document_symbols(&primary_file, &symbol_response);
-        let query = symbols
-            .first()
-            .map(|s| s.label.clone())
-            .unwrap_or_else(|| {
-                primary_file
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("typescript_symbol_context")
-                    .to_string()
-            });
+        let query = symbols.first().map(|s| s.label.clone()).unwrap_or_else(|| {
+            primary_file
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("typescript_symbol_context")
+                .to_string()
+        });
 
         let mut definitions = Vec::new();
         let mut references = Vec::new();
@@ -351,6 +388,95 @@ impl TypescriptLspContextProvider {
             limits,
         )))
     }
+}
+
+fn resolve_spawn_command(command: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if command.extension().is_some() {
+            return command.to_path_buf();
+        }
+
+        if command.components().count() > 1 {
+            let cmd = command.with_extension("cmd");
+            if cmd.exists() {
+                return cmd;
+            }
+            return command.to_path_buf();
+        }
+
+        if let Some(path_os) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_os) {
+                let candidate_cmd = dir.join(command).with_extension("cmd");
+                if candidate_cmd.exists() {
+                    return candidate_cmd;
+                }
+                let candidate_exe = dir.join(command).with_extension("exe");
+                if candidate_exe.exists() {
+                    return candidate_exe;
+                }
+                let candidate_bat = dir.join(command).with_extension("bat");
+                if candidate_bat.exists() {
+                    return candidate_bat;
+                }
+                let candidate = dir.join(command);
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+        }
+    }
+
+    command.to_path_buf()
+}
+
+fn collect_tsc_diagnostics(workdir: &Path, files: &[PathBuf]) -> Result<Vec<Diagnostic>> {
+    let command = resolve_spawn_command(Path::new(DEFAULT_TYPESCRIPT_TSC_COMMAND));
+    let mut cmd = Command::new(command);
+    cmd.current_dir(workdir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let project = resolve_typescript_project_config(workdir);
+    if let Some(config) = project {
+        cmd.arg("--noEmit")
+            .arg("--pretty")
+            .arg("false")
+            .arg("--project")
+            .arg(config);
+    } else {
+        cmd.arg("--noEmit")
+            .arg("--pretty")
+            .arg("false")
+            .arg("--allowJs")
+            .arg("--checkJs");
+        for file in files {
+            cmd.arg(file);
+        }
+    }
+
+    let output = cmd
+        .output()
+        .context("failed running tsc diagnostics fallback")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut mapped = Vec::new();
+    for line in stdout.lines().chain(stderr.lines()) {
+        if let Some(diag) = parse_tsc_diagnostic_line(line) {
+            mapped.push(diag);
+        }
+    }
+    Ok(mapped)
+}
+
+fn resolve_typescript_project_config(workdir: &Path) -> Option<PathBuf> {
+    for name in ["tsconfig.json", "jsconfig.json"] {
+        let candidate = workdir.join(name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 impl LspContextProvider for TypescriptLspContextProvider {
@@ -434,8 +560,8 @@ fn wait_for_initialize_response(rx: &mpsc::Receiver<Result<Value>>) -> Result<()
         match rx.recv_timeout(remaining) {
             Ok(Ok(value)) => {
                 if value.get("id").and_then(|id| id.as_i64()) == Some(1) {
-                    if value.get("error").is_some() {
-                        return Err(anyhow!("initialize response returned error"));
+                    if let Some(error) = value.get("error") {
+                        return Err(anyhow!("initialize response returned error: {}", error));
                     }
                     return Ok(());
                 }
@@ -471,7 +597,10 @@ fn wait_for_response(rx: &mpsc::Receiver<Result<Value>>, expected_id: i64) -> Re
             }
             Ok(Err(err)) => return Err(err),
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                return Err(anyhow!("timed out waiting for lsp response {}", expected_id))
+                return Err(anyhow!(
+                    "timed out waiting for lsp response {}",
+                    expected_id
+                ))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(anyhow!("typescript language server exited before response"))
@@ -557,6 +686,26 @@ fn maybe_map_publish_diagnostics(value: &Value) -> Option<Vec<Diagnostic>> {
     Some(mapped)
 }
 
+fn parse_tsc_diagnostic_line(line: &str) -> Option<Diagnostic> {
+    let (left, right) = line.split_once("): error TS")?;
+    let open = left.rfind('(')?;
+    let path = &left[..open];
+    let coords = &left[open + 1..];
+    let (line_str, col_str) = coords.split_once(',')?;
+    let (code, message) = right.split_once(": ")?;
+    Some(Diagnostic {
+        schema_version: DIAGNOSTIC_SCHEMA_VERSION.to_string(),
+        code: format!("TS{}", code),
+        severity: Severity::Error,
+        message: message.to_string(),
+        path: Some(PathBuf::from(path)),
+        line: line_str.parse::<u32>().ok(),
+        col: col_str.parse::<u32>().ok(),
+        hint: Some("tsc".to_string()),
+        details: None,
+    })
+}
+
 fn diagnostic_code_to_string(code: Option<Value>) -> String {
     match code {
         Some(Value::String(s)) => s,
@@ -576,7 +725,11 @@ fn map_severity(severity: Option<u32>) -> Severity {
 
 fn path_to_file_uri(path: &Path) -> String {
     let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let rendered = absolute.to_string_lossy().replace('\\', "/");
+    let mut rendered = absolute.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    if let Some(stripped) = rendered.strip_prefix("//?/") {
+        rendered = stripped.to_string();
+    }
     if rendered.starts_with('/') {
         format!("file://{rendered}")
     } else {
@@ -770,7 +923,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{parse_lsp_publish_diagnostics, resolve_typescript_file_discovery};
+    use super::{
+        parse_lsp_publish_diagnostics, parse_tsc_diagnostic_line, path_to_file_uri,
+        resolve_typescript_file_discovery,
+    };
 
     #[test]
     fn maps_publish_diagnostics_into_localagent_schema() {
@@ -823,5 +979,24 @@ mod tests {
             rendered,
             vec![PathBuf::from("src/a.js"), PathBuf::from("src/b.ts")]
         );
+    }
+
+    #[test]
+    fn file_uri_rendering_avoids_windows_verbatim_prefix() {
+        let uri = path_to_file_uri(PathBuf::from(".").as_path());
+        assert!(uri.starts_with("file:///"));
+        assert!(!uri.contains("file:////?/"));
+    }
+
+    #[test]
+    fn parses_tsc_diagnostic_lines() {
+        let diag = parse_tsc_diagnostic_line(
+            r"C:\repo\src\parse.js(8,3): error TS2322: Type 'string' is not assignable to type 'number'.",
+        )
+        .expect("diag");
+        assert_eq!(diag.code, "TS2322");
+        assert_eq!(diag.line, Some(8));
+        assert_eq!(diag.col, Some(3));
+        assert_eq!(diag.hint.as_deref(), Some("tsc"));
     }
 }
