@@ -235,9 +235,18 @@ impl ModelProvider for OpenAiCompatProvider {
     async fn generate(&self, req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
         let url = format!("{}/chat/completions", self.base_url);
         let payload = to_request(req, false, self.compatibility);
+        let mut trace =
+            OpenAiCompatTraceRecorder::new(self.compatibility, &self.base_url, false, &payload);
         let max_attempts = self.http.http_max_retries + 1;
         let mut retries = Vec::<RetryRecord>::new();
         for attempt in 1..=max_attempts {
+            trace.push_event(
+                "request_attempt",
+                serde_json::json!({
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                }),
+            );
             let mut request = self.client.post(&url).json(&payload);
             if let Some(key) = &self.api_key {
                 request = request.bearer_auth(key);
@@ -260,6 +269,15 @@ impl ModelProvider for OpenAiCompatProvider {
                         .await;
                         continue;
                     }
+                    trace.finish(OpenAiCompatTraceResult {
+                        outcome: "request_error".to_string(),
+                        saw_done: false,
+                        emitted_any: false,
+                        content_bytes: 0,
+                        partial_tool_calls: 0,
+                        trailing_buffer_bytes: 0,
+                        message: Some(format!("failed to call OpenAI-compatible endpoint: {e}")),
+                    });
                     return Err(anyhow!(ProviderError {
                         kind: cls.kind,
                         http_status: cls.status,
@@ -291,6 +309,19 @@ impl ModelProvider for OpenAiCompatProvider {
                     .await;
                     continue;
                 }
+                trace.finish(OpenAiCompatTraceResult {
+                    outcome: "http_error".to_string(),
+                    saw_done: false,
+                    emitted_any: false,
+                    content_bytes: 0,
+                    partial_tool_calls: 0,
+                    trailing_buffer_bytes: 0,
+                    message: Some(format!(
+                        "OpenAI-compatible endpoint returned HTTP {}: {}",
+                        status.as_u16(),
+                        format_http_error_body(&body)
+                    )),
+                });
                 return Err(anyhow!(ProviderError {
                     kind: cls.kind,
                     http_status: Some(status.as_u16()),
@@ -309,7 +340,28 @@ impl ModelProvider for OpenAiCompatProvider {
                 .bytes()
                 .await
                 .context("failed to read OpenAI-compatible response body")?;
+            trace.push_event(
+                "response_body",
+                serde_json::json!({
+                    "status": status.as_u16(),
+                    "bytes": bytes.len(),
+                    "body_preview": truncate_for_error(&String::from_utf8_lossy(&bytes), 4000),
+                }),
+            );
             if bytes.len() > self.http.max_response_bytes {
+                trace.finish(OpenAiCompatTraceResult {
+                    outcome: "payload_too_large".to_string(),
+                    saw_done: false,
+                    emitted_any: false,
+                    content_bytes: 0,
+                    partial_tool_calls: 0,
+                    trailing_buffer_bytes: 0,
+                    message: Some(format!(
+                        "response payload exceeded max bytes: {} > {}",
+                        bytes.len(),
+                        self.http.max_response_bytes
+                    )),
+                });
                 return Err(anyhow!(provider_payload_too_large_error(
                     status.as_u16(),
                     attempt,
@@ -321,18 +373,61 @@ impl ModelProvider for OpenAiCompatProvider {
             }
             let resp: OpenAiResponse = serde_json::from_slice(&bytes)
                 .context("failed to parse OpenAI-compatible JSON response")?;
-            return map_openai_response(resp).map_err(|e| {
-                anyhow!(ProviderError {
-                    kind: ProviderErrorKind::Parse,
-                    http_status: Some(status.as_u16()),
-                    retryable: false,
-                    attempt,
-                    max_attempts,
-                    message: e.to_string(),
-                    retries,
+            trace.push_event("response_parsed", summarize_openai_response(&resp));
+            return map_openai_response(resp)
+                .map(|mapped| {
+                    trace.push_event("response_mapped", summarize_generate_response(&mapped));
+                    trace.finish(OpenAiCompatTraceResult {
+                        outcome: "success".to_string(),
+                        saw_done: true,
+                        emitted_any: mapped
+                            .assistant
+                            .content
+                            .as_deref()
+                            .is_some_and(|s| !s.trim().is_empty())
+                            || !mapped.tool_calls.is_empty(),
+                        content_bytes: mapped
+                            .assistant
+                            .content
+                            .as_deref()
+                            .map(str::len)
+                            .unwrap_or(0),
+                        partial_tool_calls: mapped.tool_calls.len(),
+                        trailing_buffer_bytes: 0,
+                        message: None,
+                    });
+                    mapped
                 })
-            });
+                .map_err(|e| {
+                    trace.finish(OpenAiCompatTraceResult {
+                        outcome: "response_map_error".to_string(),
+                        saw_done: true,
+                        emitted_any: false,
+                        content_bytes: 0,
+                        partial_tool_calls: 0,
+                        trailing_buffer_bytes: 0,
+                        message: Some(e.to_string()),
+                    });
+                    anyhow!(ProviderError {
+                        kind: ProviderErrorKind::Parse,
+                        http_status: Some(status.as_u16()),
+                        retryable: false,
+                        attempt,
+                        max_attempts,
+                        message: e.to_string(),
+                        retries,
+                    })
+                });
         }
+        trace.finish(OpenAiCompatTraceResult {
+            outcome: "retry_loop_terminated".to_string(),
+            saw_done: false,
+            emitted_any: false,
+            content_bytes: 0,
+            partial_tool_calls: 0,
+            trailing_buffer_bytes: 0,
+            message: Some("unexpected retry loop termination".to_string()),
+        });
         Err(anyhow!("unexpected retry loop termination"))
     }
 
@@ -983,15 +1078,88 @@ fn resolve_openai_trace_path() -> Option<PathBuf> {
     Some(base.join(format!("openai-compat-trace-{stamp}.json")))
 }
 
+fn summarize_openai_response(resp: &OpenAiResponse) -> Value {
+    let choices = resp
+        .choices
+        .iter()
+        .map(|choice| {
+            serde_json::json!({
+                "finish_reason": choice.finish_reason,
+                "content_preview": choice
+                    .message
+                    .content
+                    .as_deref()
+                    .map(|s| truncate_for_error(s, 500)),
+                "tool_calls": choice
+                    .message
+                    .tool_calls
+                    .as_ref()
+                    .map(|calls| {
+                        calls.iter()
+                            .map(|call| {
+                                serde_json::json!({
+                                    "id": call.id,
+                                    "index": call.index,
+                                    "name": call.function.name,
+                                    "arguments_preview": truncate_for_error(
+                                        &call.function.arguments.to_string(),
+                                        500
+                                    ),
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "choice_count": resp.choices.len(),
+        "choices": choices,
+        "usage": resp.usage.as_ref().map(summarize_openai_usage),
+    })
+}
+
+fn summarize_generate_response(resp: &GenerateResponse) -> Value {
+    serde_json::json!({
+        "assistant_content_preview": resp
+            .assistant
+            .content
+            .as_deref()
+            .map(|s| truncate_for_error(s, 500)),
+        "tool_calls": resp
+            .tool_calls
+            .iter()
+            .map(|call| {
+                serde_json::json!({
+                    "id": call.id,
+                    "name": call.name,
+                    "arguments_preview": truncate_for_error(&call.arguments.to_string(), 500),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "usage": resp.usage,
+    })
+}
+
+fn summarize_openai_usage(usage: &OpenAiUsage) -> Value {
+    serde_json::json!({
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         collapse_pre_user_instruction_messages, drain_sse_events, finalize_tool_calls,
         handle_openai_stream_json, map_openai_response, normalize_messages,
-        parse_sse_event_payload, to_request, OpenAiCompatMode, OpenAiResponse, PartialToolCall,
+        parse_sse_event_payload, summarize_generate_response, summarize_openai_response,
+        to_request, OpenAiCompatMode, OpenAiResponse, PartialToolCall,
     };
     use crate::providers::StreamDelta;
-    use crate::types::{GenerateRequest, Message, Role};
+    use crate::types::{GenerateRequest, GenerateResponse, Message, Role, ToolCall};
 
     #[test]
     fn parses_openai_stream_content_and_tool() {
@@ -1075,6 +1243,48 @@ mod tests {
         assert_eq!(usage.prompt_tokens, Some(12));
         assert_eq!(usage.completion_tokens, Some(5));
         assert_eq!(usage.total_tokens, Some(17));
+    }
+
+    #[test]
+    fn summarize_openai_response_preserves_finish_reason_and_tool_preview() {
+        let resp: OpenAiResponse = serde_json::from_str(
+            r#"{
+                "choices":[{
+                    "message":{
+                        "content":"done",
+                        "tool_calls":[{"index":0,"id":"c1","function":{"name":"list_dir","arguments":"{\"path\":\".\"}"}}]
+                    },
+                    "finish_reason":"tool_calls"
+                }]
+            }"#,
+        )
+        .expect("parse");
+        let summary = summarize_openai_response(&resp);
+        assert_eq!(summary["choice_count"], 1);
+        assert_eq!(summary["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(summary["choices"][0]["tool_calls"][0]["name"], "list_dir");
+    }
+
+    #[test]
+    fn summarize_generate_response_preserves_assistant_and_tool_preview() {
+        let resp = GenerateResponse {
+            assistant: Message {
+                role: Role::Assistant,
+                content: Some("verified=yes".to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            },
+            tool_calls: vec![ToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command":"node --test"}),
+            }],
+            usage: None,
+        };
+        let summary = summarize_generate_response(&resp);
+        assert_eq!(summary["assistant_content_preview"], "verified=yes");
+        assert_eq!(summary["tool_calls"][0]["name"], "shell");
     }
 
     #[test]
