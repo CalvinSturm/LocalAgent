@@ -148,6 +148,31 @@ impl ModelProvider for QualificationTestProvider {
     }
 }
 
+struct SequencedQualificationProvider {
+    calls: Arc<AtomicUsize>,
+    responses: Vec<GenerateResponse>,
+}
+
+#[async_trait]
+impl ModelProvider for SequencedQualificationProvider {
+    async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+        let idx = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.responses
+            .get(idx)
+            .cloned()
+            .or_else(|| self.responses.last().cloned())
+            .ok_or_else(|| anyhow::anyhow!("no qualification responses configured"))
+    }
+
+    async fn generate_streaming(
+        &self,
+        req: GenerateRequest,
+        _on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+    ) -> anyhow::Result<GenerateResponse> {
+        self.generate(req).await
+    }
+}
+
 fn qualification_trace_env_lock() -> &'static AsyncMutex<()> {
     static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| AsyncMutex::new(()))
@@ -988,6 +1013,113 @@ async fn qualification_rejects_malformed_named_arguments_textual_probe() {
     assert!(err
         .to_string()
         .contains("textual probe tool call was malformed"));
+}
+
+#[tokio::test]
+async fn qualification_keeps_success_when_later_attempts_would_be_ambiguous() {
+    let tmp = tempdir().expect("tmp");
+    let cache = tmp.path().join("qual_cache.json");
+    let tools = crate::tools::builtin_tools_enabled(true, false);
+    let provider = SequencedQualificationProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        responses: vec![
+            GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "q1".to_string(),
+                    name: "list_dir".to_string(),
+                    arguments: serde_json::json!({"path":"."}),
+                }],
+                usage: None,
+            },
+            GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(
+                        "name=list_dir\narguments={\"path\":\".\"}\n\nname=list_dir\narguments={\"path\":\"src\"}"
+                            .to_string(),
+                    ),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            },
+        ],
+    };
+
+    super::qualification::ensure_orchestrator_qualified(
+        &provider,
+        ProviderKind::Lmstudio,
+        "http://localhost:1234/v1",
+        "sticky-success-model",
+        false,
+        &tools,
+        &cache,
+    )
+    .await
+    .expect("first proven success should qualify");
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn qualification_accepts_later_success_after_prior_soft_fail() {
+    let tmp = tempdir().expect("tmp");
+    let cache = tmp.path().join("qual_cache.json");
+    let tools = crate::tools::builtin_tools_enabled(true, false);
+    let provider = SequencedQualificationProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        responses: vec![
+            GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("no tool".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            },
+            GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "q2".to_string(),
+                    name: "list_dir".to_string(),
+                    arguments: serde_json::json!({"path":"."}),
+                }],
+                usage: None,
+            },
+        ],
+    };
+
+    super::qualification::ensure_orchestrator_qualified(
+        &provider,
+        ProviderKind::Lmstudio,
+        "http://localhost:1234/v1",
+        "later-success-model",
+        false,
+        &tools,
+        &cache,
+    )
+    .await
+    .expect("later proven success should qualify");
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

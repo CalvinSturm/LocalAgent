@@ -609,6 +609,7 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
             "orchestrator qualification failed: list_dir tool is not available"
         ));
     };
+    let mut last_failure_reason = "no_tool_call_returned";
     for attempt in 0..3 {
         let req = GenerateRequest {
             model: model.to_string(),
@@ -632,6 +633,7 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
         let analysis = analyze_probe_response(&resp);
         let Some(tc) = analysis.tool_call.clone() else {
             let reason = analysis.failure_reason.unwrap_or("no_tool_call_returned");
+            last_failure_reason = reason;
             let verdict = QualificationAttemptVerdict {
                 attempt: attempt + 1,
                 probe_tool_call_present: false,
@@ -642,22 +644,7 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
                 reason: reason.to_string(),
             };
             trace.write_attempt(&req, &resp, &analysis, &verdict);
-            if let Ok(mut m) = cache.lock() {
-                m.insert(key.clone(), false);
-                persist_orchestrator_qual_cache(cache_path, &m);
-            }
-            trace.record_cache_write(false, reason);
-            trace.finalize("error", reason);
-            let msg = match reason {
-                "textual_tool_call_malformed" => {
-                    "orchestrator qualification failed: textual probe tool call was malformed"
-                }
-                "textual_tool_call_ambiguous" => {
-                    "orchestrator qualification failed: textual probe tool call was ambiguous"
-                }
-                _ => "orchestrator qualification failed: no tool call returned by probe",
-            };
-            return Err(anyhow!(msg));
+            continue;
         };
         let path_ok = tc
             .arguments
@@ -689,24 +676,36 @@ pub(crate) async fn ensure_orchestrator_qualified<P: ModelProvider>(
         };
         trace.write_attempt(&req, &resp, &analysis, &verdict);
         if tc.name != "list_dir" || !path_ok {
-            if let Ok(mut m) = cache.lock() {
-                m.insert(key.clone(), false);
-                persist_orchestrator_qual_cache(cache_path, &m);
-            }
-            trace.record_cache_write(false, "unexpected_tool_call");
-            trace.finalize("error", "unexpected_tool_call");
-            return Err(anyhow!(
-                "orchestrator qualification failed: expected list_dir {{\"path\":\".\"}}"
-            ));
+            last_failure_reason = "unexpected_tool_call";
+            continue;
         }
+        if let Ok(mut m) = cache.lock() {
+            m.insert(key, true);
+            persist_orchestrator_qual_cache(cache_path, &m);
+        }
+        trace.record_cache_write(true, "probe_passed");
+        trace.finalize("ok", "probe_passed");
+        return Ok(());
     }
     if let Ok(mut m) = cache.lock() {
-        m.insert(key, true);
+        m.insert(key, false);
         persist_orchestrator_qual_cache(cache_path, &m);
     }
-    trace.record_cache_write(true, "probe_passed");
-    trace.finalize("ok", "probe_passed");
-    Ok(())
+    trace.record_cache_write(false, last_failure_reason);
+    trace.finalize("error", last_failure_reason);
+    let msg = match last_failure_reason {
+        "textual_tool_call_malformed" => {
+            "orchestrator qualification failed: textual probe tool call was malformed"
+        }
+        "textual_tool_call_ambiguous" => {
+            "orchestrator qualification failed: textual probe tool call was ambiguous"
+        }
+        "unexpected_tool_call" => {
+            "orchestrator qualification failed: expected list_dir {\"path\":\".\"}"
+        }
+        _ => "orchestrator qualification failed: no tool call returned by probe",
+    };
+    Err(anyhow!(msg))
 }
 
 #[allow(clippy::too_many_arguments)]
