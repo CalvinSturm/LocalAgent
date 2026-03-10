@@ -30,10 +30,11 @@ Why:
 
 ### Strong Secondary Comparisons
 
-`qwen/qwen3.5-9b`
+`qwen/qwen3.5-9b` (effective `Q6_k` result)
 - good narrow tool-use viability
 - strong streamed behavior after the qualification fixes
 - accepted non-stream Tool B limitation is pure model-choice after equivalent recovery
+- keep this separated from the newer weaker `Q8_0` reruns under the same model ID
 
 `crow-9b-opus-4.6-distill-heretic_qwen3.5`
 - passes `T1` and `T2` in both modes
@@ -56,6 +57,11 @@ Why:
 - qualification clean
 - contract-complete behavior unstable across both modes
 - weaker than `qwen/qwen3.5-9b`
+
+`qwen/qwen3.5-9b` (current `Q8_0` load)
+- materially weaker than the earlier stronger run under the same model ID
+- reruns showed broader exact-output drift, bad argument/closeout discipline, and repeated tool misuse
+- do not treat it as equivalent to the older stronger `qwen/qwen3.5-9b` result
 
 ### Weak Fits On The Current Matrix
 
@@ -134,7 +140,8 @@ Observed pattern:
 
 This appears in:
 - streamed `T3` for `qwen2.5-coder-7b-instruct@q8_0`
-- non-stream Tool B for `qwen/qwen3.5-9b`
+- non-stream Tool B for `qwen/qwen3.5-9b` (effective `Q6_k` result)
+- both `Q8_0` reruns for `qwen/qwen3.5-9b`
 - both modes of `crow-9b-opus-4.6-distill-heretic_qwen3.5` on `T3`
 - `zai-org/glm-4.6v-flash` on `T2`/`T3`
 
@@ -153,7 +160,7 @@ This appears in:
 For local-model regression testing now:
 - use `qwen2.5-coder-7b-instruct@q8_0` as the baseline
 - prefer non-stream mode for contract-complete multi-step tasks
-- use `qwen/qwen3.5-9b` or `crow-9b-opus-4.6-distill-heretic_qwen3.5` as secondary comparison models
+- use `qwen/qwen3.5-9b` (effective `Q6_k` result) or `crow-9b-opus-4.6-distill-heretic_qwen3.5` as secondary comparison models
 - use the run procedure in [manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md)
 - log new findings in [manual-testing/model-investigation-log.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/model-investigation-log.md)
 

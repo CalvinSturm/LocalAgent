@@ -11,7 +11,8 @@ Legend:
 | Model | T1 S | T1 NS | T2 S | T2 NS | T3 S | T3 NS | First Failure Boundary | Recommended Use |
 |---|---|---|---|---|---|---|---|---|
 | `qwen2.5-coder-7b-instruct@q8_0` | P | P | P | P | F | P | streamed `T3` ordering failure | Baseline |
-| `qwen/qwen3.5-9b` | P | P | n/a | n/a | mixed | mixed | non-stream Tool B repeat-`str_replace` after equivalent recovery | Secondary comparison |
+| `qwen/qwen3.5-9b` (effective `Q6_k`) | P | P | n/a | n/a | mixed | mixed | non-stream Tool B repeat-`str_replace` after equivalent recovery | Secondary comparison |
+| `qwen/qwen3.5-9b` (current `Q8_0`) | F | F | mixed | mixed | F | F | broader exact-output drift and repeated tool misuse across reruns | Not recommended |
 | `crow-9b-opus-4.6-distill-heretic_qwen3.5` | P | P | P | P | F | F | `T3` edit convergence / tool protocol | Secondary comparison |
 | `deepseek-coder-v2-lite-instruct` | P | P | F | F | F | F | clean `T1`, then ineffective write / provider crash / no-tool `T3` | Comparison only |
 | `zai-org/glm-4.6v-flash` | F | F | F | F | F | F | exact-output on `T1`, ineffective write on `T2`, repeat-guard on `T3` | Mid-tier comparison only |
@@ -25,7 +26,10 @@ Legend:
 
 ## Notes
 
-- `qwen/qwen3.5-9b` is included because its earlier targeted investigation still makes it one of the most useful secondary LocalAgent comparisons even though it was not run as a full later leaderboard-style matrix.
+- `qwen/qwen3.5-9b` is split here on purpose:
+  - the earlier stronger result is the effective `Q6_k` run
+  - the current weaker reruns reflect `Q8_0` behavior under the same model ID
+- the effective `Q6_k` row is included because its earlier targeted investigation still makes it one of the most useful secondary LocalAgent comparisons even though it was not run as a full later leaderboard-style matrix.
 - `mixed` means the task family is informative but comes from the earlier targeted Tool B investigation rather than the exact later leaderboard slice.
 - The current baseline remains `qwen2.5-coder-7b-instruct@q8_0`.
 - Use [manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md) for repeatable comparisons.

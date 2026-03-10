@@ -72,6 +72,7 @@ Keep entries append-only and lightweight.
   - This is not explained by provider transport, response parsing, qualification, or post-write finalization.
   - LocalAgent already exposed the needed edit tools and surfaced the same `str_replace` failure plus recovery hint in both stream modes.
   - OpenCode succeeded earlier by using a different edit affordance (`edit`), but LocalAgent stream proves no LocalAgent patch is justified from current evidence.
+  - In later testing, this earlier stronger `qwen/qwen3.5-9b` result should be treated as the effective `Q6_k` run, because the newer `Q8_0` load under the same model ID behaved materially worse.
 
 ---
 
@@ -856,3 +857,180 @@ Keep entries append-only and lightweight.
 - Notes:
   - This model is not a promising LocalAgent baseline candidate under the current LM Studio setup.
   - The combination of qualification fallback, provider instability, and irrelevant output makes it a poor follow-up target.
+
+---
+
+### 2026-03-10 - `qwen3.5-2b` - `minimal T matrix`
+- Commit baseline:
+  - `3e587e0` Refresh local model compatibility docs
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - no run in the minimal matrix completed contract-cleanly
+  - T1 stream-on failed on exact-answer retry misuse after extra tool calls
+  - T1 stream-off ended with a non-compliant closeout after repeated writes
+  - T2 stream-on/off both edited successfully but failed exact final-answer compliance
+  - T3 stream-on failed with `TOOL_REPEAT_BLOCKED` on repeated `read_file`
+  - T3 stream-off failed with a provider crash
+- First exact divergence:
+  - the first meaningful failures are not qualification-related
+  - the model shows weak contract discipline almost immediately:
+    - repeated prose or extra tool usage inside exact-answer retry
+    - poor tool convergence on `T3`
+    - low reliability on final-answer compliance even after successful edits
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [qwen3.5-2b-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qwen3.5-2b-minimal-matrix.json)
+  - run records:
+    - T1 stream-on: [0ff924c7-f90f-4149-975a-c79542d6eac4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwen352b-t1-on/runs/0ff924c7-f90f-4149-975a-c79542d6eac4.json)
+    - T1 stream-off: [10145cc9-2400-49a7-9e50-1ed25fafc9a4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwen352b-t1-off/runs/10145cc9-2400-49a7-9e50-1ed25fafc9a4.json)
+    - T2 stream-on: [6eba3ef3-ed61-4713-9a3e-6994fd898dcb.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwen352b-t2-on/runs/6eba3ef3-ed61-4713-9a3e-6994fd898dcb.json)
+    - T2 stream-off: [1a47e9fe-df1c-40c4-aeda-23433723f80a.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwen352b-t2-off/runs/1a47e9fe-df1c-40c4-aeda-23433723f80a.json)
+    - T3 stream-on: [90ba140c-57a0-4acc-988a-f99e102044c9.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwen352b-t3-on/runs/90ba140c-57a0-4acc-988a-f99e102044c9.json)
+    - T3 stream-off: [067a57a4-53e9-4e7a-b069-33422abab9c9.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwen352b-t3-off/runs/067a57a4-53e9-4e7a-b069-33422abab9c9.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-qwen352b-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwen352b-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-qwen352b-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwen352b-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-qwen352b-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwen352b-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-qwen352b-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwen352b-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-qwen352b-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwen352b-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-qwen352b-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwen352b-t3-off)
+- Notes:
+  - This model is too weak for contract-complete LocalAgent evals.
+  - It is materially below both the current baseline and the stronger qwen-3.5-family variants.
+
+---
+
+### 2026-03-10 - `qwen/qwen3.5-9b` - `Q8_0 rerun 1`
+- Commit baseline:
+  - `3e587e0` Refresh local model compatibility docs
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - all six runs were materially worse than the earlier logged `qwen/qwen3.5-9b` result
+  - T1 stream-on failed on exact-answer retry misuse after extra tool calls
+  - T1 stream-off ended with non-compliant closeout after repeated writes
+  - T2 stream-on/off both edited successfully but failed exact final-answer compliance
+  - T3 stream-on failed with `TOOL_REPEAT_BLOCKED` on repeated `read_file`
+  - T3 stream-off failed after repeated `str_replace` convergence problems
+- First exact divergence:
+  - this rerun does not reproduce the earlier narrower non-stream Tool B limitation
+  - instead, the current loaded variant shows broader exact-output drift and repeated tool misuse across both modes
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [qwen-qwen3.5-9b-q8rerun-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qwen-qwen3.5-9b-q8rerun-minimal-matrix.json)
+  - run records:
+    - T1 stream-on: [0ff924c7-f90f-4149-975a-c79542d6eac4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun-t1-on/runs/0ff924c7-f90f-4149-975a-c79542d6eac4.json)
+    - T1 stream-off: [10145cc9-2400-49a7-9e50-1ed25fafc9a4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun-t1-off/runs/10145cc9-2400-49a7-9e50-1ed25fafc9a4.json)
+    - T2 stream-on: [6eba3ef3-ed61-4713-9a3e-6994fd898dcb.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun-t2-on/runs/6eba3ef3-ed61-4713-9a3e-6994fd898dcb.json)
+    - T2 stream-off: [1a47e9fe-df1c-40c4-aeda-23433723f80a.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun-t2-off/runs/1a47e9fe-df1c-40c4-aeda-23433723f80a.json)
+    - T3 stream-on: [90ba140c-57a0-4acc-988a-f99e102044c9.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun-t3-on/runs/90ba140c-57a0-4acc-988a-f99e102044c9.json)
+    - T3 stream-off: [067a57a4-53e9-4e7a-b069-33422abab9c9.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun-t3-off/runs/067a57a4-53e9-4e7a-b069-33422abab9c9.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun-t3-off)
+- Notes:
+  - This rerun should be treated as a separate quantization/load-specific result, not as a replacement for the earlier stronger `qwen/qwen3.5-9b` conclusion.
+  - The current loaded variant behaved materially worse than the earlier logged run.
+
+---
+
+### 2026-03-10 - `qwen/qwen3.5-9b` - `Q8_0 rerun 2`
+- Commit baseline:
+  - `3e587e0` Refresh local model compatibility docs
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - T2 stream-on/off both passed cleanly
+  - T1 stream-on/off both still failed
+  - T3 stream-on/off both still failed
+- First exact divergence:
+  - compared with rerun 1, `T2` recovered, but the broader `Q8_0` instability remained
+  - T1 still showed bad argument/closeout discipline
+  - T3 still ended in repeated `str_replace`/tool-repeat failure rather than converging
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [qwen-qwen3.5-9b-q8rerun2-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qwen-qwen3.5-9b-q8rerun2-minimal-matrix.json)
+  - run records:
+    - T1 stream-on: [9742d390-5688-4469-a7e7-14e6332fc656.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun2-t1-on/runs/9742d390-5688-4469-a7e7-14e6332fc656.json)
+    - T1 stream-off: [09edc191-a5b7-4b64-92bd-8388b630c18b.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun2-t1-off/runs/09edc191-a5b7-4b64-92bd-8388b630c18b.json)
+    - T2 stream-on: [1f86e721-0c45-4741-9981-b5bdcbac3675.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun2-t2-on/runs/1f86e721-0c45-4741-9981-b5bdcbac3675.json)
+    - T2 stream-off: [b2696af6-e0ba-4660-b965-f2e6b7fe8211.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun2-t2-off/runs/b2696af6-e0ba-4660-b965-f2e6b7fe8211.json)
+    - T3 stream-on: [9e74fe7f-2d28-49d4-b566-91fdbd67d2fb.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun2-t3-on/runs/9e74fe7f-2d28-49d4-b566-91fdbd67d2fb.json)
+    - T3 stream-off: [c436aa91-ef8e-4cde-8844-f5c2f031ce93.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-qwenqwen359b-q8rerun2-t3-off/runs/c436aa91-ef8e-4cde-8844-f5c2f031ce93.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-qwenqwen359b-q8rerun2-t3-off)
+- Notes:
+  - This second rerun was less bad than rerun 1 because `T2` recovered in both modes.
+  - It still does not recover the earlier stronger `qwen/qwen3.5-9b` profile, so the current loaded `Q8_0` behavior should be treated as unstable.
+
+---
+
+### 2026-03-10 - `qwen/qwen3.5-9b` - `quantization note`
+- Commit baseline:
+  - `3e587e0` Refresh local model compatibility docs
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - comparison across earlier stronger run and later reruns under the same model ID
+- Prompt/task:
+  - earlier targeted Tool B investigation plus later clean `T1`/`T2`/`T3` reruns
+- Outcome:
+  - the older stronger `qwen/qwen3.5-9b` result and the newer weaker reruns should not be treated as the same model behavior for compatibility conclusions
+- First exact divergence:
+  - the original stronger run had a narrower, more coherent failure profile
+  - the current `Q8_0` reruns showed broader exact-output drift, repeated tool misuse, and materially worse overall stability
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - earlier stronger run:
+    - [toolB-off-tracefix](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/toolB-off-tracefix)
+    - [toolB-on-rerun2](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/toolB-on-rerun2)
+  - `Q8_0` rerun 1 summary:
+    - [qwen-qwen3.5-9b-q8rerun-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qwen-qwen3.5-9b-q8rerun-minimal-matrix.json)
+  - `Q8_0` rerun 2 summary:
+    - [qwen-qwen3.5-9b-q8rerun2-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qwen-qwen3.5-9b-q8rerun2-minimal-matrix.json)
+- Notes:
+  - Treat the earlier stronger `qwen/qwen3.5-9b` result as the effective `Q6_k` run in docs and comparisons.
+  - Treat the later reruns as current `Q8_0` behavior under the same LM Studio model ID.
