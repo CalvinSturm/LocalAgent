@@ -510,3 +510,37 @@ Keep entries append-only and lightweight.
 - Notes:
   - This does not make weak exact-output models comply.
   - It does make the failure boundary explicit and reviewable, which is the right next step for eval integrity.
+
+---
+
+### 2026-03-10 - `post-write follow-on closeout detection` - `narrow runtime improvement`
+- Commit baseline:
+  - `668b301` Classify exact-output retry failures
+- Commit landed:
+  - `f67d9b3` Fix post-write follow-on closeout detection
+- Scope:
+  - post-write follow-on detection in the verified-write finalize seam
+- Intended change:
+  - treat only assistant text that appears after the last tool result as a valid post-tool closeout
+  - do not let pre-tool planning prose suppress the required post-write follow-on turn
+- Outcome:
+  - `phi-4` `T1` no longer silently finalized `ok` from pre-tool planning prose
+  - both stream modes now take the post-write follow-on/read-back turn
+  - both then fail cleanly as exact-output non-compliance after the bounded retry
+- First exact divergence:
+  - before this fix, `finalize_verified_write_completion()` treated any earlier assistant prose as a sufficient closeout
+  - after this fix, only post-tool assistant closeout counts, so `phi-4` reaches the intended follow-on + exact-output classification seam
+- Classification:
+  - fixed
+- Decision:
+  - fixed
+- Evidence:
+  - rerun summary:
+    - [phi4-t1-followon-summary.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/phi4-t1-followon-summary.json)
+  - stream-on:
+    - [59e19690-e955-4386-a698-b2885546a1e5.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/phi4t1followon-on/runs/59e19690-e955-4386-a698-b2885546a1e5.json)
+  - stream-off:
+    - [dcd49f27-ef27-46b0-bed1-494983e54790.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/phi4t1followon-off/runs/dcd49f27-ef27-46b0-bed1-494983e54790.json)
+- Notes:
+  - This change improves runtime classification integrity.
+  - It does not improve exact-output compliance itself; it prevents a silent `ok` on a path that still needed follow-on work.
