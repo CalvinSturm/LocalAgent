@@ -1044,3 +1044,35 @@ When a provider can serve different quantizations or presets behind the same mod
 - Notes:
   - Treat the earlier stronger `qwen/qwen3.5-9b` result as the effective `Q6_k` run in docs and comparisons.
   - Treat the later reruns as current `Q8_0` behavior under the same LM Studio model ID.
+
+---
+
+### 2026-03-10 - `qwen2.5-coder-7b-instruct@q8_0` - `T3 affordance negative passes`
+- Commit baseline:
+  - local working tree after `3e587e0` with three unmerged prompt/tool-affordance experiments
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - streamed `T3` reruns only, fresh prepared control-pack instance and fresh state/trace dirs per run
+- Prompt/task:
+  - [PROMPT.txt](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/T-tests/T3/PROMPT.txt)
+- Outcome:
+  - three consecutive affordance-only experiments failed to improve streamed `T3` on the baseline model
+  - broader `run_setup.rs` edit-policy wording caused an earlier failure boundary: no tool calls at all
+  - narrower `run_setup.rs` wording still failed at the same earlier boundary: no tool calls at all
+  - localized `apply_patch` tool-description/schema-example change also failed at the same boundary: no tool calls at all
+- First exact divergence:
+  - none of the tested prompt/tool-affordance seams restored normal tool use on this baseline streamed `T3` slice
+  - after each change, the model answered in prose on the first assistant turn and then hit the implementation guard before any tool execution
+- Classification:
+  - pure model-choice
+- Decision:
+  - follow-up needed
+- Evidence:
+  - run records:
+    - broader run-setup affordance pass: [69ad1e1e-32c8-484a-823a-261b512443af.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/triage-t3-affordance-on/runs/69ad1e1e-32c8-484a-823a-261b512443af.json)
+    - conservative run-setup affordance pass: [f40c46d1-2976-4fba-9e86-2389e863364d.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/triage-t3-affordance-on-conservative/runs/f40c46d1-2976-4fba-9e86-2389e863364d.json)
+    - tool-schema example affordance pass: [91f51de6-cda2-41bc-bc41-e1560c19fbea.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/triage-t3-schema-example-on/runs/91f51de6-cda2-41bc-bc41-e1560c19fbea.json)
+- Notes:
+  - This is enough negative evidence to stop iterating blindly on top-level edit-policy wording or single `apply_patch` example text for streamed `T3` on the baseline model.
+  - The next investigation should pivot to TUI vs `run` parity or to a first-turn request/transcript comparison on the failing `T3` slice.
