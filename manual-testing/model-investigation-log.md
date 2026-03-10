@@ -295,3 +295,65 @@ Keep entries append-only and lightweight.
   - This model is worse than `qwen/qwen3.5-9b` on the current LocalAgent matrix.
   - The dominant failure mode is prompt/protocol echo and loss of next-step discipline after tool feedback, not qualification or missing tool availability.
   - The first exact split is not a stream-mode transport issue; both modes show the same broader contract-following weakness.
+
+---
+
+### 2026-03-09 - `qwen2.5-coder-7b-instruct@q8_0` - `minimal T matrix`
+- Commit baseline:
+  - `1daaddd` Improve TypeScript LSP diagnostics robustness
+  - `e1cc450` Add OpenAI-compatible streaming trace artifact
+  - `bbac69a` Add qualification trace artifacts
+  - `a27f4cf` Accept textual fallback in qualification probe
+  - `34a2422` Make qualification success sticky within a session
+  - `b17bbb2` Add bounded post-write follow-on turn
+  - `d9567c6` Add non-stream OpenAI-compatible trace artifacts
+  - `48b1184` Add follow-up model investigation log entries
+  - `4c54740` Add local model eval runbook
+  - `172442e` Log qwen3.5-9b-ud minimal matrix results
+  - `be50766` Log qwen2.5-coder-14b minimal matrix results
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - qualification passed in all six runs
+  - T1 passed cleanly in both modes
+  - T2 passed cleanly in both modes
+  - T3 passed in non-stream mode
+  - T3 failed in streamed mode because the model jumped to `shell` before any effective write, then stopped after the failed test result instead of repairing the file
+- First exact divergence:
+  - the first meaningful split is at T3. Non-stream reads `src/parse.js`, edits it with `str_replace`, then returns the required `verified=yes / command=node --test / result=passed` final answer. Streamed mode skips the required edit step and calls `shell` first, causing the implementation guard to fail the run for lack of any effective write.
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - qualification traces:
+    - T1 stream-on: [.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t1-on)
+    - T1 stream-off: [.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t1-off)
+    - T2 stream-on: [.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t2-on)
+    - T2 stream-off: [.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t2-off)
+    - T3 stream-on: [.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t3-on)
+    - T3 stream-off: [.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-7b-q8-clean-t3-off)
+  - run records:
+    - T1 stream-on: [90572114-4983-4b2a-ba3d-5a3dc41931c4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-7b-q8-clean-t1-on/runs/90572114-4983-4b2a-ba3d-5a3dc41931c4.json)
+    - T1 stream-off: [0593148a-2394-41da-b959-00e32163908b.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-7b-q8-clean-t1-off/runs/0593148a-2394-41da-b959-00e32163908b.json)
+    - T2 stream-on: [adc67cff-5bd0-4cb9-82e6-548442e4d4af.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-7b-q8-clean-t2-on/runs/adc67cff-5bd0-4cb9-82e6-548442e4d4af.json)
+    - T2 stream-off: [3887fc97-fe8d-420b-9edc-8c9ced560741.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-7b-q8-clean-t2-off/runs/3887fc97-fe8d-420b-9edc-8c9ced560741.json)
+    - T3 stream-on: [110ecf74-e04c-4bbf-9e4a-0101aefc23ec.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-7b-q8-clean-t3-on/runs/110ecf74-e04c-4bbf-9e4a-0101aefc23ec.json)
+    - T3 stream-off: [ce6f9a54-a98c-47a0-8eee-4be59f05e6a9.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-7b-q8-clean-t3-off/runs/ce6f9a54-a98c-47a0-8eee-4be59f05e6a9.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/qwen25-coder-7b-q8-clean-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-7b-q8-clean-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/qwen25-coder-7b-q8-clean-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-7b-q8-clean-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/qwen25-coder-7b-q8-clean-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-7b-q8-clean-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/qwen25-coder-7b-q8-clean-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-7b-q8-clean-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/qwen25-coder-7b-q8-clean-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-7b-q8-clean-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/qwen25-coder-7b-q8-clean-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-7b-q8-clean-t3-off)
+- Notes:
+  - This is the strongest local model tested so far on the current narrow matrix.
+  - The remaining issue is mode-specific: streamed T3 violates task order by testing before editing.
+  - Non-stream mode completed the full current matrix contract-cleanly.
