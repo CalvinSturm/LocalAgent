@@ -29,6 +29,10 @@ pub(super) enum RuntimeCompletionAction {
         blocked_runtime_completion_count: u32,
         operator_delivery_count: u32,
     },
+    ContinueExactFinalAnswer {
+        blocked_runtime_completion_count: u32,
+        operator_delivery_count: u32,
+    },
     ProceedToTools {
         blocked_runtime_completion_count: u32,
     },
@@ -41,6 +45,7 @@ pub(super) struct RuntimeCompletionInputs {
     pub(super) active_plan_step_idx: usize,
     pub(super) plan_step_constraints_len: usize,
     pub(super) tool_only_phase_active: bool,
+    pub(super) exact_final_answer_only_phase_active: bool,
     pub(super) enforce_implementation_integrity_guard: bool,
     pub(super) observed_tool_calls_len: usize,
     pub(super) blocked_attempt_count_next: u32,
@@ -49,6 +54,13 @@ pub(super) struct RuntimeCompletionInputs {
 pub(super) fn runtime_completion_decision(
     inputs: &RuntimeCompletionInputs,
 ) -> RuntimeCompletionDecision {
+    if inputs.exact_final_answer_only_phase_active && inputs.has_tool_calls {
+        return RuntimeCompletionDecision::FinalizeError {
+            reason: "exact final-answer retry does not allow additional tool calls",
+            source: "runtime_exact_final_answer_guard",
+            failure_class: "E_RUNTIME_COMPLETION_EXACT_FINAL_TOOL_CALL",
+        };
+    }
     if inputs.has_tool_calls {
         return RuntimeCompletionDecision::ExecuteTools;
     }
@@ -127,6 +139,7 @@ impl<P: ModelProvider> Agent<P> {
         saw_token_usage: bool,
         total_token_usage: &TokenUsage,
         taint_state: &TaintState,
+        exact_final_answer_retry_count: u32,
     ) -> RuntimeCompletionAction {
         match decision {
             RuntimeCompletionDecision::Continue {
@@ -392,6 +405,80 @@ impl<P: ModelProvider> Agent<P> {
                             run_id,
                             started_at,
                             reason,
+                            messages.clone(),
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ),
+                    ));
+                }
+                if crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt)
+                    .is_some()
+                    && !crate::agent_impl_guard::final_output_matches_required_exact_answer(
+                        user_prompt,
+                        &final_output,
+                    )
+                {
+                    if exact_final_answer_retry_count < 1 {
+                        let blocked_runtime_completion_count =
+                            blocked_runtime_completion_count.saturating_add(1);
+                        let corrective_instruction = "The task work is complete. Do not explain your steps. Reply now with the required final answer only, exactly matching the requested format. Do not call tools.";
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::Error,
+                            serde_json::json!({
+                                "error": corrective_instruction,
+                                "source": "runtime_exact_final_answer_guard",
+                                "reason_code": "exact_final_answer_required",
+                                "blocked_count": blocked_runtime_completion_count
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::StepBlocked,
+                            serde_json::json!({
+                                "reason": "exact_final_answer_required",
+                                "blocked_count": blocked_runtime_completion_count
+                            }),
+                        );
+                        messages.push(Message {
+                            role: crate::types::Role::Developer,
+                            content: Some(corrective_instruction.to_string()),
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_calls: None,
+                        });
+                        return RuntimeCompletionAction::ContinueExactFinalAnswer {
+                            blocked_runtime_completion_count,
+                            operator_delivery_count,
+                        };
+                    }
+                    let reason = "model failed exact final-answer compliance after bounded retry";
+                    self.emit_event(
+                        &run_id,
+                        step,
+                        crate::events::EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "runtime_exact_final_answer_guard",
+                            "failure_class": "E_RUNTIME_COMPLETION_EXACT_FINAL_OUTPUT"
+                        }),
+                    );
+                    return RuntimeCompletionAction::Finalize(Box::new(
+                        self.finalize_planner_error_with_end(
+                            step,
+                            run_id,
+                            started_at,
+                            reason.to_string(),
                             messages.clone(),
                             observed_tool_calls,
                             observed_tool_decisions,

@@ -244,3 +244,51 @@ pub(crate) fn prompt_requires_post_write_follow_on(prompt: &str) -> bool {
     .any(|needle| p.contains(needle));
     requires_validation || requires_user_facing_closeout
 }
+
+pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String> {
+    let lower = prompt.to_ascii_lowercase();
+    let marker = "your final answer must be exactly:";
+    let idx = lower.find(marker)?;
+    let rest = &prompt[idx + marker.len()..];
+    let normalized = rest.trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+pub(crate) fn final_output_matches_required_exact_answer(prompt: &str, final_output: &str) -> bool {
+    let Some(required) = prompt_required_exact_final_answer(prompt) else {
+        return true;
+    };
+    final_output.trim() == required.trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{final_output_matches_required_exact_answer, prompt_required_exact_final_answer};
+
+    #[test]
+    fn extracts_required_exact_final_answer_block() {
+        let prompt =
+            "Do the task.\n\nYour final answer must be exactly:\n\nverified=yes\nfile=src/status.ts\nbytes=31\n";
+        assert_eq!(
+            prompt_required_exact_final_answer(prompt).as_deref(),
+            Some("verified=yes\nfile=src/status.ts\nbytes=31")
+        );
+    }
+
+    #[test]
+    fn exact_final_answer_match_is_trim_tolerant() {
+        let prompt = "Your final answer must be exactly:\n\nverified=yes\nfile=src/status.ts\n";
+        assert!(final_output_matches_required_exact_answer(
+            prompt,
+            "verified=yes\nfile=src/status.ts\n"
+        ));
+        assert!(!final_output_matches_required_exact_answer(
+            prompt,
+            "verified=yes"
+        ));
+    }
+}

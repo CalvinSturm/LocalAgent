@@ -131,10 +131,12 @@ impl<P: ModelProvider> Agent<P> {
         let mut blocked_runtime_completion_count: u32 = 0;
         let mut post_write_guard_retry_count: u32 = 0;
         let mut post_write_follow_on_turn_count: u32 = 0;
+        let mut exact_final_answer_retry_count: u32 = 0;
         let mut operator_delivery_count: u32 = 0;
         let mut blocked_control_envelope_count: u32 = 0;
         let mut blocked_tool_only_count: u32 = 0;
         let mut tool_only_phase_active = prompt_requires_tool_only(user_prompt);
+        let mut exact_final_answer_only_phase_active = false;
         let mut last_user_output: Option<String> = None;
         let mut step_retry_counts: std::collections::BTreeMap<String, u32> =
             std::collections::BTreeMap::new();
@@ -897,6 +899,7 @@ impl<P: ModelProvider> Agent<P> {
                 active_plan_step_idx,
                 plan_step_constraints_len: self.plan_step_constraints.len(),
                 tool_only_phase_active,
+                exact_final_answer_only_phase_active,
                 enforce_implementation_integrity_guard,
                 observed_tool_calls_len: observed_tool_calls.len(),
                 blocked_attempt_count_next: blocked_runtime_completion_count.saturating_add(1),
@@ -927,6 +930,7 @@ impl<P: ModelProvider> Agent<P> {
                     saw_token_usage,
                     &total_token_usage,
                     &taint_state,
+                    exact_final_answer_retry_count,
                 )
                 .await
             {
@@ -944,10 +948,21 @@ impl<P: ModelProvider> Agent<P> {
                     operator_delivery_count = next_op_count;
                     continue 'agent_steps;
                 }
+                RuntimeCompletionAction::ContinueExactFinalAnswer {
+                    blocked_runtime_completion_count: next_count,
+                    operator_delivery_count: next_op_count,
+                } => {
+                    blocked_runtime_completion_count = next_count;
+                    operator_delivery_count = next_op_count;
+                    exact_final_answer_retry_count += 1;
+                    exact_final_answer_only_phase_active = true;
+                    continue 'agent_steps;
+                }
                 RuntimeCompletionAction::ProceedToTools {
                     blocked_runtime_completion_count: next_count,
                 } => {
                     blocked_runtime_completion_count = next_count;
+                    exact_final_answer_only_phase_active = false;
                 }
                 RuntimeCompletionAction::Finalize(outcome) => return *outcome,
             }
