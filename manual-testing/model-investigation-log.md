@@ -654,3 +654,105 @@ Keep entries append-only and lightweight.
 - Notes:
   - This model is stronger than `qwen2.5-coder-7b-instruct@q5_k_m` on the current LocalAgent matrix.
   - It is still weaker than the current local baseline `qwen2.5-coder-7b-instruct@q8_0` because it breaks on the longer T3 task in both modes.
+
+---
+
+### 2026-03-10 - `nanbeige4.1-3b@bf16` - `minimal T matrix`
+- Commit baseline:
+  - `f15c37c` Log deepseek and crow model matrix results
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - T1 stream-on failed with `provider_error`
+  - T1 stream-off failed with `planner_error`
+  - T2 stream-on/off both failed with `planner_error`
+  - T3 stream-on/off both failed with `planner_error`
+  - no run in the minimal matrix completed contract-cleanly
+- First exact divergence:
+  - the first meaningful failures are not qualification-related
+  - the dominant failure class is read-before-write/apply discipline:
+    - `write_file` without prior `read_file` on T1
+    - `apply_patch` without prior `read_file` on T2
+    - `write_file` without prior `read_file` on T3 after partial read/edit activity
+  - stream-on T1 also hit a streamed provider/body decode timeout before any successful completion
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [nanbeige4.1-3b-bf16-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/nanbeige4.1-3b-bf16-minimal-matrix.json)
+  - run records:
+    - T1 stream-on: [c88e78d3-5055-47a2-814c-7722194870ab.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-nanbeige413bbf16-t1-on/runs/c88e78d3-5055-47a2-814c-7722194870ab.json)
+    - T1 stream-off: [c6bf7286-5da4-47f2-9160-5c2f11fe3b4d.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-nanbeige413bbf16-t1-off/runs/c6bf7286-5da4-47f2-9160-5c2f11fe3b4d.json)
+    - T2 stream-on: [32d6b9bf-4095-491a-b52a-9155f28e8f55.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-nanbeige413bbf16-t2-on/runs/32d6b9bf-4095-491a-b52a-9155f28e8f55.json)
+    - T2 stream-off: [6e0f758c-f3d5-40d9-a3d2-c24b6edf2d11.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-nanbeige413bbf16-t2-off/runs/6e0f758c-f3d5-40d9-a3d2-c24b6edf2d11.json)
+    - T3 stream-on: [ce6a8305-6288-485c-bf36-8d04f41a7316.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-nanbeige413bbf16-t3-on/runs/ce6a8305-6288-485c-bf36-8d04f41a7316.json)
+    - T3 stream-off: [a6244431-332a-4b44-b568-622f0e85029b.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-nanbeige413bbf16-t3-off/runs/a6244431-332a-4b44-b568-622f0e85029b.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-nanbeige413bbf16-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-nanbeige413bbf16-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-nanbeige413bbf16-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-nanbeige413bbf16-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-nanbeige413bbf16-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-nanbeige413bbf16-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-nanbeige413bbf16-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-nanbeige413bbf16-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-nanbeige413bbf16-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-nanbeige413bbf16-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-nanbeige413bbf16-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-nanbeige413bbf16-t3-off)
+- Notes:
+  - This model is clearly below the current local baseline on the current LocalAgent matrix.
+  - The dominant issue is tool-discipline failure, not qualification or exact-output closeout.
+
+---
+
+### 2026-03-10 - `zai-org/glm-4.6v-flash` - `minimal T matrix`
+- Commit baseline:
+  - `f15c37c` Log deepseek and crow model matrix results
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - T1 stream-on/off both failed with `planner_error`
+  - T2 stream-on/off both failed with `planner_error`
+  - T3 stream-on/off both failed with `planner_error`
+  - no run in the minimal matrix completed contract-cleanly
+- First exact divergence:
+  - the first meaningful failures are not qualification-related
+  - T1 fails on exact-output discipline after otherwise successful tool work:
+    - `model failed exact final-answer compliance after bounded retry`
+  - T2 fails on ineffective edit application after `read_file` + `apply_patch`
+  - T3 diverges by mode:
+    - stream-on hits `TOOL_REPEAT_BLOCKED` on repeated failed `str_replace`
+    - stream-off finalizes without an effective write
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [glm-4.6v-flash-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/glm-4.6v-flash-minimal-matrix.json)
+  - run records:
+    - T1 stream-on: [c1d43915-f42d-4e7a-8f51-761e3de92ce1.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-zaiorgglm46vflash-t1-on/runs/c1d43915-f42d-4e7a-8f51-761e3de92ce1.json)
+    - T1 stream-off: [a19b00fd-44bf-4ac3-b039-1616f6635ba6.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-zaiorgglm46vflash-t1-off/runs/a19b00fd-44bf-4ac3-b039-1616f6635ba6.json)
+    - T2 stream-on: [04200b9f-335a-4424-8190-7c38cf4ffb5d.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-zaiorgglm46vflash-t2-on/runs/04200b9f-335a-4424-8190-7c38cf4ffb5d.json)
+    - T2 stream-off: [4d5ac31e-510e-42ee-aba9-e3744ae8f1ec.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-zaiorgglm46vflash-t2-off/runs/4d5ac31e-510e-42ee-aba9-e3744ae8f1ec.json)
+    - T3 stream-on: [2adbf666-34ca-43a8-b30d-59ad29d94042.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-zaiorgglm46vflash-t3-on/runs/2adbf666-34ca-43a8-b30d-59ad29d94042.json)
+    - T3 stream-off: [9b29553b-3ee2-4198-8268-05698c0f23bd.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-zaiorgglm46vflash-t3-off/runs/9b29553b-3ee2-4198-8268-05698c0f23bd.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-zaiorgglm46vflash-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-zaiorgglm46vflash-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-zaiorgglm46vflash-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-zaiorgglm46vflash-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-zaiorgglm46vflash-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-zaiorgglm46vflash-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-zaiorgglm46vflash-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-zaiorgglm46vflash-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-zaiorgglm46vflash-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-zaiorgglm46vflash-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-zaiorgglm46vflash-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-zaiorgglm46vflash-t3-off)
+- Notes:
+  - This model is weaker than the current local baseline but still materially more coherent than the worst protocol-breaking models.
+  - The dominant issues are exact-output compliance on T1 and failed edit convergence on T2/T3.
