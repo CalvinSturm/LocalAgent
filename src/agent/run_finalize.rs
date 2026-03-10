@@ -7,6 +7,36 @@ use super::agent_types::{AgentOutcome, AgentOutcomeBuilderInput};
 use super::Agent;
 
 impl<P: ModelProvider> Agent<P> {
+    fn has_user_facing_assistant_closeout_after_last_tool(
+        &self,
+        messages: &[crate::types::Message],
+    ) -> bool {
+        let last_tool_idx = messages
+            .iter()
+            .rposition(|m| matches!(m.role, crate::types::Role::Tool));
+        let Some(last_tool_idx) = last_tool_idx else {
+            return messages
+                .iter()
+                .rev()
+                .filter(|m| matches!(m.role, crate::types::Role::Assistant))
+                .filter_map(|m| m.content.as_deref())
+                .map(str::trim)
+                .any(|content| {
+                    !content.is_empty()
+                        && !self.assistant_content_has_protocol_artifacts(Some(content))
+                });
+        };
+
+        messages.iter().skip(last_tool_idx + 1).any(|m| {
+            matches!(m.role, crate::types::Role::Assistant)
+                && m.content.as_deref().is_some_and(|content| {
+                    let content = content.trim();
+                    !content.is_empty()
+                        && !self.assistant_content_has_protocol_artifacts(Some(content))
+                })
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finalize_verified_write_completion(
         &mut self,
@@ -107,9 +137,11 @@ impl<P: ModelProvider> Agent<P> {
             })
             .unwrap_or_default()
             .to_string();
+        let has_post_tool_assistant_closeout =
+            self.has_user_facing_assistant_closeout_after_last_tool(&messages);
         let needs_follow_on_turn =
             crate::agent_impl_guard::prompt_requires_post_write_follow_on(user_prompt)
-                && final_output.trim().is_empty();
+                && !has_post_tool_assistant_closeout;
         if needs_follow_on_turn && post_write_follow_on_turn_count < 1 {
             self.emit_event(
                 &run_id,
