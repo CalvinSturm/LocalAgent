@@ -18,6 +18,13 @@ use crate::session::SessionStore;
 use crate::store;
 use crate::{run_agent, AgentExitReason, ChatArgs, ProviderKind, RunArgs};
 
+fn prepare_chat_turn_args(active_run: &RunArgs, input: &str, chat_tui: bool) -> RunArgs {
+    let mut turn_args = active_run.clone();
+    turn_args.prompt = Some(input.to_string());
+    turn_args.tui = chat_tui;
+    turn_args
+}
+
 pub(crate) async fn run_chat_repl(
     chat: &ChatArgs,
     base_run: &RunArgs,
@@ -246,12 +253,7 @@ pub(crate) async fn run_chat_repl(
             continue;
         }
 
-        let mut turn_args = active_run.clone();
-        turn_args.prompt = Some(input.to_string());
-        turn_args.tui = chat.tui;
-        if !chat.tui && !turn_args.stream {
-            turn_args.stream = true;
-        }
+        let turn_args = prepare_chat_turn_args(&active_run, input, chat.tui);
 
         match provider_kind {
             ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
@@ -340,4 +342,30 @@ pub(crate) async fn run_chat_repl(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::prepare_chat_turn_args;
+    use crate::RunArgs;
+
+    #[test]
+    fn prepare_chat_turn_args_preserves_disabled_streaming() {
+        let base = RunArgs::parse_from(["localagent"]);
+        let prepared = prepare_chat_turn_args(&base, "hello", false);
+        assert_eq!(prepared.prompt.as_deref(), Some("hello"));
+        assert!(!prepared.stream);
+        assert!(!prepared.tui);
+    }
+
+    #[test]
+    fn prepare_chat_turn_args_preserves_enabled_streaming_and_tui_flag() {
+        let base = RunArgs::parse_from(["localagent", "--stream"]);
+        let prepared = prepare_chat_turn_args(&base, "hello", true);
+        assert_eq!(prepared.prompt.as_deref(), Some("hello"));
+        assert!(prepared.stream);
+        assert!(prepared.tui);
+    }
 }

@@ -100,6 +100,15 @@ pub(crate) struct TuiNormalSubmitLaunchInput<'a> {
     pub(crate) shared_chat_mcp_registry: &'a mut Option<std::sync::Arc<McpRegistry>>,
 }
 
+fn prepare_tui_turn_args(active_run: &RunArgs, line: &str) -> RunArgs {
+    let mut turn_args = active_run.clone();
+    turn_args.prompt = Some(line.to_string());
+    // Keep TUI rendering outside the shared agent loop, but preserve the configured
+    // stream mode so interactive runs can match one-shot eval settings.
+    turn_args.tui = false;
+    turn_args
+}
+
 pub(crate) async fn build_tui_normal_submit_launch(
     input: TuiNormalSubmitLaunchInput<'_>,
 ) -> anyhow::Result<Option<TuiSubmitLaunch>> {
@@ -108,10 +117,7 @@ pub(crate) async fn build_tui_normal_submit_launch(
         std::sync::mpsc::channel::<crate::operator_queue::QueueSubmitRequest>();
     let mut queue_rx_opt = Some(queue_rx);
 
-    let mut turn_args = input.active_run.clone();
-    turn_args.prompt = Some(input.line.to_string());
-    turn_args.tui = false;
-    turn_args.stream = true;
+    let turn_args = prepare_tui_turn_args(input.active_run, input.line);
 
     if !turn_args.mcp.is_empty() && input.shared_chat_mcp_registry.is_none() {
         let mcp_config_path =
@@ -216,6 +222,32 @@ pub(crate) async fn build_tui_normal_submit_launch(
     });
 
     Ok(Some(TuiSubmitLaunch { rx, queue_tx, fut }))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::prepare_tui_turn_args;
+    use crate::RunArgs;
+
+    #[test]
+    fn prepare_tui_turn_args_preserves_disabled_streaming() {
+        let base = RunArgs::parse_from(["localagent"]);
+        let prepared = prepare_tui_turn_args(&base, "test prompt");
+        assert_eq!(prepared.prompt.as_deref(), Some("test prompt"));
+        assert!(!prepared.stream);
+        assert!(!prepared.tui);
+    }
+
+    #[test]
+    fn prepare_tui_turn_args_preserves_enabled_streaming() {
+        let base = RunArgs::parse_from(["localagent", "--stream"]);
+        let prepared = prepare_tui_turn_args(&base, "test prompt");
+        assert_eq!(prepared.prompt.as_deref(), Some("test prompt"));
+        assert!(prepared.stream);
+        assert!(!prepared.tui);
+    }
 }
 
 pub(crate) struct TuiEnterSubmitInput<'a> {
