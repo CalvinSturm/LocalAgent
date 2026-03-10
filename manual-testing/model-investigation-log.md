@@ -544,3 +544,113 @@ Keep entries append-only and lightweight.
 - Notes:
   - This change improves runtime classification integrity.
   - It does not improve exact-output compliance itself; it prevents a silent `ok` on a path that still needed follow-on work.
+
+---
+
+### 2026-03-10 - `deepseek-r1-0528-qwen3-8b-ud` - `minimal T matrix`
+- Commit baseline:
+  - `f67d9b3` Fix post-write follow-on closeout detection
+  - `63233f8` Log post-write follow-on detection fix
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - T1 stream-on/off both failed with `planner_error`
+  - T2 stream-on failed with `planner_error`
+  - T2 stream-off failed with `provider_error`
+  - T3 stream-on/off both failed with `planner_error`
+  - no run in the minimal matrix completed contract-cleanly
+- First exact divergence:
+  - the first meaningful failures are not qualification-related
+  - streamed runs break early on tool-protocol discipline:
+    - multiple tool calls in one assistant step
+    - unknown tool wrapper output like `tool_name`
+  - non-stream runs diverge between:
+    - outright provider crash on T2
+    - malformed `[TOOL_CALL]` envelope or failed edit convergence on T3
+    - write-workflow discipline failure on T1
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [deepseek-r1-0528-qwen3-8b-ud-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/deepseek-r1-0528-qwen3-8b-ud-minimal-matrix.json)
+  - qualification traces:
+    - T1 stream-on: [.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t1-on)
+    - T1 stream-off: [.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t1-off)
+    - T2 stream-on: [.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t2-on)
+    - T2 stream-off: [.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t2-off)
+    - T3 stream-on: [.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t3-on)
+    - T3 stream-off: [.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/eval-deepseekr10528qwen38bud-t3-off)
+  - run records:
+    - T1 stream-on: [a4dc9236-b9f5-4010-8a96-d93f434d8ea4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekr10528qwen38bud-t1-on/runs/a4dc9236-b9f5-4010-8a96-d93f434d8ea4.json)
+    - T1 stream-off: [3dab1e01-d838-424b-b3ad-fa84991b66b9.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekr10528qwen38bud-t1-off/runs/3dab1e01-d838-424b-b3ad-fa84991b66b9.json)
+    - T2 stream-on: [03623ad2-725d-4011-a926-3311d4721d37.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekr10528qwen38bud-t2-on/runs/03623ad2-725d-4011-a926-3311d4721d37.json)
+    - T2 stream-off: [d5cf84ca-a539-4ba7-8e38-8a682a05f308.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekr10528qwen38bud-t2-off/runs/d5cf84ca-a539-4ba7-8e38-8a682a05f308.json)
+    - T3 stream-on: [8644f96e-2f6a-401b-ada1-f43cd1c4ef03.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekr10528qwen38bud-t3-on/runs/8644f96e-2f6a-401b-ada1-f43cd1c4ef03.json)
+    - T3 stream-off: [27e2bb91-d7e9-4524-87cc-e7d3b43ecae8.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekr10528qwen38bud-t3-off/runs/27e2bb91-d7e9-4524-87cc-e7d3b43ecae8.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-deepseekr10528qwen38bud-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekr10528qwen38bud-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-deepseekr10528qwen38bud-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekr10528qwen38bud-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-deepseekr10528qwen38bud-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekr10528qwen38bud-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-deepseekr10528qwen38bud-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekr10528qwen38bud-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-deepseekr10528qwen38bud-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekr10528qwen38bud-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-deepseekr10528qwen38bud-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekr10528qwen38bud-t3-off)
+- Notes:
+  - This model is materially worse than the current local baseline on the current LocalAgent matrix.
+  - The dominant failure modes are tool-protocol instability and one provider-side crash, not qualification or exact-output closeout.
+
+---
+
+### 2026-03-10 - `crow-9b-opus-4.6-distill-heretic_qwen3.5` - `minimal T matrix`
+- Commit baseline:
+  - `f67d9b3` Fix post-write follow-on closeout detection
+  - `63233f8` Log post-write follow-on detection fix
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - T1 stream-on/off both passed cleanly
+  - T2 stream-on/off both passed cleanly
+  - T3 stream-on failed with `planner_error`
+  - T3 stream-off failed with `planner_error`
+- First exact divergence:
+  - the first meaningful failure is not qualification-related and not uniform across modes
+  - stream-on reaches the edit loop but fails to converge on an effective write after repeated `str_replace` attempts
+  - stream-off fails earlier on tool protocol discipline:
+    - multiple tool calls in one assistant step
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [crow-9b-opus-4.6-distill-heretic-qwen3.5-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/crow-9b-opus-4.6-distill-heretic-qwen3.5-minimal-matrix.json)
+  - run records:
+    - T1 stream-on: [e3b1d9f5-79fe-4fd4-ace8-3ea3cdbf258c.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-crow9bopus46distillhereticqwen35-t1-on/runs/e3b1d9f5-79fe-4fd4-ace8-3ea3cdbf258c.json)
+    - T1 stream-off: [6afd02ae-8a2d-4a97-9a62-c2b2ae0ab708.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-crow9bopus46distillhereticqwen35-t1-off/runs/6afd02ae-8a2d-4a97-9a62-c2b2ae0ab708.json)
+    - T2 stream-on: [79f98c0d-99be-439e-a58b-3d65d06104bd.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-crow9bopus46distillhereticqwen35-t2-on/runs/79f98c0d-99be-439e-a58b-3d65d06104bd.json)
+    - T2 stream-off: [36ac1786-fbb7-49c8-8bd6-36465f205473.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-crow9bopus46distillhereticqwen35-t2-off/runs/36ac1786-fbb7-49c8-8bd6-36465f205473.json)
+    - T3 stream-on: [adc100ba-a730-4c1e-b7f3-31ebf76c3543.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-crow9bopus46distillhereticqwen35-t3-on/runs/adc100ba-a730-4c1e-b7f3-31ebf76c3543.json)
+    - T3 stream-off: [a44e27d7-5c77-45fc-9f88-74806e498571.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-crow9bopus46distillhereticqwen35-t3-off/runs/a44e27d7-5c77-45fc-9f88-74806e498571.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-crow9bopus46distillhereticqwen35-t3-off)
+- Notes:
+  - This model is stronger than `qwen2.5-coder-7b-instruct@q5_k_m` on the current LocalAgent matrix.
+  - It is still weaker than the current local baseline `qwen2.5-coder-7b-instruct@q8_0` because it breaks on the longer T3 task in both modes.
