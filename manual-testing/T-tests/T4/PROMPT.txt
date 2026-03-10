@@ -1,0 +1,8 @@
+Find where the label string is actually defined, change `sucess` to `success`, and do not make unrelated edits.
+
+Inspect the code before editing.
+Only edit the file that contains the real label definition.
+
+Your final answer must be exactly:
+
+edited: src/labels.js

@@ -1,0 +1,13 @@
+Fix the parser so that both of these cases succeed:
+
+- parseCount("7") returns 7
+- parseCount(" 7 ") returns 7
+
+Do not make unrelated edits.
+Before finishing, run `node --test` successfully.
+
+Your final answer must be exactly:
+
+verified=yes
+command=node --test
+result=passed

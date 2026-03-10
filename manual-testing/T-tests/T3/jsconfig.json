@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "allowJs": true,
+    "maxNodeModuleJsDepth": 0
+  },
+  "exclude": [
+    "node_modules",
+    ".localagent"
+  ]
+}

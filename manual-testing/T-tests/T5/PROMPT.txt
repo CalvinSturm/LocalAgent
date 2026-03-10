@@ -1,0 +1,9 @@
+Update the parser so it trims whitespace before parsing.
+
+If a path guess or command fails, inspect the repo and recover.
+Do not make unrelated edits.
+Before finishing, run `node --test` successfully.
+
+Reply with exactly:
+
+verified fix

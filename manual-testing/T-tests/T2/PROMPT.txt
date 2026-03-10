@@ -1,0 +1,20 @@
+Edit `src/score.ts` using `apply_patch` so that this function:
+
+export function score(): number {
+  return 41;
+}
+
+becomes:
+
+export function score(): number {
+  return 42;
+}
+
+Do not use `write_file`.
+Do not make unrelated edits.
+Before finishing, verify that `src/score.ts` contains the updated function exactly.
+
+Your final answer must be exactly:
+
+verified=yes
+file=src/score.ts
