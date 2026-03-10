@@ -8,6 +8,38 @@ This document ties together:
 - state and CLI behavior from [docs/reference/CONFIGURATION_AND_STATE.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/docs/reference/CONFIGURATION_AND_STATE.md) and [docs/reference/CLI_REFERENCE.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/docs/reference/CLI_REFERENCE.md)
 - investigation logging in [manual-testing/model-investigation-log.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/model-investigation-log.md)
 
+## New Agent Handoff
+
+Use this prompt when you want a new Codex instance to focus on evaluation info gathering:
+
+```text
+Focus only on evaluation info gathering for LocalAgent local-model behavior.
+
+Read these first:
+- manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md
+- manual-testing/model-investigation-log.md
+- manual-testing/LOCAL_MODEL_COMPATIBILITY_SUMMARY.md
+- manual-testing/LOCAL_MODEL_LEADERBOARD.md
+- docs/operations/LOCAL_MODEL_IMPROVEMENT_BACKLOG.md
+
+Rules:
+- Do not change runtime semantics or tool behavior unless explicitly asked.
+- Prefer clean paired eval runs over speculation.
+- Use fresh prepared control-pack instances, fresh state dirs, and explicit trace dirs.
+- Record provider, base_url, model, model_variant, preset, stream, temperature, top_p, max_tokens, and seed for every meaningful run.
+- Stop at the first concrete divergence that explains the result.
+- Log findings in manual-testing/model-investigation-log.md.
+- Update compatibility summary / leaderboard only when new evidence materially changes recommendations.
+
+For each completed eval slice, report:
+- scenario and model
+- stream vs non-stream outcome
+- first exact divergence
+- classification: provider bug / runtime bug / compatibility gap / pure model-choice
+- artifact paths
+- whether the result changes baseline or recommendations
+```
+
 ## Scope
 
 Use this workflow when you want to answer questions like:
