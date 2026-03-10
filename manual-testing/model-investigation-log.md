@@ -234,3 +234,64 @@ Keep entries append-only and lightweight.
   - The clean reruns used one fresh prepared control-pack instance per run.
   - This model is materially weaker than `qwen/qwen3.5-9b` on the current LocalAgent contract-complete matrix.
   - The failures are not qualification-driven; they happen after clean qualification in both modes.
+
+---
+
+### 2026-03-09 - `qwen/qwen2.5-coder-14b` - `minimal T matrix`
+- Commit baseline:
+  - `1daaddd` Improve TypeScript LSP diagnostics robustness
+  - `e1cc450` Add OpenAI-compatible streaming trace artifact
+  - `bbac69a` Add qualification trace artifacts
+  - `a27f4cf` Accept textual fallback in qualification probe
+  - `34a2422` Make qualification success sticky within a session
+  - `b17bbb2` Add bounded post-write follow-on turn
+  - `d9567c6` Add non-stream OpenAI-compatible trace artifacts
+  - `48b1184` Add follow-up model investigation log entries
+  - `4c54740` Add local model eval runbook
+  - `172442e` Log qwen3.5-9b-ud minimal matrix results
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - qualification passed in all six runs
+  - T1 stream-on and stream-off both wrote the file, but neither produced the required exact final answer
+  - T2 stream-on and stream-off both failed before any effective write because the model echoed the prompt back instead of emitting `apply_patch`
+  - T3 stream-on reached writes and exited `ok`, but did not produce the required contract-complete verification/final answer
+  - T3 stream-off failed before any effective write after reading the file and then echoing the prompt back
+- First exact divergence:
+  - the first meaningful failure is not stream-vs-non-stream. In both modes, the model often responds to tool results and follow-on developer cues by repeating the user prompt or protocol guidance instead of emitting the next tool call or required final answer.
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - qualification traces:
+    - T1 stream-on: [.tmp/qualification-traces/qwen25-coder-14b-clean-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-14b-clean-t1-on)
+    - T1 stream-off: [.tmp/qualification-traces/qwen25-coder-14b-clean-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-14b-clean-t1-off)
+    - T2 stream-on: [.tmp/qualification-traces/qwen25-coder-14b-clean-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-14b-clean-t2-on)
+    - T2 stream-off: [.tmp/qualification-traces/qwen25-coder-14b-clean-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-14b-clean-t2-off)
+    - T3 stream-on: [.tmp/qualification-traces/qwen25-coder-14b-clean-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-14b-clean-t3-on)
+    - T3 stream-off: [.tmp/qualification-traces/qwen25-coder-14b-clean-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/qwen25-coder-14b-clean-t3-off)
+  - run records:
+    - T1 stream-on: [b2c47326-2f79-4c47-9784-4bdcb44eaeb4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-14b-clean-t1-on/runs/b2c47326-2f79-4c47-9784-4bdcb44eaeb4.json)
+    - T1 stream-off: [aabceca4-a106-41ee-a33e-e79bf55b6fb1.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-14b-clean-t1-off/runs/aabceca4-a106-41ee-a33e-e79bf55b6fb1.json)
+    - T2 stream-on: [f5f7c00d-2135-4c4e-9070-f2fc13f9303d.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-14b-clean-t2-on/runs/f5f7c00d-2135-4c4e-9070-f2fc13f9303d.json)
+    - T2 stream-off: [35599f75-50ba-46b1-9ea7-fb3330554e22.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-14b-clean-t2-off/runs/35599f75-50ba-46b1-9ea7-fb3330554e22.json)
+    - T3 stream-on: [c69528d8-d6e2-4702-befb-68fbb0005195.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-14b-clean-t3-on/runs/c69528d8-d6e2-4702-befb-68fbb0005195.json)
+    - T3 stream-off: [f0bf6e97-24eb-4158-994e-a1f51c7af970.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/qwen25-coder-14b-clean-t3-off/runs/f0bf6e97-24eb-4158-994e-a1f51c7af970.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/qwen25-coder-14b-clean-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-14b-clean-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/qwen25-coder-14b-clean-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-14b-clean-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/qwen25-coder-14b-clean-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-14b-clean-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/qwen25-coder-14b-clean-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-14b-clean-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/qwen25-coder-14b-clean-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-14b-clean-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/qwen25-coder-14b-clean-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/qwen25-coder-14b-clean-t3-off)
+- Notes:
+  - This model is worse than `qwen/qwen3.5-9b` on the current LocalAgent matrix.
+  - The dominant failure mode is prompt/protocol echo and loss of next-step discipline after tool feedback, not qualification or missing tool availability.
+  - The first exact split is not a stream-mode transport issue; both modes show the same broader contract-following weakness.
