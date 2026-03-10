@@ -24,15 +24,42 @@ Record these up front and keep them constant across a paired comparison unless t
 - provider
 - base URL
 - model
+- model variant or quantization label
+- LM Studio preset or equivalent provider-side preset, if any
 - prompt/task
 - tool permissions
 - instruction profile, if any
 - stream mode
+- temperature
+- top_p
+- max_tokens
+- seed
 - `--state-dir`
 - `--workdir`
 - relevant env vars
 
 When comparing `stream on` vs `stream off`, the intended difference should be `--stream` only.
+
+If the provider UI can change settings outside LocalAgent, record those settings explicitly even when they are not passed on the CLI.
+
+## Required Eval Metadata
+
+For every model-eval run, capture this metadata explicitly in results and investigation notes:
+- provider
+- base URL
+- model ID
+- freeform `model_variant` label
+  - examples: `Q6_k`, `Q8_0`, `bf16`, `temp0 preset`
+- stream mode
+- temperature
+- top_p
+- max_tokens
+- seed
+- LM Studio preset or equivalent provider-side preset, if any
+
+Prefer runtime truth when available:
+- the run record already stores provider/base URL/model and LocalAgent sampling fields in its `cli` section
+- use `model_variant` and preset fields for details LocalAgent cannot infer, such as quantization or a provider-side preset under the same model ID
 
 ## Standard Artifact Surfaces
 
@@ -132,6 +159,15 @@ localagent --provider lmstudio --model "your-model" --allow-shell --allow-write 
 For every run, record:
 - scenario ID
 - stream on/off
+- provider
+- base URL
+- model ID
+- model variant / quantization
+- LM Studio preset, if any
+- temperature
+- top_p
+- max_tokens
+- seed
 - fresh state dir path
 - trace dir paths
 - exact command used
@@ -225,13 +261,33 @@ Use [manual-testing/model-investigation-log.md](/C:/Users/Calvin/Software%20Proj
 
 Each investigation entry should include:
 - commit baseline
-- provider and mode
+- provider, base URL, model variant, and mode
+- eval settings
 - prompt/task
 - outcome
 - first exact divergence
 - classification
 - decision
 - exact artifact paths
+
+Do not leave quantization, preset, or sampling assumptions implicit when they can affect the result.
+
+Suggested results fields for any checked-in or external results sheet:
+- `provider`
+- `base_url`
+- `model`
+- `model_variant`
+- `provider_preset`
+- `stream`
+- `temperature`
+- `top_p`
+- `max_tokens`
+- `seed`
+- `run_id`
+- `artifact_path`
+- `task_result`
+- `exit_reason`
+- `failure_class`
 
 ## Recommended Decision Labels
 

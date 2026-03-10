@@ -9,7 +9,15 @@ Keep entries append-only and lightweight.
 ### YYYY-MM-DD - `<model>` - `<scenario>`
 - Commit baseline:
 - Provider:
+- Base URL:
+- Model variant:
+- Provider-side preset:
 - Mode:
+- Eval settings:
+  - temperature:
+  - top_p:
+  - max_tokens:
+  - seed:
 - Prompt/task:
 - Outcome:
 - First exact divergence:
@@ -28,6 +36,8 @@ Keep entries append-only and lightweight.
   - qualification trace:
   - external/control transcript:
 - Notes:
+
+When a provider can serve different quantizations or presets behind the same model ID, always record that in `Model variant` or `Provider-side preset` instead of assuming the model name is enough.
 
 ---
 

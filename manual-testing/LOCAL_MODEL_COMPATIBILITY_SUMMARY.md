@@ -5,6 +5,8 @@ This summary condenses the current findings from [manual-testing/model-investiga
 Use it as the short reference for:
 - which local model is the current baseline
 - which models are worth using as secondary comparisons
+- which mode is the best fit for each model
+- which limitations are accepted and should not be mistaken for shared runtime bugs
 - which failure classes are mostly runtime history versus accepted model limitations
 
 ## Current Baseline
@@ -26,7 +28,8 @@ Why:
 `qwen2.5-coder-7b-instruct@q8_0`
 - strongest current result on the narrow `T1`/`T2`/`T3` matrix
 - best current choice for local regression checks
-- prefer non-stream mode for contract-complete multi-step tasks
+- best mode: non-stream for contract-complete multi-step tasks
+- accepted limitation: streamed `T3` ordering failure
 
 ### Strong Secondary Comparisons
 
@@ -35,11 +38,15 @@ Why:
 - strong streamed behavior after the qualification fixes
 - accepted non-stream Tool B limitation is pure model-choice after equivalent recovery
 - keep this separated from the newer weaker `Q8_0` reruns under the same model ID
+- best mode: stream for `T1`/`T2`
+- accepted limitation: `T3` repeat-`str_replace` convergence failure
 
 `crow-9b-opus-4.6-distill-heretic_qwen3.5`
 - passes `T1` and `T2` in both modes
 - fails `T3` in both modes, but with coherent tool use rather than broad protocol collapse
 - useful secondary contrast for stronger local coding behavior
+- best mode: either mode for `T1`/`T2`
+- accepted limitation: `T3` edit convergence / tool-protocol instability
 
 ### Mid-Tier Fits
 
@@ -47,49 +54,69 @@ Why:
 - coherent enough to reach real tool work
 - blocked by exact-output discipline on `T1` and failed edit convergence on `T2`/`T3`
 - better than the worst protocol-breaking models, but not baseline-ready
+- best mode: no strong mode recommendation yet
+- accepted limitation: exact-output and edit convergence drift
 
 `deepseek-coder-v2-lite-instruct`
 - clean `T1` in both modes
 - drops sharply on `T2` and `T3`
 - not strong enough on contract-complete work to replace the current secondary comparisons
+- best mode: either mode for `T1` only
+- accepted limitation: ineffective write / no-tool collapse beyond `T1`
 
 `qwen3.5-9b-ud`
 - qualification clean
 - contract-complete behavior unstable across both modes
 - weaker than `qwen/qwen3.5-9b`
+- best mode: non-stream looked slightly better on early `T1`
+- accepted limitation: broad contract-complete instability
 
 `qwen/qwen3.5-9b` (current `Q8_0` load)
 - materially weaker than the earlier stronger run under the same model ID
 - reruns showed broader exact-output drift, bad argument/closeout discipline, and repeated tool misuse
 - do not treat it as equivalent to the older stronger `qwen/qwen3.5-9b` result
+- best mode: no reliable recommendation
+- accepted limitation: unstable across reruns even under the same model ID
 
 ### Weak Fits On The Current Matrix
 
 `qwen/qwen2.5-coder-14b`
 - often echoes prompt/protocol content instead of taking the next correct action
 - not recommended as a baseline
+- best mode: none
+- accepted limitation: prompt/protocol echo replaces next-step execution
 
 `phi-4`
 - reaches the needed tool/edit step
 - repeatedly fails exact-output discipline after successful tool use
 - useful only for exact-output stress checks, not as a baseline
+- best mode: none
+- accepted limitation: exact-output non-compliance after successful tool work
 
 `qwen2.5-coder-7b-instruct@q5_k_m`
 - handles `T1` in both modes
 - falls off sharply on `T2` and `T3`
+- best mode: either mode for `T1` only
+- accepted limitation: ineffective write / no-tool completion on harder tasks
 
 `nanbeige4.1-3b@bf16`
 - dominant issue is read-before-write/apply discipline
 - also showed one streamed provider/body decode timeout on `T1`
+- best mode: none
+- accepted limitation: read-before-write/apply discipline failure
 
 `deepseek-r1-0528-qwen3-8b-ud`
 - broad tool-protocol instability
 - one outright provider crash
 - not recommended for LocalAgent eval baselines
+- best mode: none
+- accepted limitation: tool-protocol instability and provider crash
 
 `starcoder2-7b`
 - repeated qualification fallback and provider instability under the current LM Studio setup
 - often fails before useful task execution is established
+- best mode: none
+- accepted limitation: qualification/provider instability before useful work
 
 ## What Is Already Fixed
 
@@ -161,6 +188,7 @@ For local-model regression testing now:
 - use `qwen2.5-coder-7b-instruct@q8_0` as the baseline
 - prefer non-stream mode for contract-complete multi-step tasks
 - use `qwen/qwen3.5-9b` (effective `Q6_k` result) or `crow-9b-opus-4.6-distill-heretic_qwen3.5` as secondary comparison models
+- record quantization, provider-side preset, and sampling settings explicitly for every leaderboard-affecting run
 - use the run procedure in [manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md)
 - log new findings in [manual-testing/model-investigation-log.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/model-investigation-log.md)
 
