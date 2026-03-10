@@ -418,3 +418,95 @@ Keep entries append-only and lightweight.
 - Notes:
   - This model is capable of reaching the needed tool step, but it does not reliably conform to LocalAgent's exact-output contract on the current matrix.
   - The dominant failure mode is verbose instructional/procedural prose after tool use, not missing tools or failed qualification.
+
+---
+
+### 2026-03-10 - `exact-output compliance retry` - `runtime experiment dropped`
+- Commit baseline:
+  - `72e5cdf` Add local model compatibility docs
+- Scope:
+  - uncommitted runtime experiment adding one bounded exact-final-answer retry after successful tool work
+- Intended change:
+  - after required tool work succeeds, allow one extra assistant turn with a strict developer cue:
+    - final answer only
+    - exact required format
+    - no tool calls
+  - keep explicit verification/test follow-on allowed before the retry-only phase
+- Validation slice:
+  - targeted slice from [LOCAL_MODEL_EXACT_OUTPUT_IMPROVEMENT_MEMO.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/docs/operations/LOCAL_MODEL_EXACT_OUTPUT_IMPROVEMENT_MEMO.md)
+  - models:
+    - `phi-4`
+    - `qwen/qwen2.5-coder-14b`
+    - `qwen2.5-coder-7b-instruct@q8_0`
+  - tasks:
+    - `T1`, `T2`, `T3`
+  - confirmation rerun:
+    - `T1` only, both stream modes, same three models
+- Outcome:
+  - the runtime seam was corrected and the retry fired at the intended boundary
+  - the end-to-end benefit was too weak to justify landing the change
+  - in the `T1` confirmation slice, only one run produced the required exact final answer:
+    - `qwen2.5-coder-7b-instruct@q8_0` non-stream
+  - the other retry-eligible runs still ended with empty or non-compliant final output
+- First exact divergence:
+  - not provider transport, qualification, or post-write follow-on gating
+  - after the retry cue is injected, most models still fail to emit a compliant final answer; the runtime is prompting correctly, but the model response does not converge
+- Classification:
+  - follow-up needed
+- Decision:
+  - dropped
+- Evidence:
+  - targeted validation summary:
+    - [exact-output-validation-summary-v4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/exact-output-validation-summary-v4.json)
+  - `T1` confirmation summary:
+    - [t1-confirmation-summary.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/t1-confirmation-summary.json)
+  - representative retry-fired runs:
+    - [a912cf20-4b96-4b86-b863-6908de810af2.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1confirm-phi4-on/runs/a912cf20-4b96-4b86-b863-6908de810af2.json)
+    - [e4551fbb-1218-48dc-b27f-3fe1f068c0d8.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1confirm-phi4-off/runs/e4551fbb-1218-48dc-b27f-3fe1f068c0d8.json)
+    - [5110754d-aa4e-4113-a629-8ae908273bdb.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1confirm-qwenqwen25coder14b-on/runs/5110754d-aa4e-4113-a629-8ae908273bdb.json)
+    - [96971025-131c-41b0-87bf-733581123ff8.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1confirm-qwenqwen25coder14b-off/runs/96971025-131c-41b0-87bf-733581123ff8.json)
+    - [5cfc0c0e-2a22-44ea-a6e4-9753bf116cb4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1confirm-qwen25coder7binstructq80-on/runs/5cfc0c0e-2a22-44ea-a6e4-9753bf116cb4.json)
+  - single exact-output success under the experiment:
+    - [f2a849fc-9522-448b-a5db-3e2cccec7cfd.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1confirm-qwen25coder7binstructq80-off/runs/f2a849fc-9522-448b-a5db-3e2cccec7cfd.json)
+- Notes:
+  - The experiment was not dropped because of a seam bug. It was dropped because the measured model-level gain was too small and too inconsistent.
+  - The result narrows the remaining problem: exact-output compliance is still primarily model-behavioral on the current local-model set.
+
+---
+
+### 2026-03-10 - `exact-output compliance classification` - `narrow runtime improvement`
+- Commit baseline:
+  - `72e5cdf` Add local model compatibility docs
+- Scope:
+  - narrow runtime classification change after the dropped exact-output retry experiment
+- Intended change:
+  - keep one bounded exact-final-answer retry in the normal finalize path
+  - if the model still returns empty or non-compliant output after that retry, classify the run explicitly instead of finalizing `ok`
+  - do not broaden continuation semantics or add more follow-on turns
+- Outcome:
+  - focused tests passed
+  - the runtime now surfaces post-retry exact-output misses as explicit `planner_error`
+  - confirmed in live `T1` reruns for the current local-model set
+- First exact divergence:
+  - after the retry cue is injected, some models still do not emit the required exact final answer
+  - the new runtime behavior changes only the classification of that failure boundary:
+    - from silent/non-specific completion
+    - to explicit exact-output non-compliance
+- Classification:
+  - fixed
+- Decision:
+  - fixed
+- Evidence:
+  - focused tests:
+    - `cargo test --bin localagent runtime_exact_final_answer -- --nocapture`
+    - `cargo test --bin localagent runtime_post_write -- --nocapture`
+  - `T1` classification summary:
+    - [t1-classification-summary.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/t1-classification-summary.json)
+  - confirmed explicit failure classification:
+    - [489a3977-6c75-4755-b87c-d204dc39f717.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1classify-qwen25coder7binstructq80-on/runs/489a3977-6c75-4755-b87c-d204dc39f717.json)
+  - confirmed exact-output successes still finalize cleanly:
+    - [1179d892-b11d-44d9-8eab-aefb9f4778ef.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1classify-qwen25coder7binstructq80-off/runs/1179d892-b11d-44d9-8eab-aefb9f4778ef.json)
+    - [5a737ed2-b2a3-48a5-b261-7ac7aa612b18.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t1classify-qwenqwen25coder14b-off/runs/5a737ed2-b2a3-48a5-b261-7ac7aa612b18.json)
+- Notes:
+  - This does not make weak exact-output models comply.
+  - It does make the failure boundary explicit and reviewable, which is the right next step for eval integrity.
