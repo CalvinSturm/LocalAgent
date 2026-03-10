@@ -357,3 +357,64 @@ Keep entries append-only and lightweight.
   - This is the strongest local model tested so far on the current narrow matrix.
   - The remaining issue is mode-specific: streamed T3 violates task order by testing before editing.
   - Non-stream mode completed the full current matrix contract-cleanly.
+
+---
+
+### 2026-03-09 - `phi-4` - `minimal T matrix`
+- Commit baseline:
+  - `1daaddd` Improve TypeScript LSP diagnostics robustness
+  - `e1cc450` Add OpenAI-compatible streaming trace artifact
+  - `bbac69a` Add qualification trace artifacts
+  - `a27f4cf` Accept textual fallback in qualification probe
+  - `34a2422` Make qualification success sticky within a session
+  - `b17bbb2` Add bounded post-write follow-on turn
+  - `d9567c6` Add non-stream OpenAI-compatible trace artifacts
+  - `48b1184` Add follow-up model investigation log entries
+  - `4c54740` Add local model eval runbook
+  - `172442e` Log qwen3.5-9b-ud minimal matrix results
+  - `be50766` Log qwen2.5-coder-14b minimal matrix results
+  - `5c9850a` Log qwen2.5-coder-7b q8 matrix results
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - qualification passed in all six runs
+  - all six runs reached the expected write/edit step successfully
+  - none of the runs produced the required exact final answer
+  - the model consistently emitted step-by-step prose, patch explanations, or tool-oriented planning text instead of the required contract-clean final response
+- First exact divergence:
+  - the first meaningful failure is not stream-vs-non-stream and not qualification. After the first successful tool call, `phi-4` keeps responding with explanatory prose and pseudo-protocol content rather than switching into the required exact final-answer format.
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - qualification traces:
+    - T1 stream-on: [.tmp/qualification-traces/phi4-clean-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/phi4-clean-t1-on)
+    - T1 stream-off: [.tmp/qualification-traces/phi4-clean-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/phi4-clean-t1-off)
+    - T2 stream-on: [.tmp/qualification-traces/phi4-clean-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/phi4-clean-t2-on)
+    - T2 stream-off: [.tmp/qualification-traces/phi4-clean-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/phi4-clean-t2-off)
+    - T3 stream-on: [.tmp/qualification-traces/phi4-clean-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/phi4-clean-t3-on)
+    - T3 stream-off: [.tmp/qualification-traces/phi4-clean-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/qualification-traces/phi4-clean-t3-off)
+  - run records:
+    - T1 stream-on: [928ec8f1-f390-4005-9a5f-e074e158ed9a.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/phi4-clean-t1-on/runs/928ec8f1-f390-4005-9a5f-e074e158ed9a.json)
+    - T1 stream-off: [c58f8adb-510b-478c-936a-4e2cc9b343ef.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/phi4-clean-t1-off/runs/c58f8adb-510b-478c-936a-4e2cc9b343ef.json)
+    - T2 stream-on: [cb5bb3a1-39f0-4dff-b50c-477c634bc175.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/phi4-clean-t2-on/runs/cb5bb3a1-39f0-4dff-b50c-477c634bc175.json)
+    - T2 stream-off: [9709d06e-40f4-4b14-88ba-9d31b61da686.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/phi4-clean-t2-off/runs/9709d06e-40f4-4b14-88ba-9d31b61da686.json)
+    - T3 stream-on: [071c7271-a8ef-489c-ab10-d771775fcd7d.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/phi4-clean-t3-on/runs/071c7271-a8ef-489c-ab10-d771775fcd7d.json)
+    - T3 stream-off: [83b4247b-00ef-4c6a-8a4b-a7cb1aea0511.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/phi4-clean-t3-off/runs/83b4247b-00ef-4c6a-8a4b-a7cb1aea0511.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/phi4-clean-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/phi4-clean-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/phi4-clean-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/phi4-clean-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/phi4-clean-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/phi4-clean-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/phi4-clean-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/phi4-clean-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/phi4-clean-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/phi4-clean-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/phi4-clean-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/phi4-clean-t3-off)
+- Notes:
+  - This model is capable of reaching the needed tool step, but it does not reliably conform to LocalAgent's exact-output contract on the current matrix.
+  - The dominant failure mode is verbose instructional/procedural prose after tool use, not missing tools or failed qualification.
