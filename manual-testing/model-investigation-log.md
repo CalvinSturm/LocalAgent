@@ -756,3 +756,103 @@ Keep entries append-only and lightweight.
 - Notes:
   - This model is weaker than the current local baseline but still materially more coherent than the worst protocol-breaking models.
   - The dominant issues are exact-output compliance on T1 and failed edit convergence on T2/T3.
+
+---
+
+### 2026-03-10 - `deepseek-coder-v2-lite-instruct` - `minimal T matrix`
+- Commit baseline:
+  - `a4f0e26` Log nanbeige and glm model matrix results
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - T1 stream-on/off both passed cleanly
+  - T2 stream-on failed with `planner_error`
+  - T2 stream-off failed with `provider_error`
+  - T3 stream-on/off both failed with `planner_error`
+- First exact divergence:
+  - the first meaningful failure is not qualification-related
+  - after a good `T1`, the model drops sharply on longer tasks:
+    - streamed `T2` reaches `read_file` + `apply_patch` but never produces an effective write
+    - non-stream `T2` crashes at the provider endpoint
+    - both `T3` modes finalize without any tool calls
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [deepseek-coder-v2-lite-instruct-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/deepseek-coder-v2-lite-instruct-minimal-matrix.json)
+  - run records:
+    - T1 stream-on: [8b37c0ff-5e89-428d-984c-7d64b6429261.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekcoderv2liteinstruct-t1-on/runs/8b37c0ff-5e89-428d-984c-7d64b6429261.json)
+    - T1 stream-off: [f9d639e1-971a-4dd9-8413-985723b48782.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekcoderv2liteinstruct-t1-off/runs/f9d639e1-971a-4dd9-8413-985723b48782.json)
+    - T2 stream-on: [76df5376-eb0b-4f9f-9118-64f65ae5c906.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekcoderv2liteinstruct-t2-on/runs/76df5376-eb0b-4f9f-9118-64f65ae5c906.json)
+    - T2 stream-off: [02d8efd3-3c4d-49e7-a568-e7c2a14ae610.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekcoderv2liteinstruct-t2-off/runs/02d8efd3-3c4d-49e7-a568-e7c2a14ae610.json)
+    - T3 stream-on: [e5bc5de1-4e32-48cb-afbc-ea7c616d59cb.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekcoderv2liteinstruct-t3-on/runs/e5bc5de1-4e32-48cb-afbc-ea7c616d59cb.json)
+    - T3 stream-off: [3b701f1c-31d0-4baa-b6f6-5bd4f17d66d7.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-deepseekcoderv2liteinstruct-t3-off/runs/3b701f1c-31d0-4baa-b6f6-5bd4f17d66d7.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-deepseekcoderv2liteinstruct-t3-off)
+- Notes:
+  - This model is better than many weak small-model variants, but it is not competitive with the current baseline on contract-complete tasks.
+  - The abrupt drop from clean `T1` to poor `T2`/`T3` performance makes it a weak secondary comparison candidate.
+
+---
+
+### 2026-03-10 - `starcoder2-7b` - `minimal T matrix`
+- Commit baseline:
+  - `a4f0e26` Log nanbeige and glm model matrix results
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - stream and non-stream, clean paired runs with fresh prepared control-pack instances and fresh state dirs per run
+- Prompt/task:
+  - T1 create-file task
+  - T2 single-edit contract-complete task
+  - T3 multi-step parser-fix task
+- Outcome:
+  - no run in the minimal matrix completed contract-cleanly
+  - T1 stream-on failed with `provider_error`
+  - T1 stream-off degraded into read-only fallback and then write denial
+  - T2 stream-on failed with `planner_error`
+  - T2 stream-off failed with `provider_error`
+  - T3 stream-on failed with `provider_error`
+  - T3 stream-off failed with `planner_error`
+- First exact divergence:
+  - the first meaningful failures are qualification and provider stability related before normal task execution is even reliable
+  - repeated qualification failures strip write tools in non-stream mode
+  - streamed runs repeatedly hit response-body decode timeouts
+  - even when the model responds, it often emits irrelevant code or no usable tool path
+- Classification:
+  - accepted limitation
+- Decision:
+  - follow-up needed
+- Evidence:
+  - matrix summary:
+    - [starcoder2-7b-minimal-matrix.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/starcoder2-7b-minimal-matrix.json)
+  - run records:
+    - T1 stream-on: [3f6b28ff-0abc-4032-9d5f-ebac70d02956.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-starcoder27b-t1-on/runs/3f6b28ff-0abc-4032-9d5f-ebac70d02956.json)
+    - T1 stream-off: [26457761-1b37-4070-9f3c-3e181ed245fe.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-starcoder27b-t1-off/runs/26457761-1b37-4070-9f3c-3e181ed245fe.json)
+    - T2 stream-on: [28fe3163-b6a4-4415-bda8-7d4ec64922a6.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-starcoder27b-t2-on/runs/28fe3163-b6a4-4415-bda8-7d4ec64922a6.json)
+    - T2 stream-off: [394b8ea9-98b0-41e1-ad11-7d405717b7d7.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-starcoder27b-t2-off/runs/394b8ea9-98b0-41e1-ad11-7d405717b7d7.json)
+    - T3 stream-on: [da7e5f8f-08b8-4dd8-a68a-826a532f21a4.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-starcoder27b-t3-on/runs/da7e5f8f-08b8-4dd8-a68a-826a532f21a4.json)
+    - T3 stream-off: [ac83c4d6-2ebd-4d14-a518-b4384c238884.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-starcoder27b-t3-off/runs/ac83c4d6-2ebd-4d14-a518-b4384c238884.json)
+  - provider traces:
+    - T1 stream-on: [.tmp/openai-traces/eval-starcoder27b-t1-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-starcoder27b-t1-on)
+    - T1 stream-off: [.tmp/openai-traces/eval-starcoder27b-t1-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-starcoder27b-t1-off)
+    - T2 stream-on: [.tmp/openai-traces/eval-starcoder27b-t2-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-starcoder27b-t2-on)
+    - T2 stream-off: [.tmp/openai-traces/eval-starcoder27b-t2-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-starcoder27b-t2-off)
+    - T3 stream-on: [.tmp/openai-traces/eval-starcoder27b-t3-on](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-starcoder27b-t3-on)
+    - T3 stream-off: [.tmp/openai-traces/eval-starcoder27b-t3-off](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-starcoder27b-t3-off)
+- Notes:
+  - This model is not a promising LocalAgent baseline candidate under the current LM Studio setup.
+  - The combination of qualification fallback, provider instability, and irrelevant output makes it a poor follow-up target.

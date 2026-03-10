@@ -3,9 +3,9 @@
 This summary condenses the current findings from [manual-testing/model-investigation-log.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/model-investigation-log.md).
 
 Use it as the short reference for:
-- which local model to use as the current baseline
-- which modes are currently more reliable
-- which failure classes are LocalAgent issues versus accepted model limitations
+- which local model is the current baseline
+- which models are worth using as secondary comparisons
+- which failure classes are mostly runtime history versus accepted model limitations
 
 ## Current Baseline
 
@@ -17,7 +17,7 @@ Why:
 - `T1` passes in both stream modes
 - `T2` passes in both stream modes
 - `T3` passes in non-stream mode
-- the only observed limitation on the current narrow matrix is a streamed `T3` ordering failure, where the model tests before editing
+- the main remaining limitation on the narrow matrix is a streamed `T3` ordering failure
 
 ## Current Ranking
 
@@ -26,33 +26,64 @@ Why:
 `qwen2.5-coder-7b-instruct@q8_0`
 - strongest current result on the narrow `T1`/`T2`/`T3` matrix
 - best current choice for local regression checks
-- prefer non-stream mode for contract-complete multi-step tasks until streamed `T3` ordering is better understood
+- prefer non-stream mode for contract-complete multi-step tasks
 
-### Secondary Option
+### Strong Secondary Comparisons
 
 `qwen/qwen3.5-9b`
-- viable for narrow LocalAgent tool-execution testing
-- good streamed results on the current matrix
-- known non-stream limitation on Tool B parser-fix:
-  repeated `str_replace` after equivalent recovery, ending in repeat guard
-- acceptable secondary comparison model, but not the current baseline
+- good narrow tool-use viability
+- strong streamed behavior after the qualification fixes
+- accepted non-stream Tool B limitation is pure model-choice after equivalent recovery
 
-### Weaker Current Fits
+`crow-9b-opus-4.6-distill-heretic_qwen3.5`
+- passes `T1` and `T2` in both modes
+- fails `T3` in both modes, but with coherent tool use rather than broad protocol collapse
+- useful secondary contrast for stronger local coding behavior
+
+### Mid-Tier Fits
+
+`zai-org/glm-4.6v-flash`
+- coherent enough to reach real tool work
+- blocked by exact-output discipline on `T1` and failed edit convergence on `T2`/`T3`
+- better than the worst protocol-breaking models, but not baseline-ready
+
+`deepseek-coder-v2-lite-instruct`
+- clean `T1` in both modes
+- drops sharply on `T2` and `T3`
+- not strong enough on contract-complete work to replace the current secondary comparisons
 
 `qwen3.5-9b-ud`
 - qualification clean
 - contract-complete behavior unstable across both modes
-- weaker than `qwen/qwen3.5-9b` on the current matrix
+- weaker than `qwen/qwen3.5-9b`
+
+### Weak Fits On The Current Matrix
 
 `qwen/qwen2.5-coder-14b`
-- qualification clean
 - often echoes prompt/protocol content instead of taking the next correct action
 - not recommended as a baseline
 
 `phi-4`
 - reaches the needed tool/edit step
 - repeatedly fails exact-output discipline after successful tool use
-- not recommended as a baseline for contract-complete evals
+- useful only for exact-output stress checks, not as a baseline
+
+`qwen2.5-coder-7b-instruct@q5_k_m`
+- handles `T1` in both modes
+- falls off sharply on `T2` and `T3`
+
+`nanbeige4.1-3b@bf16`
+- dominant issue is read-before-write/apply discipline
+- also showed one streamed provider/body decode timeout on `T1`
+
+`deepseek-r1-0528-qwen3-8b-ud`
+- broad tool-protocol instability
+- one outright provider crash
+- not recommended for LocalAgent eval baselines
+
+`starcoder2-7b`
+- repeated qualification fallback and provider instability under the current LM Studio setup
+- often fails before useful task execution is established
 
 ## What Is Already Fixed
 
@@ -60,7 +91,8 @@ These are no longer the main blockers for local-model evaluation:
 - qualification false negatives
 - stream-vs-non-stream qualification mismatch
 - missing non-stream provider traces
-- eager post-write finalization for prompts that explicitly required follow-on work
+- eager post-write finalization when the prompt explicitly required follow-on work
+- silent `ok` misclassification when pre-tool planning prose masked a missing post-tool closeout
 
 See the corresponding entries in [manual-testing/model-investigation-log.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/model-investigation-log.md) for evidence and commit baselines.
 
@@ -77,36 +109,51 @@ Several models can reach read/write/edit steps successfully.
 
 ### Exact-output discipline
 
-This is now the clearest repeated weakness across weaker models.
+This is still one of the clearest repeated weaknesses across weaker models.
 
 Observed pattern:
 - model reaches the right tool step
 - tool succeeds
-- model responds with explanatory prose, patch text, or protocol-like formatting
+- model emits explanatory prose, patch narration, or protocol-like formatting
 - required exact final answer is not produced
 
-This appears in:
+This appears most clearly in:
 - `phi-4`
+- `zai-org/glm-4.6v-flash`
 - parts of `qwen/qwen2.5-coder-14b`
 - parts of `qwen3.5-9b-ud`
 
-### Multi-step task ordering
+### Multi-step task ordering and edit convergence
 
 Still mode-sensitive for some models.
 
 Observed pattern:
 - model runs validation/tests before completing the required edit
-- or fails to recover after an edit failure
+- or fails to recover after repeated `str_replace` failures
+- or reaches the edit seam but never produces an effective write
 
 This appears in:
 - streamed `T3` for `qwen2.5-coder-7b-instruct@q8_0`
-- non-stream Tool B limitation for `qwen/qwen3.5-9b`
+- non-stream Tool B for `qwen/qwen3.5-9b`
+- both modes of `crow-9b-opus-4.6-distill-heretic_qwen3.5` on `T3`
+- `zai-org/glm-4.6v-flash` on `T2`/`T3`
+
+### Tool-discipline failures
+
+Observed pattern:
+- `write_file` or `apply_patch` issued before the required `read_file`
+- or malformed tool protocol before any useful work
+
+This appears in:
+- `nanbeige4.1-3b@bf16`
+- `deepseek-r1-0528-qwen3-8b-ud`
 
 ## Current Recommendations
 
 For local-model regression testing now:
 - use `qwen2.5-coder-7b-instruct@q8_0` as the baseline
 - prefer non-stream mode for contract-complete multi-step tasks
+- use `qwen/qwen3.5-9b` or `crow-9b-opus-4.6-distill-heretic_qwen3.5` as secondary comparison models
 - use the run procedure in [manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md)
 - log new findings in [manual-testing/model-investigation-log.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/model-investigation-log.md)
 
@@ -117,11 +164,15 @@ For interpreting failures:
   - tool-execution viability
   - contract-complete viability
   - exact-output discipline
+  - tool-discipline / tool-protocol failures
 
-## Next Improvement Target
+## Recommended Next Candidates
 
-The highest-signal next LocalAgent improvement target is:
-- exact-output and final-answer compliance after successful tool work
+Most promising next eval targets from the currently loaded local models:
+- `orchestrator-8b-claude-4.5-opus-distill`
+- `qwen3-4b-instruct-2507-ud`
 
-That proposal is documented in:
-- [LOCAL_MODEL_EXACT_OUTPUT_IMPROVEMENT_MEMO.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/docs/operations/LOCAL_MODEL_EXACT_OUTPUT_IMPROVEMENT_MEMO.md)
+Why these next:
+- they are the next best contrast after the two coding-oriented candidates already tested today
+- one is an orchestrator-style distill and the other is a newer qwen-family instruct model
+- both are more likely to add ranking signal than continuing with obviously weak small-model variants
