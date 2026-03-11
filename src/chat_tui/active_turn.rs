@@ -498,6 +498,11 @@ pub(crate) async fn drive_tui_active_turn_loop(
                             *slash_menu_index = 0;
                         }
                         KeyCode::Enter => {
+                            if !chat_runtime::is_tui_main_input_submit_key(key) {
+                                insert_text_bounded(input_buf, input_cursor, "\n", usize::MAX);
+                                *slash_menu_index = 0;
+                                continue;
+                            }
                             let line = input_buf.trim().to_string();
                             if let Some(rest) = line.strip_prefix("/interrupt ") {
                                 let msg = rest.trim();

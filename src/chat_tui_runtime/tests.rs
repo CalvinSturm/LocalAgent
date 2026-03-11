@@ -1456,3 +1456,153 @@ fn refresh_approvals_failure_logs_once_and_preserves_rows() {
     assert_eq!(ui_state.pending_approvals.len(), 1);
     assert_eq!(ui_state.pending_approvals[0].id, "existing");
 }
+
+#[test]
+fn plain_enter_in_main_input_inserts_newline() {
+    let tmp = tempdir().expect("tempdir");
+    let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
+    let mut overlay = None;
+    let mut input_buf = "hello".to_string();
+    let mut input_cursor = input_buf.chars().count();
+    let mut prompt_history = Vec::new();
+    let mut history_idx = None;
+    let mut slash_menu_index = 0usize;
+    let mut palette_open = false;
+    let palette_items = ["a"];
+    let mut palette_selected = 0usize;
+    let mut search_mode = false;
+    let mut search_query = String::new();
+    let mut search_line_cursor = 0usize;
+    let mut search_input_cursor = 0usize;
+    let mut learn_overlay_cursor = 0usize;
+    let mut transcript: Vec<(String, String)> = vec![];
+    let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
+        std::collections::BTreeMap::new();
+    let mut show_thinking_panel = false;
+    let mut streaming = String::new();
+    let mut transcript_scroll = 0usize;
+    let mut follow_output = true;
+    let mut ui_state = crate::tui::state::UiState::new(100);
+    let mut show_tools = false;
+    let mut show_approvals = false;
+    let mut show_logs = false;
+    let mut compact_tools = true;
+    let mut tools_selected = 0usize;
+    let mut tools_focus = true;
+    let mut approvals_selected = 0usize;
+    let mut logs = Vec::new();
+
+    let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
+        key: KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        learn_overlay: &mut overlay,
+        run_busy: false,
+        input: &mut input_buf,
+        input_cursor: &mut input_cursor,
+        prompt_history: &mut prompt_history,
+        history_idx: &mut history_idx,
+        slash_menu_index: &mut slash_menu_index,
+        palette_open: &mut palette_open,
+        palette_items: &palette_items,
+        palette_selected: &mut palette_selected,
+        search_mode: &mut search_mode,
+        search_query: &mut search_query,
+        search_line_cursor: &mut search_line_cursor,
+        search_input_cursor: &mut search_input_cursor,
+        transcript: &mut transcript,
+        transcript_thinking: &mut transcript_thinking,
+        show_thinking_panel: &mut show_thinking_panel,
+        streaming_assistant: &mut streaming,
+        transcript_scroll: &mut transcript_scroll,
+        follow_output: &mut follow_output,
+        ui_state: &mut ui_state,
+        visible_tool_count: 0,
+        show_tools: &mut show_tools,
+        show_approvals: &mut show_approvals,
+        show_logs: &mut show_logs,
+        compact_tools: &mut compact_tools,
+        tools_selected: &mut tools_selected,
+        tools_focus: &mut tools_focus,
+        approvals_selected: &mut approvals_selected,
+        paths: &paths,
+        logs: &mut logs,
+        learn_overlay_cursor: &mut learn_overlay_cursor,
+    });
+
+    assert!(matches!(out, TuiOuterKeyDispatchOutcome::Handled));
+    assert_eq!(input_buf, "hello\n");
+}
+
+#[test]
+fn ctrl_enter_in_main_input_submits() {
+    let tmp = tempdir().expect("tempdir");
+    let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
+    let mut overlay = None;
+    let mut input_buf = "hello".to_string();
+    let mut input_cursor = input_buf.chars().count();
+    let mut prompt_history = Vec::new();
+    let mut history_idx = None;
+    let mut slash_menu_index = 0usize;
+    let mut palette_open = false;
+    let palette_items = ["a"];
+    let mut palette_selected = 0usize;
+    let mut search_mode = false;
+    let mut search_query = String::new();
+    let mut search_line_cursor = 0usize;
+    let mut search_input_cursor = 0usize;
+    let mut learn_overlay_cursor = 0usize;
+    let mut transcript: Vec<(String, String)> = vec![];
+    let mut transcript_thinking: std::collections::BTreeMap<usize, String> =
+        std::collections::BTreeMap::new();
+    let mut show_thinking_panel = false;
+    let mut streaming = String::new();
+    let mut transcript_scroll = 0usize;
+    let mut follow_output = true;
+    let mut ui_state = crate::tui::state::UiState::new(100);
+    let mut show_tools = false;
+    let mut show_approvals = false;
+    let mut show_logs = false;
+    let mut compact_tools = true;
+    let mut tools_selected = 0usize;
+    let mut tools_focus = true;
+    let mut approvals_selected = 0usize;
+    let mut logs = Vec::new();
+
+    let out = handle_tui_outer_key_dispatch(TuiOuterKeyDispatchInput {
+        key: KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        learn_overlay: &mut overlay,
+        run_busy: false,
+        input: &mut input_buf,
+        input_cursor: &mut input_cursor,
+        prompt_history: &mut prompt_history,
+        history_idx: &mut history_idx,
+        slash_menu_index: &mut slash_menu_index,
+        palette_open: &mut palette_open,
+        palette_items: &palette_items,
+        palette_selected: &mut palette_selected,
+        search_mode: &mut search_mode,
+        search_query: &mut search_query,
+        search_line_cursor: &mut search_line_cursor,
+        search_input_cursor: &mut search_input_cursor,
+        transcript: &mut transcript,
+        transcript_thinking: &mut transcript_thinking,
+        show_thinking_panel: &mut show_thinking_panel,
+        streaming_assistant: &mut streaming,
+        transcript_scroll: &mut transcript_scroll,
+        follow_output: &mut follow_output,
+        ui_state: &mut ui_state,
+        visible_tool_count: 0,
+        show_tools: &mut show_tools,
+        show_approvals: &mut show_approvals,
+        show_logs: &mut show_logs,
+        compact_tools: &mut compact_tools,
+        tools_selected: &mut tools_selected,
+        tools_focus: &mut tools_focus,
+        approvals_selected: &mut approvals_selected,
+        paths: &paths,
+        logs: &mut logs,
+        learn_overlay_cursor: &mut learn_overlay_cursor,
+    });
+
+    assert!(matches!(out, TuiOuterKeyDispatchOutcome::EnterInline));
+    assert_eq!(input_buf, "hello");
+}

@@ -1,4 +1,4 @@
-use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use crate::AgentMode;
 use crate::RunArgs;
@@ -9,6 +9,10 @@ pub(crate) fn is_text_input_mods(mods: KeyModifiers) -> bool {
 
 pub(crate) fn normalize_pasted_text(s: &str) -> String {
     s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+pub(crate) fn is_tui_main_input_submit_key(key: KeyEvent) -> bool {
+    key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 pub(crate) fn mouse_scroll_delta(me: &MouseEvent) -> Option<isize> {

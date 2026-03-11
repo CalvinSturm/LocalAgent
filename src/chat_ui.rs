@@ -158,7 +158,7 @@ pub(crate) fn draw_chat_frame(
         ));
         chat_text.push_str("\n\n");
         chat_text.push_str(&crate::chat_view_utils::centered_left_block(
-            "+ Type your message and press enter\n+ /help for a list of commands\n+ /mode to switch between Safe, Coding, Web, and Custom modes",
+            "+ Type your message, Enter for newline, Ctrl+Enter to submit\n+ /help for a list of commands\n+ /mode to switch between Safe, Coding, Web, and Custom modes",
             chat_area.width,
             0,
         ));

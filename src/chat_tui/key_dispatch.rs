@@ -583,7 +583,15 @@ pub(crate) fn handle_tui_outer_key_dispatch(
             }
             TuiOuterKeyDispatchOutcome::Handled
         }
-        KeyCode::Enter => TuiOuterKeyDispatchOutcome::EnterInline,
+        KeyCode::Enter => {
+            if chat_runtime::is_tui_main_input_submit_key(input.key) {
+                TuiOuterKeyDispatchOutcome::EnterInline
+            } else {
+                insert_text_bounded(input.input, input.input_cursor, "\n", usize::MAX);
+                *input.slash_menu_index = 0;
+                TuiOuterKeyDispatchOutcome::Handled
+            }
+        }
         KeyCode::Left => {
             *input.input_cursor = input.input_cursor.saturating_sub(1);
             TuiOuterKeyDispatchOutcome::Handled
