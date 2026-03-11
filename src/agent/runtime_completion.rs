@@ -493,6 +493,43 @@ impl<P: ModelProvider> Agent<P> {
                         ),
                     ));
                 }
+                if !crate::agent_impl_guard::required_validation_command_satisfied(
+                    user_prompt,
+                    &observed_tool_calls,
+                    observed_tool_executions,
+                ) {
+                    let reason =
+                        "required validation command was not executed successfully before final answer";
+                    self.emit_event(
+                        &run_id,
+                        step,
+                        crate::events::EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "runtime_required_validation_guard",
+                            "failure_class": "E_RUNTIME_COMPLETION_REQUIRED_VALIDATION"
+                        }),
+                    );
+                    return RuntimeCompletionAction::Finalize(Box::new(
+                        self.finalize_planner_error_with_end(
+                            step,
+                            run_id,
+                            started_at,
+                            reason.to_string(),
+                            messages.clone(),
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ),
+                    ));
+                }
                 RuntimeCompletionAction::Finalize(Box::new(self.finalize_ok_with_end(
                     step,
                     run_id,

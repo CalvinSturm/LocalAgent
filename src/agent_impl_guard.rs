@@ -245,6 +245,55 @@ pub(crate) fn prompt_requires_post_write_follow_on(prompt: &str) -> bool {
     requires_validation || requires_user_facing_closeout
 }
 
+pub(crate) fn prompt_required_validation_command(prompt: &str) -> Option<&'static str> {
+    let p = prompt.to_ascii_lowercase();
+    ["node --test", "cargo test", "npm test", "pnpm test"]
+        .into_iter()
+        .find(|needle| p.contains(needle))
+}
+
+fn shell_command_text(call: &ToolCall) -> Option<String> {
+    if call.name != "shell" {
+        return None;
+    }
+    let obj = call.arguments.as_object()?;
+    if let Some(command) = obj.get("command").and_then(|v| v.as_str()) {
+        return Some(command.to_string());
+    }
+    let cmd = obj.get("cmd").and_then(|v| v.as_str())?;
+    let mut parts = vec![cmd.to_string()];
+    if let Some(args) = obj.get("args").and_then(|v| v.as_array()) {
+        for arg in args {
+            if let Some(arg) = arg.as_str() {
+                parts.push(arg.to_string());
+            }
+        }
+    }
+    Some(parts.join(" "))
+}
+
+pub(crate) fn required_validation_command_satisfied(
+    prompt: &str,
+    observed_tool_calls: &[ToolCall],
+    tool_executions: &[ToolExecutionRecord],
+) -> bool {
+    let Some(required) = prompt_required_validation_command(prompt) else {
+        return true;
+    };
+    let mut successful_shell_executions = tool_executions
+        .iter()
+        .filter(|execution| execution.name == "shell" && execution.ok);
+    observed_tool_calls
+        .iter()
+        .filter(|call| call.name == "shell")
+        .any(|call| {
+            shell_command_text(call).is_some_and(|cmd| {
+                cmd.to_ascii_lowercase().contains(required)
+                    && successful_shell_executions.next().is_some()
+            })
+        })
+}
+
 pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String> {
     let lower = prompt.to_ascii_lowercase();
     let marker = "your final answer must be exactly:";
@@ -267,7 +316,11 @@ pub(crate) fn final_output_matches_required_exact_answer(prompt: &str, final_out
 
 #[cfg(test)]
 mod tests {
-    use super::{final_output_matches_required_exact_answer, prompt_required_exact_final_answer};
+    use super::{
+        final_output_matches_required_exact_answer, prompt_required_exact_final_answer,
+        required_validation_command_satisfied, ToolExecutionRecord,
+    };
+    use crate::types::ToolCall;
 
     #[test]
     fn extracts_required_exact_final_answer_block() {
@@ -289,6 +342,37 @@ mod tests {
         assert!(!final_output_matches_required_exact_answer(
             prompt,
             "verified=yes"
+        ));
+    }
+
+    #[test]
+    fn required_validation_command_requires_successful_matching_shell_call() {
+        let prompt = "Before finishing, run node --test successfully.";
+        let calls = vec![ToolCall {
+            id: "tc_shell".to_string(),
+            name: "shell".to_string(),
+            arguments: serde_json::json!({"cmd":"node","args":["--test"]}),
+        }];
+        let ok_execs = vec![ToolExecutionRecord {
+            name: "shell".to_string(),
+            path: None,
+            ok: true,
+            changed: None,
+        }];
+        assert!(required_validation_command_satisfied(
+            prompt, &calls, &ok_execs
+        ));
+
+        let failed_execs = vec![ToolExecutionRecord {
+            name: "shell".to_string(),
+            path: None,
+            ok: false,
+            changed: None,
+        }];
+        assert!(!required_validation_command_satisfied(
+            prompt,
+            &calls,
+            &failed_execs
         ));
     }
 }
