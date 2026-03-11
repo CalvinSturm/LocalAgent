@@ -213,6 +213,9 @@ fn edit_workflow_system_prompt_matches_write_file_contract() {
     assert!(system.contains(
         "If the path already exists, read_file it first and prefer apply_patch for in-place edits."
     ));
+    assert!(system.contains(
+        "If the task requires a validation command (for example `node --test`), do not run it first."
+    ));
 }
 
 #[async_trait]

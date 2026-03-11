@@ -275,6 +275,7 @@ Edit workflow (required):\n\
 - When creating a brand-new file with write_file, a prior read_file is not required if the path does not already exist.\n\
 - If the path already exists, read_file it first and prefer apply_patch for in-place edits. Use overwrite_existing=true only for an explicit full rewrite.\n\
 - After editing, use read_file again to verify your changes.\n\
+- If the task requires a validation command (for example `node --test`), do not run it first. Read the target file, make the edit, read the file back to verify the change, and only then run the validation command.\n\
 - Prefer str_replace for small targeted edits (exact match and replace). Use apply_patch for larger multi-hunk changes. Only use write_file for new files or explicit full rewrites.\n\
 \n\
 Fallback when native tool calls are unavailable:\n\
