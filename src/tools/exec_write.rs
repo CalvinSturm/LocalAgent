@@ -30,10 +30,10 @@ pub(super) async fn run_write_file(rt: &ToolRuntime, args: &Value) -> ToolExecut
         return failed_exec(
             rt,
             SideEffects::FilesystemWrite,
-            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            "path must stay within workdir (no absolute paths or '..' traversal). Use a workdir-relative path like 'src/main.rs'.".to_string(),
             Some(ToolErrorDetail {
                 code: ToolErrorCode::ToolPathDenied,
-                message: "Path must stay within workdir.".to_string(),
+                message: "Path must stay within workdir. Use a workdir-relative path.".to_string(),
                 expected_schema: None,
                 received_args: Some(args.clone()),
                 minimal_example: minimal_builtin_example("write_file"),
@@ -107,10 +107,10 @@ pub(super) async fn run_apply_patch(rt: &ToolRuntime, args: &Value) -> ToolExecu
         return failed_exec(
             rt,
             SideEffects::FilesystemWrite,
-            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            "path must stay within workdir (no absolute paths or '..' traversal). Use a workdir-relative path like 'src/main.rs'.".to_string(),
             Some(ToolErrorDetail {
                 code: ToolErrorCode::ToolPathDenied,
-                message: "Path must stay within workdir.".to_string(),
+                message: "Path must stay within workdir. Use a workdir-relative path.".to_string(),
                 expected_schema: None,
                 received_args: Some(args.clone()),
                 minimal_example: minimal_builtin_example("apply_patch"),
@@ -133,7 +133,15 @@ pub(super) async fn run_apply_patch(rt: &ToolRuntime, args: &Value) -> ToolExecu
     target_to_exec(SideEffects::FilesystemWrite, out)
 }
 
+pub(super) async fn run_edit(rt: &ToolRuntime, args: &Value) -> ToolExecution {
+    run_exact_replace(rt, args, "edit").await
+}
+
 pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecution {
+    run_exact_replace(rt, args, "str_replace").await
+}
+
+async fn run_exact_replace(rt: &ToolRuntime, args: &Value, tool_name: &str) -> ToolExecution {
     if !rt.allow_write && !rt.unsafe_bypass_allow_flags {
         return failed_exec(
             rt,
@@ -144,7 +152,7 @@ pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecu
                 message: "Write tools are disabled by runtime flags.".to_string(),
                 expected_schema: None,
                 received_args: Some(args.clone()),
-                minimal_example: minimal_builtin_example("str_replace"),
+                minimal_example: minimal_builtin_example(tool_name),
                 available_tools: None,
             }),
         );
@@ -157,13 +165,13 @@ pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecu
         return failed_exec(
             rt,
             SideEffects::FilesystemWrite,
-            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            "path must stay within workdir (no absolute paths or '..' traversal). Use a workdir-relative path like 'src/main.rs'.".to_string(),
             Some(ToolErrorDetail {
                 code: ToolErrorCode::ToolPathDenied,
-                message: "Path must stay within workdir.".to_string(),
+                message: "Path must stay within workdir. Use a workdir-relative path.".to_string(),
                 expected_schema: None,
                 received_args: Some(args.clone()),
-                minimal_example: minimal_builtin_example("str_replace"),
+                minimal_example: minimal_builtin_example(tool_name),
                 available_tools: None,
             }),
         );
@@ -189,20 +197,30 @@ pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecu
             rt,
             SideEffects::FilesystemWrite,
             format!(
-                "str_replace: could not read file '{path}': {}",
+                "{tool_name}: could not read file '{path}': {}",
                 read_out.content
             ),
             None,
         );
     }
-    let original = &read_out.content;
+    let original = match extract_read_file_content(&read_out.content) {
+        Ok(content) => content,
+        Err(err) => {
+            return failed_exec(
+                rt,
+                SideEffects::FilesystemWrite,
+                format!("{tool_name}: could not parse read_file response for '{path}': {err}"),
+                None,
+            )
+        }
+    };
     let matches: Vec<_> = original.match_indices(old_string).collect();
     if matches.is_empty() {
         return failed_exec(
             rt,
             SideEffects::FilesystemWrite,
             format!(
-                "str_replace: old_string not found in '{path}'. Make sure the string matches exactly, including whitespace and indentation."
+                "{tool_name}: old_string not found in '{path}'. Make sure the string matches exactly, including whitespace and indentation. If exact matching is brittle, re-read the file and switch to apply_patch."
             ),
             None,
         );
@@ -212,7 +230,7 @@ pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecu
             rt,
             SideEffects::FilesystemWrite,
             format!(
-                "str_replace: old_string matches {} locations in '{path}'. Include more surrounding context to make it unique.",
+                "{tool_name}: old_string matches {} locations in '{path}'. Include more surrounding context to make it unique, or switch to apply_patch for this edit.",
                 matches.len()
             ),
             None,
@@ -234,7 +252,7 @@ pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecu
             rt,
             SideEffects::FilesystemWrite,
             format!(
-                "str_replace: could not write file '{path}': {}",
+                "{tool_name}: could not write file '{path}': {}",
                 write_out.content
             ),
             None,
@@ -265,4 +283,14 @@ pub(super) async fn run_str_replace(rt: &ToolRuntime, args: &Value) -> ToolExecu
             docker: None,
         },
     }
+}
+
+fn extract_read_file_content(payload: &str) -> Result<String, String> {
+    let parsed: Value = serde_json::from_str(payload)
+        .map_err(|e| format!("invalid read_file JSON payload: {e}"))?;
+    parsed
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "missing string field 'content'".to_string())
 }

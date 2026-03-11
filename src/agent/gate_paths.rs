@@ -175,7 +175,11 @@ impl<P: ModelProvider> Agent<P> {
             if tc.name == "apply_patch" {
                 invalid_patch_format_attempts.remove(repeat_key);
             }
-            if tc.name == "apply_patch" || tc.name == "write_file" || tc.name == "str_replace" {
+            if tc.name == "apply_patch"
+                || tc.name == "edit"
+                || tc.name == "write_file"
+                || tc.name == "str_replace"
+            {
                 *successful_write_tool_ok_this_step = true;
             }
         } else {
@@ -210,13 +214,16 @@ impl<P: ModelProvider> Agent<P> {
                     "The shell command failed. Before retrying, use read_file or grep to inspect the relevant source files and diagnose the issue. Fix the code with apply_patch first, then re-run the command.",
                 ),
                 "read_file" => Some(
-                    "The file was not found. Use list_dir or glob to discover the correct file paths in this repository before retrying read_file.",
+                    "The read_file failed. If you guessed or used an absolute path, switch to a workdir-relative path. Use list_dir or glob to discover the correct file path in this repository before retrying read_file.",
                 ),
                 "apply_patch" => Some(
-                    "The patch failed to apply. Use read_file to re-read the current file contents, then emit a corrected apply_patch with an accurate unified diff that matches the file.",
+                    "The patch failed to apply. Use read_file to re-read the current file contents, then emit a corrected apply_patch with an accurate unified diff that matches the file. Do not repeat the same failed patch text.",
                 ),
                 "str_replace" => Some(
-                    "The str_replace failed. Use read_file to re-read the current file contents, then emit a corrected str_replace with an old_string that exactly matches text in the file.",
+                    "The str_replace failed. Use read_file to re-read the current file contents. If the exact match is still brittle or unclear, switch to apply_patch instead of repeating str_replace.",
+                ),
+                "edit" => Some(
+                    "The edit failed. Use read_file to re-read the current file contents. If the exact match is still brittle or unclear, switch to apply_patch instead of repeating the same edit.",
                 ),
                 _ => None,
             };

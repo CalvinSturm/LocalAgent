@@ -274,9 +274,12 @@ Edit workflow (required):\n\
 - Always use read_file on a path BEFORE editing it with apply_patch or str_replace.\n\
 - When creating a brand-new file with write_file, a prior read_file is not required if the path does not already exist.\n\
 - If the path already exists, read_file it first and prefer apply_patch for in-place edits. Use overwrite_existing=true only for an explicit full rewrite.\n\
+- Use workdir-relative paths like `src/main.rs`, not absolute paths.\n\
 - After editing, use read_file again to verify your changes.\n\
 - If the task requires a validation command (for example `node --test`), do not run it first. Read the target file, make the edit, read the file back to verify the change, and only then run the validation command.\n\
-- Prefer str_replace for small targeted edits (exact match and replace). Use apply_patch for larger multi-hunk changes. Only use write_file for new files or explicit full rewrites.\n\
+- Prefer str_replace for small targeted edits when you have an exact unique match. Use apply_patch for larger multi-hunk changes or whenever str_replace exact-match repair is failing. Only use write_file for new files or explicit full rewrites.\n\
+- If str_replace fails because old_string was not found or was not unique, immediately read_file again and switch to apply_patch instead of repeating the same replacement.\n\
+- If the prompt requires validation or an exact final answer, treat the final answer as reporting only after the edit is verified and the validation command succeeds.\n\
 \n\
 Fallback when native tool calls are unavailable:\n\
 - Emit exactly one wrapper block:\n\

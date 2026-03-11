@@ -33,6 +33,10 @@ pub(super) enum RuntimeCompletionAction {
         blocked_runtime_completion_count: u32,
         operator_delivery_count: u32,
     },
+    ContinueRequiredValidation {
+        blocked_runtime_completion_count: u32,
+        operator_delivery_count: u32,
+    },
     ProceedToTools {
         blocked_runtime_completion_count: u32,
     },
@@ -140,6 +144,7 @@ impl<P: ModelProvider> Agent<P> {
         total_token_usage: &TokenUsage,
         taint_state: &TaintState,
         exact_final_answer_retry_count: u32,
+        required_validation_retry_count: u32,
     ) -> RuntimeCompletionAction {
         match decision {
             RuntimeCompletionDecision::Continue {
@@ -343,7 +348,7 @@ impl<P: ModelProvider> Agent<P> {
                     let saw_effective_write = observed_tool_executions.iter().any(|e| {
                         e.ok && matches!(
                             e.name.as_str(),
-                            "apply_patch" | "write_file" | "str_replace"
+                            "apply_patch" | "edit" | "write_file" | "str_replace"
                         ) && e.changed != Some(false)
                     });
                     let is_retryable = (!saw_effective_write
@@ -354,9 +359,9 @@ impl<P: ModelProvider> Agent<P> {
                             blocked_runtime_completion_count.saturating_add(1);
                         let corrective_instruction = if reason.contains("requires prior read_file")
                         {
-                            "You must read_file on a path before editing it. Use read_file to inspect the file contents first, then apply_patch to make changes, then read_file again to verify."
+                            "You must read_file on a path before editing it. Use read_file to inspect the file contents first, then edit or apply_patch to make changes, then read_file again to verify."
                         } else {
-                            "Implementation task requires at least one effective write tool call. Use read_file + apply_patch (or write_file when creating a new file), then verify with read_file before finalizing."
+                            "Implementation task requires at least one effective write tool call. Use read_file + edit/apply_patch (or write_file when creating a new file), then verify with read_file before finalizing."
                         };
                         self.emit_event(
                             &run_id,
@@ -498,6 +503,49 @@ impl<P: ModelProvider> Agent<P> {
                     &observed_tool_calls,
                     observed_tool_executions,
                 ) {
+                    if required_validation_retry_count < 1 {
+                        let blocked_runtime_completion_count =
+                            blocked_runtime_completion_count.saturating_add(1);
+                        let required_command =
+                            crate::agent_impl_guard::prompt_required_validation_command(
+                                user_prompt,
+                            )
+                            .unwrap_or("the required validation command");
+                        let corrective_instruction = format!(
+                            "Do not give the final answer yet. Run `{required_command}` now using the shell tool. If it succeeds, then reply with the final answer only. Do not call another write tool unless the validation output proves more code changes are still required."
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::Error,
+                            serde_json::json!({
+                                "error": corrective_instruction,
+                                "source": "runtime_required_validation_guard",
+                                "reason_code": "required_validation_before_final",
+                                "blocked_count": blocked_runtime_completion_count
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::StepBlocked,
+                            serde_json::json!({
+                                "reason": "required_validation_before_final",
+                                "blocked_count": blocked_runtime_completion_count
+                            }),
+                        );
+                        messages.push(Message {
+                            role: crate::types::Role::Developer,
+                            content: Some(corrective_instruction),
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_calls: None,
+                        });
+                        return RuntimeCompletionAction::ContinueRequiredValidation {
+                            blocked_runtime_completion_count,
+                            operator_delivery_count,
+                        };
+                    }
                     let reason =
                         "required validation command was not executed successfully before final answer";
                     self.emit_event(

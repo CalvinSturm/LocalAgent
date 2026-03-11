@@ -1308,6 +1308,17 @@ fn protocol_hint_detects_invalid_patch_format() {
 }
 
 #[test]
+fn protocol_hint_detects_tool_only_phase_issues() {
+    let hint = super::runtime_config::protocol_remediation_hint(
+        "tool-only phase active: repeated prose output during tool-only phase",
+    )
+    .expect("hint");
+
+    assert!(hint.contains("tool calls only"));
+    assert!(hint.contains("final read_file verification"));
+}
+
+#[test]
 
 fn protocol_hint_ignores_non_protocol_errors() {
     assert!(super::runtime_config::protocol_remediation_hint("provider timeout").is_none());

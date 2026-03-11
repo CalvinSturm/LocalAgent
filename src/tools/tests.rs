@@ -37,8 +37,33 @@ fn write_tools_not_exposed_by_default() {
     assert!(names.iter().any(|n| n == "glob"));
     assert!(names.iter().any(|n| n == "grep"));
     assert!(!names.iter().any(|n| n == "shell"));
+    assert!(!names.iter().any(|n| n == "edit"));
     assert!(!names.iter().any(|n| n == "write_file"));
     assert!(!names.iter().any(|n| n == "apply_patch"));
+}
+
+#[test]
+fn write_tool_descriptions_bias_toward_relative_paths_and_apply_patch_recovery() {
+    let tools = builtin_tools_enabled(true, false);
+    let edit = tools.iter().find(|tool| tool.name == "edit").expect("edit");
+    assert!(edit.description.contains("workdir-relative path"));
+    assert!(edit.description.contains("OpenCode-style aliases"));
+
+    let apply_patch = tools
+        .iter()
+        .find(|tool| tool.name == "apply_patch")
+        .expect("apply_patch");
+    assert!(apply_patch.description.contains("workdir-relative path"));
+    assert!(apply_patch
+        .description
+        .contains("after str_replace exact-match repair fails"));
+
+    let str_replace = tools
+        .iter()
+        .find(|tool| tool.name == "str_replace")
+        .expect("str_replace");
+    assert!(str_replace.description.contains("workdir-relative path"));
+    assert!(str_replace.description.contains("switch to apply_patch"));
 }
 
 #[test]
@@ -195,6 +220,7 @@ async fn unknown_tool_payload_includes_sorted_available_tools() {
         .unwrap_or_default();
     let expected = vec![
         json!("apply_patch"),
+        json!("edit"),
         json!("glob"),
         json!("grep"),
         json!("list_dir"),
@@ -458,6 +484,29 @@ fn wrong_type_args_rejected() {
 }
 
 #[test]
+fn edit_aliases_normalize_to_internal_shape() {
+    let normalized = normalize_builtin_tool_args(
+        "edit",
+        &json!({
+            "filePath":"src/main.rs",
+            "oldString":"before",
+            "newString":"after"
+        }),
+    );
+    assert_eq!(
+        normalized,
+        json!({
+            "filePath":"src/main.rs",
+            "oldString":"before",
+            "newString":"after",
+            "path":"src/main.rs",
+            "old_string":"before",
+            "new_string":"after"
+        })
+    );
+}
+
+#[test]
 fn unknown_schema_allows_empty_object_only() {
     assert!(validate_schema_args(&json!({}), None, ToolArgsStrict::On).is_ok());
     let err = validate_schema_args(&json!({"x":1}), None, ToolArgsStrict::On)
@@ -495,6 +544,35 @@ async fn apply_patch_updates_file() {
         arguments: json!({"path":"a.txt","patch":"@@ -1 +1 @@\n-hello\n+world\n"}),
     };
     let _ = execute_tool(&rt, &tc).await;
+    let updated = tokio::fs::read_to_string(&file).await.expect("read");
+    assert_eq!(updated, "world\n");
+}
+
+#[tokio::test]
+async fn edit_updates_file_with_opencode_style_aliases() {
+    let tmp = tempdir().expect("tempdir");
+    let file = tmp.path().join("a.txt");
+    tokio::fs::write(&file, "hello\n").await.expect("write");
+    let rt = ToolRuntime {
+        workdir: tmp.path().to_path_buf(),
+        allow_shell: false,
+        allow_shell_in_workdir_only: false,
+        allow_write: true,
+        max_tool_output_bytes: 200_000,
+        max_read_bytes: 200_000,
+        unsafe_bypass_allow_flags: false,
+        tool_args_strict: ToolArgsStrict::On,
+        exec_target_kind: ExecTargetKind::Host,
+        exec_target: std::sync::Arc::new(HostTarget),
+    };
+    let tc = ToolCall {
+        id: "tc_edit".to_string(),
+        name: "edit".to_string(),
+        arguments: json!({"filePath":"a.txt","oldString":"hello","newString":"world"}),
+    };
+    let msg = execute_tool(&rt, &tc).await;
+    let body = msg.content.expect("content");
+    assert!(body.contains("\"ok\":true"));
     let updated = tokio::fs::read_to_string(&file).await.expect("read");
     assert_eq!(updated, "world\n");
 }
@@ -784,5 +862,34 @@ async fn write_file_rejects_absolute_path() {
     let msg = execute_tool(&rt, &tc).await;
     let content = msg.content.expect("content");
     assert!(content.contains("path must stay within workdir"));
+    assert!(content.contains("Use a workdir-relative path"));
     assert!(content.contains("\"ok\":false"));
+}
+
+#[tokio::test]
+async fn str_replace_not_found_suggests_apply_patch_recovery() {
+    let tmp = tempdir().expect("tempdir");
+    let file = tmp.path().join("a.txt");
+    tokio::fs::write(&file, "hello\n").await.expect("write");
+    let rt = ToolRuntime {
+        workdir: tmp.path().to_path_buf(),
+        allow_shell: false,
+        allow_shell_in_workdir_only: false,
+        allow_write: true,
+        max_tool_output_bytes: 200_000,
+        max_read_bytes: 200_000,
+        unsafe_bypass_allow_flags: false,
+        tool_args_strict: ToolArgsStrict::On,
+        exec_target_kind: ExecTargetKind::Host,
+        exec_target: std::sync::Arc::new(HostTarget),
+    };
+    let tc = ToolCall {
+        id: "tc_str_replace_missing".to_string(),
+        name: "str_replace".to_string(),
+        arguments: json!({"path":"a.txt","old_string":"goodbye","new_string":"world"}),
+    };
+    let msg = execute_tool(&rt, &tc).await;
+    let content = msg.content.expect("content");
+    assert!(content.contains("old_string not found"));
+    assert!(content.contains("switch to apply_patch"));
 }

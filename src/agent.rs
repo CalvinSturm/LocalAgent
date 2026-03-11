@@ -132,6 +132,7 @@ impl<P: ModelProvider> Agent<P> {
         let mut post_write_guard_retry_count: u32 = 0;
         let mut post_write_follow_on_turn_count: u32 = 0;
         let mut exact_final_answer_retry_count: u32 = 0;
+        let mut required_validation_retry_count: u32 = 0;
         let mut operator_delivery_count: u32 = 0;
         let mut blocked_control_envelope_count: u32 = 0;
         let mut blocked_tool_only_count: u32 = 0;
@@ -931,6 +932,7 @@ impl<P: ModelProvider> Agent<P> {
                     &total_token_usage,
                     &taint_state,
                     exact_final_answer_retry_count,
+                    required_validation_retry_count,
                 )
                 .await
             {
@@ -956,6 +958,16 @@ impl<P: ModelProvider> Agent<P> {
                     operator_delivery_count = next_op_count;
                     exact_final_answer_retry_count += 1;
                     exact_final_answer_only_phase_active = true;
+                    continue 'agent_steps;
+                }
+                RuntimeCompletionAction::ContinueRequiredValidation {
+                    blocked_runtime_completion_count: next_count,
+                    operator_delivery_count: next_op_count,
+                } => {
+                    blocked_runtime_completion_count = next_count;
+                    operator_delivery_count = next_op_count;
+                    required_validation_retry_count += 1;
+                    exact_final_answer_only_phase_active = false;
                     continue 'agent_steps;
                 }
                 RuntimeCompletionAction::ProceedToTools {

@@ -154,11 +154,11 @@ impl<P: ModelProvider> Agent<P> {
                 }),
             );
             let follow_on_message = if verified_paths.is_empty() {
-                "Post-write verification succeeded. The user prompt still requires a follow-on step. Take exactly one more turn now: if the prompt asked for validation or tests, do that next if permitted; otherwise provide the final user-facing answer summarizing what changed. Do not call another write tool unless a still-unfinished required step makes it necessary."
+                "Post-write verification succeeded. The user prompt still requires a follow-on step. Take exactly one more turn now: if the prompt asked for validation or tests, your next turn must run that exact validation command with the shell tool, and you must not give the final answer until it succeeds; otherwise provide the final user-facing answer summarizing what changed. Do not call another write tool unless a still-unfinished required step makes it necessary."
                     .to_string()
             } else {
                 format!(
-                    "Post-write verification succeeded for {}. The user prompt still requires a follow-on step. Take exactly one more turn now: if the prompt asked for validation or tests, do that next if permitted; otherwise provide the final user-facing answer summarizing what changed. Do not call another write tool for those paths unless a still-unfinished required step makes it necessary.",
+                    "Post-write verification succeeded for {}. The user prompt still requires a follow-on step. Take exactly one more turn now: if the prompt asked for validation or tests, your next turn must run that exact validation command with the shell tool, and you must not give the final answer until it succeeds; otherwise provide the final user-facing answer summarizing what changed. Do not call another write tool for those paths unless a still-unfinished required step makes it necessary.",
                     verified_paths.join(", ")
                 )
             };

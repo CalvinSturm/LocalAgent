@@ -1212,7 +1212,7 @@ impl<P: ModelProvider> Agent<P> {
         let final_error_code = crate::agent_tool_exec::tool_result_error_code(&content);
         let changed_flag = if matches!(
             tc.name.as_str(),
-            "apply_patch" | "write_file" | "str_replace"
+            "apply_patch" | "edit" | "write_file" | "str_replace"
         ) {
             crate::agent_tool_exec::tool_result_changed_flag(&content)
         } else {

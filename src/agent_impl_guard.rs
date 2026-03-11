@@ -68,7 +68,7 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
         }
         if matches!(
             execution.name.as_str(),
-            "apply_patch" | "write_file" | "str_replace"
+            "apply_patch" | "edit" | "write_file" | "str_replace"
         ) {
             let actually_changed = execution.changed.unwrap_or(true);
             if actually_changed {
@@ -82,7 +82,7 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
                     pending_post_write_verification.remove(path);
                 }
             }
-            "apply_patch" | "str_replace" => {
+            "apply_patch" | "edit" | "str_replace" => {
                 if let Some(path) = &execution.path {
                     if !successful_read_paths.contains(path) {
                         return Some(format!(
@@ -108,7 +108,7 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
     }
     if prompt_requires_effective_write(user_prompt) && !saw_effective_write {
         return Some(
-            "implementation guard: file-edit task finalized without an effective write (writes failed or apply_patch changed:false)".to_string(),
+            "implementation guard: file-edit task finalized without an effective write (writes failed or write tool changed:false)".to_string(),
         );
     }
     if let Some(path) = pending_post_write_verification.iter().next() {
@@ -133,7 +133,7 @@ pub(crate) fn pending_post_write_verification_paths(
                     pending_post_write_verification.remove(path);
                 }
             }
-            "apply_patch" | "write_file" | "str_replace" => {
+            "apply_patch" | "edit" | "write_file" | "str_replace" => {
                 if let Some(path) = &execution.path {
                     pending_post_write_verification.insert(path.clone());
                 }
@@ -317,7 +317,9 @@ pub(crate) fn final_output_matches_required_exact_answer(prompt: &str, final_out
 #[cfg(test)]
 mod tests {
     use super::{
-        final_output_matches_required_exact_answer, prompt_required_exact_final_answer,
+        final_output_matches_required_exact_answer,
+        implementation_integrity_violation_with_tool_executions,
+        pending_post_write_verification_paths, prompt_required_exact_final_answer,
         required_validation_command_satisfied, ToolExecutionRecord,
     };
     use crate::types::ToolCall;
@@ -374,5 +376,49 @@ mod tests {
             &calls,
             &failed_execs
         ));
+    }
+
+    #[test]
+    fn edit_counts_as_effective_write_and_requires_post_write_readback() {
+        let prompt = "Update main.rs to return 2. Before finishing, run node --test successfully.";
+        let calls = vec![
+            ToolCall {
+                id: "tc_read".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({"path":"main.rs"}),
+            },
+            ToolCall {
+                id: "tc_edit".to_string(),
+                name: "edit".to_string(),
+                arguments: serde_json::json!({"path":"main.rs","old_string":"1","new_string":"2"}),
+            },
+        ];
+        let execs = vec![
+            ToolExecutionRecord {
+                name: "read_file".to_string(),
+                path: Some("main.rs".to_string()),
+                ok: true,
+                changed: None,
+            },
+            ToolExecutionRecord {
+                name: "edit".to_string(),
+                path: Some("main.rs".to_string()),
+                ok: true,
+                changed: Some(true),
+            },
+        ];
+        let err = implementation_integrity_violation_with_tool_executions(
+            prompt,
+            "verified fix",
+            &calls,
+            &execs,
+            true,
+        )
+        .expect("expected missing post-write verification");
+        assert!(err.contains("post-write verification missing read_file"));
+        assert!(!err.contains("without an effective write"));
+
+        let pending = pending_post_write_verification_paths(&execs);
+        assert!(pending.contains("main.rs"));
     }
 }

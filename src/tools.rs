@@ -184,6 +184,7 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
         "shell" => exec_shell::run_shell(rt, &normalized_args).await,
         "write_file" => exec_write::run_write_file(rt, &normalized_args).await,
         "apply_patch" => exec_write::run_apply_patch(rt, &normalized_args).await,
+        "edit" => exec_write::run_edit(rt, &normalized_args).await,
         "str_replace" => exec_write::run_str_replace(rt, &normalized_args).await,
         _ => ToolExecution {
             ok: false,

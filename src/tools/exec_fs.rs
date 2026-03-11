@@ -27,10 +27,10 @@ pub(super) async fn run_list_dir(rt: &ToolRuntime, args: &Value) -> ToolExecutio
         return failed_exec(
             rt,
             SideEffects::FilesystemRead,
-            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            "path must stay within workdir (no absolute paths or '..' traversal). Use a workdir-relative path like '.' or 'src/main.rs'.".to_string(),
             Some(ToolErrorDetail {
                 code: ToolErrorCode::ToolPathDenied,
-                message: "Path must stay within workdir.".to_string(),
+                message: "Path must stay within workdir. Use a workdir-relative path.".to_string(),
                 expected_schema: None,
                 received_args: Some(args.clone()),
                 minimal_example: Some(json!({"path":"."})),
@@ -54,10 +54,10 @@ pub(super) async fn run_read_file(rt: &ToolRuntime, args: &Value) -> ToolExecuti
         return failed_exec(
             rt,
             SideEffects::FilesystemRead,
-            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            "path must stay within workdir (no absolute paths or '..' traversal). Use a workdir-relative path like 'src/main.rs'.".to_string(),
             Some(ToolErrorDetail {
                 code: ToolErrorCode::ToolPathDenied,
-                message: "Path must stay within workdir.".to_string(),
+                message: "Path must stay within workdir. Use a workdir-relative path.".to_string(),
                 expected_schema: None,
                 received_args: Some(args.clone()),
                 minimal_example: Some(json!({"path":"src/main.rs"})),
@@ -347,10 +347,10 @@ fn collect_search_files(rt: &ToolRuntime, search_path: &str) -> CollectSearchFil
         return Err(Box::new(failed_exec(
             rt,
             SideEffects::FilesystemRead,
-            "path must stay within workdir (no absolute paths or '..' traversal)".to_string(),
+            "path must stay within workdir (no absolute paths or '..' traversal). Use a workdir-relative path like '.'.".to_string(),
             Some(ToolErrorDetail {
                 code: ToolErrorCode::PathOutOfScope,
-                message: "Path must stay within workdir.".to_string(),
+                message: "Path must stay within workdir. Use a workdir-relative path.".to_string(),
                 expected_schema: None,
                 received_args: Some(json!({"path": search_path})),
                 minimal_example: Some(json!({"path":"."})),
