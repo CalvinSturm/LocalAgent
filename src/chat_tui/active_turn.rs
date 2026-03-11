@@ -29,6 +29,10 @@ use crate::trust::approvals::ApprovalsStore;
 use crate::tui::state::UiState;
 use crate::RunArgs;
 
+fn should_render_final_assistant_entry(exit_reason: AgentExitReason, final_text: &str) -> bool {
+    matches!(exit_reason, AgentExitReason::Ok) && !final_text.trim().is_empty()
+}
+
 pub(crate) struct TuiActiveTurnLoopInput<'a> {
     pub(crate) terminal: &'a mut Terminal<CrosstermBackend<std::io::Stdout>>,
     pub(crate) fut: TuiRunFuture,
@@ -749,7 +753,7 @@ pub(crate) async fn drive_tui_active_turn_loop(
                             }
                         }
                     }
-                    if !final_text.trim().is_empty() {
+                    if should_render_final_assistant_entry(exit_reason, &final_text) {
                         push_assistant_transcript_entry(
                             transcript,
                             transcript_thinking,
@@ -791,4 +795,26 @@ pub(crate) async fn drive_tui_active_turn_loop(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_render_final_assistant_entry;
+    use crate::agent::AgentExitReason;
+
+    #[test]
+    fn renders_final_assistant_entry_only_for_successful_runs() {
+        assert!(should_render_final_assistant_entry(
+            AgentExitReason::Ok,
+            "verified=yes"
+        ));
+        assert!(!should_render_final_assistant_entry(
+            AgentExitReason::PlannerError,
+            "verified=yes"
+        ));
+        assert!(!should_render_final_assistant_entry(
+            AgentExitReason::Ok,
+            ""
+        ));
+    }
 }

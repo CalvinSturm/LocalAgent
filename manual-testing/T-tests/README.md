@@ -59,6 +59,26 @@ Each prepared instance also includes `PREPARED_INSTANCE.json` describing:
 - optional single-task selection
 - prepared timestamp
 
+## Fast Runner
+
+For repeated model/task checks without rebuilding commands by hand, use:
+
+```powershell
+pwsh -File .\manual-testing\scripts\run_manual_eval.ps1 -Task T2 -Model "qwen/qwen3.5-9b" -Stream
+```
+
+For TUI:
+
+```powershell
+pwsh -File .\manual-testing\scripts\run_manual_eval.ps1 -Task T3 -Model "qwen2.5-coder-7b-instruct@q8_0" -Stream -Tui -CopyPrompt
+```
+
+This helper:
+- prepares a fresh single-task control-pack instance
+- creates fresh state and trace dirs
+- launches LocalAgent in `run` or `chat --tui`
+- prints the newest run-record path at the end
+
 ## Run A Task
 
 Change into the prepared task directory and run LocalAgent there.

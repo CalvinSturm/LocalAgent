@@ -146,6 +146,32 @@ The prepared instance is written under:
 
 Each prepared instance includes `PREPARED_INSTANCE.json`. Record the `prepared_instance_id` in results.
 
+## Fast Reusable Runner
+
+For repeated `T1` to `T5` eval work across many models and stream modes, use the repo helper:
+
+```powershell
+pwsh -File .\manual-testing\scripts\run_manual_eval.ps1 -Task T3 -Model "qwen2.5-coder-7b-instruct@q8_0" -Stream
+```
+
+TUI variant:
+
+```powershell
+pwsh -File .\manual-testing\scripts\run_manual_eval.ps1 -Task T3 -Model "qwen2.5-coder-7b-instruct@q8_0" -Stream -Tui -CopyPrompt
+```
+
+What it does:
+- prepares a fresh single-task control-pack instance
+- creates fresh state and trace dirs
+- launches either one-shot `run` or `chat --tui`
+- prints the newest run-record path when finished
+
+Use `-DryRun` to preview the resolved paths and command without launching:
+
+```powershell
+pwsh -File .\manual-testing\scripts\run_manual_eval.ps1 -Task T2 -Model "qwen/qwen3.5-9b" -DryRun
+```
+
 ## Paired Run Procedure
 
 For each scenario:
