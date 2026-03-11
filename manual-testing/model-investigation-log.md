@@ -1357,3 +1357,98 @@ When a provider can serve different quantizations or presets behind the same mod
   - this comparison is enough to stop treating `T3` as a general LocalAgent validation-contract defect
   - `qwen/qwen3.5-9b` streamed is the positive control that shows the `T3` contract is achievable
   - `qwen2.5-coder-7b-instruct@q8_0` remains the general baseline, but `T3` should be treated as an accepted model limitation rather than a shared runtime bug
+
+---
+
+### 2026-03-10 - `T4` - `3-model comparison shows baseline non-stream over-edit is model-specific`
+- Commit baseline:
+  - `main` after `a875b99`
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - targeted `T4` comparison on `run` stream-off and stream-on
+- Prompt/task:
+  - `T4` label typo fix
+  - explicit contract:
+    - inspect before editing
+    - only edit the file with the real label definition
+    - exact final answer `edited: src/labels.js`
+- Outcome:
+  - all models start with `read_file`
+  - the baseline model has a specific non-stream over-edit pattern:
+    - `read_file -> str_replace -> write_file`
+    - then trips the write-before-read guard
+  - the comparison models do not show that same pattern
+  - instead, they tend to use `apply_patch` and fail later on exact-final-answer compliance or stream stability
+- First exact divergence:
+  - baseline `qwen2.5-coder-7b-instruct@q8_0` non-stream adds an unnecessary `write_file` after already entering the correct edit path
+  - `qwen/qwen3.5-9b` and `crow-9b-opus-4.6-distill-heretic_qwen3.5` do not repeat that over-edit behavior
+- Classification:
+  - pure model-choice
+- Decision:
+  - accepted limitation for baseline model on `T4` non-stream
+- Evidence:
+  - baseline `qwen2.5-coder-7b-instruct@q8_0`
+    - non-stream: [8af8cc5c-b78a-47d8-88b1-f42dda1a2bc1.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t4-qwen25coder7binstructq80-run-stream-off-20260310-194828-519/runs/8af8cc5c-b78a-47d8-88b1-f42dda1a2bc1.json)
+    - stream: [47dd13dc-e5a4-49fc-88e6-a666aae583b9.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t4-qwen25coder7binstructq80-run-stream-on-20260310-194828-859/runs/47dd13dc-e5a4-49fc-88e6-a666aae583b9.json)
+  - `qwen/qwen3.5-9b`
+    - non-stream: [a299a87d-e5f8-4556-b49a-d2297548da72.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t4-qwenqwen359b-run-stream-off-20260310-195501-064/runs/a299a87d-e5f8-4556-b49a-d2297548da72.json)
+    - stream: [e8ba3ea7-c492-47be-b9ba-a9f66b95adbc.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t4-qwenqwen359b-run-stream-on-20260310-195623-294/runs/e8ba3ea7-c492-47be-b9ba-a9f66b95adbc.json)
+  - `crow-9b-opus-4.6-distill-heretic_qwen3.5`
+    - non-stream: [9a1dd62d-10c1-4875-9489-c25bb1ba9646.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t4-crow9bopus46distillhereticqwen35-run-stream-off-20260310-195721-849/runs/9a1dd62d-10c1-4875-9489-c25bb1ba9646.json)
+    - stream: [f24d39bf-f96a-4e10-824c-89c11f4a3ef2.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t4-crow9bopus46distillhereticqwen35-run-stream-on-20260310-195800-220/runs/f24d39bf-f96a-4e10-824c-89c11f4a3ef2.json)
+- Notes:
+  - this is enough to stop treating the `T4` non-stream over-edit pattern as a shared LocalAgent issue
+  - `qwen/qwen3.5-9b` streamed remains the stronger comparison path for `T4`
+  - baseline `qwen2.5-coder-7b-instruct@q8_0` stays the general regression baseline, but its `T4` non-stream over-edit should be treated as an accepted model limitation
+
+---
+
+### 2026-03-10 - `T5` - `3-model comparison shows qwen/qwen3.5-9b reaches the strongest semantic boundary`
+- Commit baseline:
+  - `main` after `a875b99`
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - targeted `T5` comparison on `run` stream-off and stream-on
+- Prompt/task:
+  - `T5` nested parser whitespace-fix task
+  - explicit contract:
+    - trim whitespace before parsing
+    - run `node --test`
+    - exact final answer `verified fix`
+- Outcome:
+  - all three models begin from the expected file-inspection path rather than a shell-first path
+  - the baseline model still fails earlier:
+    - non-stream lands an edit, then finalizes with `verified fix` without running `node --test`
+    - stream fails to land an effective write after a bad `apply_patch`
+  - `qwen/qwen3.5-9b` gets further on the same task slice:
+    - non-stream recovers from an absolute-path read mistake, lands an edit, and reaches `node --test`
+    - but the edit trims after the first regex check, so the whitespace test still fails
+    - stream falls into repeated failed `str_replace` attempts and hits the repeat block
+  - `crow-9b-opus-4.6-distill-heretic_qwen3.5` does not reach that same semantic boundary:
+    - non-stream recovers from the same absolute-path read mistake but then loops on failed `str_replace` / `apply_patch` attempts until `TOOL_REPEAT_BLOCKED`
+    - stream drifts further, invents `src/parsing/parser.test.js`, attempts `write_file` on that new path without a prior read, and also makes a bad shell call
+- First exact divergence:
+  - baseline `qwen2.5-coder-7b-instruct@q8_0` non-stream skips required validation entirely after editing
+  - `qwen/qwen3.5-9b` non-stream reaches validation and exposes a semantic bug in the landed edit instead
+  - `crow-9b-opus-4.6-distill-heretic_qwen3.5` remains stuck in edit-recovery failure and never reaches successful validation
+- Classification:
+  - pure model-choice
+- Decision:
+  - keep `T5` as an open harder-task comparison slice; no shared LocalAgent runtime defect is shown by this evidence
+- Evidence:
+  - baseline `qwen2.5-coder-7b-instruct@q8_0`
+    - non-stream: [83ce0588-21f8-4250-8ebd-b5216bffce00.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t5-qwen25coder7binstructq80-run-stream-off-20260310-200356-993/runs/83ce0588-21f8-4250-8ebd-b5216bffce00.json)
+    - stream: [abcab29c-3298-45ca-8659-8e3eadd21b20.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t5-qwen25coder7binstructq80-run-stream-on-20260310-200357-065/runs/abcab29c-3298-45ca-8659-8e3eadd21b20.json)
+  - `qwen/qwen3.5-9b`
+    - non-stream: [d8c2267d-8438-4be9-b8b2-5b27400c5481.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t5-qwenqwen359b-run-stream-off-20260310-201645-388/runs/d8c2267d-8438-4be9-b8b2-5b27400c5481.json)
+    - stream: [ed7bbd85-fac6-468d-9ba0-0c2ab4183d10.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t5-qwenqwen359b-run-stream-on-20260310-202228-476/runs/ed7bbd85-fac6-468d-9ba0-0c2ab4183d10.json)
+  - `crow-9b-opus-4.6-distill-heretic_qwen3.5`
+    - non-stream: [7ba1017e-a177-4fce-8ad9-9c5823fcfd17.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t5-crow9bopus46distillhereticqwen35-run-stream-off-20260310-205451-464/runs/7ba1017e-a177-4fce-8ad9-9c5823fcfd17.json)
+    - stream: [f12cab8e-0e6e-42ce-bda3-611966640f6f.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t5-crow9bopus46distillhereticqwen35-run-stream-on-20260310-205451-493/runs/f12cab8e-0e6e-42ce-bda3-611966640f6f.json)
+- Notes:
+  - `qwen/qwen3.5-9b` non-stream is the strongest current `T5` path because it reaches the real semantic failure boundary
+  - baseline `qwen2.5-coder-7b-instruct@q8_0` remains weaker on `T5`, especially because it finalizes before required validation in non-stream
+  - `crow-9b-opus-4.6-distill-heretic_qwen3.5` adds contrast, but mainly reinforces `T5` as an edit-recovery pressure task rather than pointing to a shared runtime defect
+  - the streamed `qwen/qwen3.5-9b` and `crow-9b-opus-4.6-distill-heretic_qwen3.5` failures suggest `T5` is still useful for edit-recovery pressure, but this run set does not justify a runtime change by itself
