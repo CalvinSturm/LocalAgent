@@ -10,10 +10,10 @@ Legend:
 
 | Model | Variant | Best Mode | T1 S | T1 NS | T2 S | T2 NS | T3 S | T3 NS | Accepted Limitation | Recommended Use |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `qwen2.5-coder-7b-instruct@q8_0` | `Q8_0` | non-stream | P | P | P | P | F | P | streamed `T3` ordering failure | Baseline |
-| `qwen/qwen3.5-9b` (effective `Q6_k`) | `Q6_k` | stream for `T1`/`T2` | P | P | n/a | n/a | mixed | mixed | `T3` repeat-`str_replace` after equivalent recovery | Secondary comparison |
+| `qwen2.5-coder-7b-instruct@q8_0` | `Q8_0` | non-stream for general checks | P | P | P | P | F | F | `T3` validation/exact-output completion is an accepted limitation | Baseline |
+| `qwen/qwen3.5-9b` (effective `Q6_k`) | `Q6_k` | stream, especially for `T3` | P | P | n/a | n/a | P | F | `T3` is strong in stream but weaker in non-stream and load-sensitive | Secondary comparison |
 | `qwen/qwen3.5-9b` (current `Q8_0`) | `Q8_0` | none | F | F | mixed | mixed | F | F | broader exact-output drift and repeated tool misuse across reruns | Not recommended |
-| `crow-9b-opus-4.6-distill-heretic_qwen3.5` | default tested load | either for `T1`/`T2` | P | P | P | P | F | F | `T3` edit convergence / tool protocol | Secondary comparison |
+| `crow-9b-opus-4.6-distill-heretic_qwen3.5` | default tested load | either for `T1`/`T2`, stream for `T3` debugging | P | P | P | P | F | F | `T3` edit convergence / validation path instability | Secondary comparison |
 | `deepseek-coder-v2-lite-instruct` | default tested load | either for `T1` only | P | P | F | F | F | F | ineffective write / provider crash / no-tool `T3` | Comparison only |
 | `zai-org/glm-4.6v-flash` | default tested load | none | F | F | F | F | F | F | exact-output on `T1`, ineffective write on `T2`, repeat-guard on `T3` | Mid-tier comparison only |
 | `qwen3.5-9b-ud` | `UD` | non-stream looked slightly better | F | P | P | F | F | F | contract-complete instability across both modes | Comparison only |
@@ -32,5 +32,6 @@ Legend:
 - `Variant` is the doc-level field for quantization, provider-side preset, or another load distinction that LocalAgent may not infer from the model ID alone.
 - the effective `Q6_k` row is included because its earlier targeted investigation still makes it one of the most useful secondary LocalAgent comparisons even though it was not run as a full later leaderboard-style matrix.
 - `mixed` means the task family is informative but comes from the earlier targeted Tool B investigation rather than the exact later leaderboard slice.
-- The current baseline remains `qwen2.5-coder-7b-instruct@q8_0`.
+- The current baseline remains `qwen2.5-coder-7b-instruct@q8_0`, but `T3` is now treated as an accepted baseline-model limitation rather than a shared runtime defect.
+- `qwen/qwen3.5-9b` streamed is the current positive control for the `T3` validation contract.
 - Use [manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md) for repeatable comparisons.

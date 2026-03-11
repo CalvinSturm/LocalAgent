@@ -18,8 +18,8 @@ Why:
 - qualification passes cleanly
 - `T1` passes in both stream modes
 - `T2` passes in both stream modes
-- `T3` passes in non-stream mode
-- the main remaining limitation on the narrow matrix is a streamed `T3` ordering failure
+- it remains the best overall fit on the narrow matrix across `T1` and `T2`
+- `T3` is now treated as an accepted limitation for this baseline rather than as the main runtime target
 
 ## Current Ranking
 
@@ -28,18 +28,19 @@ Why:
 `qwen2.5-coder-7b-instruct@q8_0`
 - strongest current result on the narrow `T1`/`T2`/`T3` matrix
 - best current choice for local regression checks
-- best mode: non-stream for contract-complete multi-step tasks
-- accepted limitation: streamed `T3` ordering failure
+- best mode: non-stream for general contract-complete checks
+- accepted limitation: `T3` validation/exact-output completion is weaker than stronger comparison models, especially in non-stream
 
 ### Strong Secondary Comparisons
 
 `qwen/qwen3.5-9b` (effective `Q6_k` result)
 - good narrow tool-use viability
 - strong streamed behavior after the qualification fixes
+- strongest current positive control on `T3` in streamed mode
 - accepted non-stream Tool B limitation is pure model-choice after equivalent recovery
 - keep this separated from the newer weaker `Q8_0` reruns under the same model ID
 - best mode: stream for `T1`/`T2`
-- accepted limitation: `T3` repeat-`str_replace` convergence failure
+- accepted limitation: `T3` is still weaker in non-stream and remains load-sensitive
 
 `crow-9b-opus-4.6-distill-heretic_qwen3.5`
 - passes `T1` and `T2` in both modes
@@ -166,7 +167,7 @@ Observed pattern:
 - or reaches the edit seam but never produces an effective write
 
 This appears in:
-- streamed `T3` for `qwen2.5-coder-7b-instruct@q8_0`
+- `T3` for `qwen2.5-coder-7b-instruct@q8_0`, which is now treated as an accepted baseline-model limitation rather than a shared runtime defect
 - non-stream Tool B for `qwen/qwen3.5-9b` (effective `Q6_k` result)
 - both `Q8_0` reruns for `qwen/qwen3.5-9b`
 - both modes of `crow-9b-opus-4.6-distill-heretic_qwen3.5` on `T3`
@@ -187,7 +188,8 @@ This appears in:
 For local-model regression testing now:
 - use `qwen2.5-coder-7b-instruct@q8_0` as the baseline
 - prefer non-stream mode for contract-complete multi-step tasks
-- use `qwen/qwen3.5-9b` (effective `Q6_k` result) or `crow-9b-opus-4.6-distill-heretic_qwen3.5` as secondary comparison models
+- use `qwen/qwen3.5-9b` (effective `Q6_k` result) as the positive `T3` streamed comparison
+- use `crow-9b-opus-4.6-distill-heretic_qwen3.5` as the secondary contrast for `T3` edit-convergence behavior
 - record quantization, provider-side preset, and sampling settings explicitly for every leaderboard-affecting run
 - use the run procedure in [manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md)
 - log new findings in [manual-testing/model-investigation-log.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/model-investigation-log.md)

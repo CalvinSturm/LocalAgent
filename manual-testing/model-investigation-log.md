@@ -1202,3 +1202,158 @@ When a provider can serve different quantizations or presets behind the same mod
 - Notes:
   - this replaces the earlier failed heuristic attempt to infer pasted newlines from queued input events
   - the visible TUI banner now says `Enter for newline, Ctrl+Enter to submit`
+
+---
+
+### 2026-03-10 - `qwen2.5-coder-7b-instruct@q8_0` - `T3 sequencing improvement is partial`
+- Commit baseline:
+  - `5213c1d` Clarify validation sequencing in edit workflow
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - targeted `T3` follow-up on `run` stream-off / stream-on
+- Prompt/task:
+  - `T3` parser-fix task
+  - explicit contract:
+    - read/edit parser behavior
+    - run `node --test`
+    - final answer must be exact
+- Outcome:
+  - the new sequencing instruction is a real first-turn improvement
+  - non-stream `run` now reliably enters the edit path with `read_file` first instead of jumping to `shell`
+  - streamed first-turn provider traces also now show `read_file` first, followed by `str_replace`
+  - the overall task still fails later because the model does not reliably complete the required validation step
+- First exact divergence:
+  - before the fix, `T3` often chose `shell` first because the prompt named `node --test` explicitly
+  - after the fix, the first-turn tool choice moves into the intended read/edit sequence, but the later follow-on step still lets the model jump to the exact final answer without actually running validation
+- Classification:
+  - compatibility gap
+- Decision:
+  - partial improvement
+- Evidence:
+  - non-stream improved runs:
+    - [4998e711-4490-4fc2-8fd7-cd31790d2025.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwen25coder7binstructq80-run-stream-off-20260310-185242-700/runs/4998e711-4490-4fc2-8fd7-cd31790d2025.json)
+    - [7950dbd5-9bd3-41be-bf30-59148452670a.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t3-shared-run-stream-off/runs/7950dbd5-9bd3-41be-bf30-59148452670a.json)
+  - streamed first-turn provider traces:
+    - [openai-compat-trace-2026-03-11T01-53-01_9684915Z.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-t3-qwen25coder7binstructq80-run-stream-on-20260310-185257-106/openai-compat-trace-2026-03-11T01-53-01_9684915Z.json)
+    - [openai-compat-trace-2026-03-11T01-53-02_6422246Z.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/openai-traces/eval-t3-qwen25coder7binstructq80-run-stream-on-20260310-185257-106/openai-compat-trace-2026-03-11T01-53-02_6422246Z.json)
+- Notes:
+  - the remaining live seam is the post-write follow-on prompt in [run_finalize.rs](/C:/Users/Calvin/Software%20Projects/LocalAgent/src/agent/run_finalize.rs), which currently says:
+    - `Take exactly one more turn now: if the prompt asked for validation or tests, do that next if permitted; otherwise provide the final user-facing answer...`
+  - that wording still leaves room for the model to skip the validation tool call and jump straight to the exact final answer
+
+---
+
+### 2026-03-10 - `qwen2.5-coder-7b-instruct@q8_0` - `T3 follow-on wording experiment did not improve validation compliance`
+- Commit baseline:
+  - uncommitted experiment after `5213c1d`
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - targeted `T3` follow-up on `run` non-stream
+- Prompt/task:
+  - `T3` parser-fix task
+  - explicit contract:
+    - edit the parser
+    - run `node --test`
+    - exact final answer only after validation succeeds
+- Outcome:
+  - tightened the post-write follow-on prompt to say:
+    - run `node --test` via the `shell` tool before any final answer
+    - do not provide the final answer until `node --test` succeeds
+  - the baseline model still ignored the stronger wording
+  - it edited the file, skipped `shell`, and responded with code plus the exact final-answer text
+  - LocalAgent correctly rejected the run with exact-output failure
+- First exact divergence:
+  - none at the prompt seam itself; the stronger wording reached the transcript correctly
+  - the model explicitly ignored the validation instruction rather than appearing under-specified
+- Classification:
+  - pure model-choice
+- Decision:
+  - negative evidence
+- Evidence:
+  - rerun after rebuild:
+    - [1f7dcfee-152a-41d7-a99f-20e4f87d5ad8.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwen25coder7binstructq80-run-stream-off-20260310-190429-119/runs/1f7dcfee-152a-41d7-a99f-20e4f87d5ad8.json)
+  - transcript in that run shows the stronger follow-on message:
+    - `run \`node --test\` via the shell tool before giving any final answer`
+    - `Do not provide the final user-facing answer until \`node --test\` succeeds`
+- Notes:
+  - stop iterating on post-write prompt wording for this model/task slice
+  - next work should move to a different seam or a different model comparison, not further wording tweaks
+
+---
+
+### 2026-03-10 - `qwen2.5-coder-7b-instruct@q8_0` - `exact-final-answer framing reminder did not improve T3`
+- Commit baseline:
+  - uncommitted experiment after `5213c1d`
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - targeted `T3` follow-up on `run` non-stream
+- Prompt/task:
+  - `T3` parser-fix task
+  - exact final answer plus required `node --test`
+- Outcome:
+  - added an initial developer reminder that the exact final answer is only a reporting format after validation succeeds
+  - the reminder reached the transcript correctly
+  - the baseline model still ignored it
+  - it performed `read_file`, then `write_file`, then emitted prose plus the exact final-answer block without any `shell` call
+  - LocalAgent correctly rejected the run with exact-final-answer compliance failure
+- First exact divergence:
+  - none at the instruction-delivery seam; the reminder is present in the transcript
+  - the model explicitly ignored the reminder rather than appearing under-specified
+- Classification:
+  - pure model-choice
+- Decision:
+  - negative evidence
+- Evidence:
+  - rerun after rebuild:
+    - [12095020-c5d1-493c-bc00-a9b95c6b3ff7.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwen25coder7binstructq80-run-stream-off-20260310-191712-829/runs/12095020-c5d1-493c-bc00-a9b95c6b3ff7.json)
+  - transcript in that run includes:
+    - `If the prompt requires a validation command and also specifies an exact final answer, treat the exact final answer as a reporting format only after the validation command succeeds.`
+- Notes:
+  - stop iterating on prompt-contract wording for this model/task slice
+  - next work should move to a different seam or a different model comparison
+
+---
+
+### 2026-03-10 - `T3` - `3-model comparison shows baseline-specific limitation`
+- Commit baseline:
+  - `main` after `5213c1d`
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - targeted `T3` comparison on `run` stream-off and stream-on
+- Prompt/task:
+  - `T3` parser-fix task
+  - explicit contract:
+    - fix parser behavior
+    - run `node --test`
+    - exact final answer only after validation succeeds
+- Outcome:
+  - the old shell-first boundary is gone across all three comparison models
+  - all six runs now begin with `read_file`
+  - the remaining failure is not a general LocalAgent inability to reach validation
+  - `qwen/qwen3.5-9b` streamed reaches `shell` and completes `T3` successfully
+  - the baseline `qwen2.5-coder-7b-instruct@q8_0` still fails this slice, especially in non-stream
+- First exact divergence:
+  - baseline model often enters the edit path but either skips validation or fails exact-output compliance after validation attempts
+  - comparison models show the contract is achievable in LocalAgent, especially `qwen/qwen3.5-9b` streamed
+- Classification:
+  - pure model-choice
+- Decision:
+  - accepted limitation for baseline model on `T3`
+- Evidence:
+  - baseline `qwen2.5-coder-7b-instruct@q8_0`
+    - non-stream: [9eb3b936-0a86-4217-9fe7-eef607392122.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwen25coder7binstructq80-run-stream-off-20260310-193010-722/runs/9eb3b936-0a86-4217-9fe7-eef607392122.json)
+    - stream: [7c0c333b-8b0d-48d5-8a44-dd23c5d0fa51.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwen25coder7binstructq80-run-stream-on-20260310-193027-218/runs/7c0c333b-8b0d-48d5-8a44-dd23c5d0fa51.json)
+  - `qwen/qwen3.5-9b`
+    - non-stream: [86844fcf-d469-4c18-983d-5496dfb3cf97.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwenqwen359b-run-stream-off-20260310-193558-921/runs/86844fcf-d469-4c18-983d-5496dfb3cf97.json)
+    - stream: [27d3604b-ba71-4c74-80af-7e9ec939bdfd.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwenqwen359b-run-stream-on-20260310-193722-059/runs/27d3604b-ba71-4c74-80af-7e9ec939bdfd.json)
+  - `crow-9b-opus-4.6-distill-heretic_qwen3.5`
+    - non-stream: [bb941133-6e83-4acb-85af-b2560cba423f.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-crow9bopus46distillhereticqwen35-run-stream-off-20260310-193933-890/runs/bb941133-6e83-4acb-85af-b2560cba423f.json)
+    - stream: [d6dcb5f2-073d-4830-a5b2-83a1454afdd7.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-crow9bopus46distillhereticqwen35-run-stream-on-20260310-194027-364/runs/d6dcb5f2-073d-4830-a5b2-83a1454afdd7.json)
+- Notes:
+  - this comparison is enough to stop treating `T3` as a general LocalAgent validation-contract defect
+  - `qwen/qwen3.5-9b` streamed is the positive control that shows the `T3` contract is achievable
+  - `qwen2.5-coder-7b-instruct@q8_0` remains the general baseline, but `T3` should be treated as an accepted model limitation rather than a shared runtime bug
