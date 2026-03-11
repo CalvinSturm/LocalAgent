@@ -49,9 +49,12 @@ Do this next if:
 Priority: high
 
 Why:
-- the strongest remaining repeated failure on harder tasks is edit convergence, especially repeated `str_replace` failure on `T3`-class tasks
+- the strongest remaining repeated failure on harder tasks is edit convergence, especially repeated `str_replace` failure on `T3`/`T5`-class tasks
 - OpenCode succeeded earlier on the same parser-fix shape by using a different edit affordance sooner
-- LocalAgent stream success on some runs shows the runtime is capable enough; the remaining question is whether tool affordance or prompt framing can improve convergence
+- LocalAgent success on some comparison runs shows the runtime is capable enough; the remaining question is whether tool affordance or prompt framing can improve convergence
+- recent `T5` comparisons show a useful split:
+  - `qwen/qwen3.5-9b` non-stream reaches the real semantic bug boundary after a real edit plus `node --test`
+  - baseline and `crow-9b-opus-4.6-distill-heretic_qwen3.5` usually fail earlier in edit recovery
 
 Target:
 - inspect how stronger open-source agents steer models toward patch/diff-style editing
@@ -134,7 +137,11 @@ Reopen only if a new regression is shown with current commits and artifacts.
 These are limitations to document, not current runtime bugs to fix immediately:
 
 - `qwen/qwen3.5-9b`:
-  - effective `Q6_k` result remains useful, but `T3`-class repeated `str_replace` convergence is still an accepted limitation
+  - effective `Q6_k` result remains useful, but `T3`/`T5` harder-task edit convergence is still an accepted limitation
+- `qwen2.5-coder-7b-instruct@q8_0`:
+  - `T3`, `T4`, and `T5` are accepted harder-task limitations and should not be treated as shared runtime defects without new evidence
+- `crow-9b-opus-4.6-distill-heretic_qwen3.5`:
+  - useful comparison model, but `T3`/`T5` still show edit-recovery instability rather than a clean runtime bug signal
 - `qwen/qwen3.5-9b` current `Q8_0` load:
   - unstable across reruns under the same model ID
 - `phi-4`:
