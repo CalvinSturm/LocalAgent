@@ -1076,3 +1076,96 @@ When a provider can serve different quantizations or presets behind the same mod
 - Notes:
   - This is enough negative evidence to stop iterating blindly on top-level edit-policy wording or single `apply_patch` example text for streamed `T3` on the baseline model.
   - The next investigation should pivot to TUI vs `run` parity or to a first-turn request/transcript comparison on the failing `T3` slice.
+
+---
+
+### 2026-03-10 - `qwen2.5-coder-7b-instruct@q8_0` - `required validation-command enforcement`
+- Commit baseline:
+  - `382ef11` Require validation commands before final ok
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - focused runtime regression tests plus targeted `T3` TUI rerun
+- Prompt/task:
+  - exact-final-answer tasks that also explicitly require a validation command such as `node --test`
+  - `T3` parser-fix task in TUI stream-on
+- Outcome:
+  - exact final-output matching no longer permits final `ok` when the prompt explicitly requires a validation command that was not actually executed successfully
+  - `T3` TUI stream-on now fails cleanly with `planner_error` instead of a false `ok` when the model prints the required final string without running `node --test`
+- First exact divergence:
+  - before the fix, exact final-answer matching could satisfy completion even when no successful `shell node --test` had happened
+  - after the fix, the runtime rejects that path with `required validation command was not executed successfully before final answer`
+- Classification:
+  - runtime bug
+- Decision:
+  - fixed
+- Evidence:
+  - focused tests:
+    - `cargo test required_validation_command --bin localagent -- --nocapture`
+    - `cargo test runtime_exact_final_answer_requires_successful_validation_command --bin localagent -- --nocapture`
+    - `cargo test runtime_exact_final_answer_allows_matching_successful_validation_command --bin localagent -- --nocapture`
+  - TUI run record after fix:
+    - [be9404d5-6d93-4c12-8798-9b07d90259a3.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwen25coder7binstructq80-tui-stream-on-20260310-173509-003/runs/be9404d5-6d93-4c12-8798-9b07d90259a3.json)
+  - earlier false-`ok` comparison run:
+    - [7835977f-b474-4a0e-b462-59297efd9ef1.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/t3-tui-stream-on/runs/7835977f-b474-4a0e-b462-59297efd9ef1.json)
+- Notes:
+  - This is a narrow completion invariant, not a broader loop change.
+  - The guard is keyed to explicit prompt requirements like `node --test`, `cargo test`, `npm test`, or `pnpm test`.
+
+---
+
+### 2026-03-10 - `qwen2.5-coder-7b-instruct@q8_0` - `failed TUI run rendering`
+- Commit baseline:
+  - `1d79dde` Hide final assistant text on failed TUI runs
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - targeted TUI regression following the validation-command fix
+- Prompt/task:
+  - `T3` parser-fix task, especially cases where the model emits a success-looking final string even though the run exits `planner_error`
+- Outcome:
+  - failed TUI runs no longer append the last assistant message into the visible transcript as if it were accepted output
+  - the TUI now foregrounds the system failure message instead of visually presenting an unaccepted success string
+- First exact divergence:
+  - before the fix, [active_turn.rs](/C:/Users/Calvin/Software%20Projects/LocalAgent/src/chat_tui/active_turn.rs) always appended the last assistant text regardless of `exit_reason`
+  - after the fix, only `ok` exits render a final assistant closeout entry
+- Classification:
+  - runtime bug
+- Decision:
+  - fixed
+- Evidence:
+  - focused test:
+    - `cargo test renders_final_assistant_entry_only_for_successful_runs --bin localagent -- --nocapture`
+  - paired with the validation-command rerun:
+    - [be9404d5-6d93-4c12-8798-9b07d90259a3.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/repro-state/eval-t3-qwen25coder7binstructq80-tui-stream-on-20260310-173509-003/runs/be9404d5-6d93-4c12-8798-9b07d90259a3.json)
+- Notes:
+  - This is a user-facing TUI presentation fix only.
+  - Run artifacts still preserve `final_output`; the change only affects failed-run transcript rendering in the UI.
+
+---
+
+### 2026-03-10 - `manual testing workflow` - `reusable eval runner`
+- Commit baseline:
+  - `c0ac4b1` Add manual eval runner and TUI failure rendering fix
+- Provider:
+  - n/a
+- Mode:
+  - workflow/tooling
+- Prompt/task:
+  - repeated `T1` to `T5` model evals across stream/non-stream and `run`/`chat --tui`
+- Outcome:
+  - added a single reusable script entrypoint for manual eval work:
+    - [run_manual_eval.ps1](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/scripts/run_manual_eval.ps1)
+  - the script prepares a fresh single-task control-pack instance, creates fresh state/trace dirs, launches one-shot `run` or `chat --tui`, and prints the newest run-record path automatically
+- First exact divergence:
+  - none; this is a workflow improvement to replace repeated ad hoc command copy/paste
+- Classification:
+  - process improvement
+- Decision:
+  - fixed
+- Evidence:
+  - dry-run examples validated during implementation:
+    - `pwsh -File .\manual-testing\scripts\run_manual_eval.ps1 -Task T2 -Model 'qwen/qwen3.5-9b' -DryRun`
+    - `pwsh -File .\manual-testing\scripts\run_manual_eval.ps1 -Task T3 -Model 'qwen2.5-coder-7b-instruct@q8_0' -Stream -Tui -CopyPrompt -DryRun`
+- Notes:
+  - The runbook and canonical T-pack README now point to this script as the fast path for repeated eval slices.
