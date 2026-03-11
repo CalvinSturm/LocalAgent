@@ -1169,3 +1169,36 @@ When a provider can serve different quantizations or presets behind the same mod
     - `pwsh -File .\manual-testing\scripts\run_manual_eval.ps1 -Task T3 -Model 'qwen2.5-coder-7b-instruct@q8_0' -Stream -Tui -CopyPrompt -DryRun`
 - Notes:
   - The runbook and canonical T-pack README now point to this script as the fast path for repeated eval slices.
+
+---
+
+### 2026-03-10 - `TUI multiline paste` - `line-by-line prompt submission`
+- Commit baseline:
+  - `c1eb88d` Add multiline input mode to TUI chat
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Mode:
+  - `chat --tui`
+- Prompt/task:
+  - multiline `T3` prompt pasted from Codex into the TUI input field
+- Outcome:
+  - plain Enter now inserts a newline in the main TUI input buffer
+  - `Ctrl+Enter` is now the explicit submit chord for both idle TUI input and active-run command input
+  - multiline pasted prompts can stay in the input box until the operator explicitly submits
+- First exact divergence:
+  - before the fix, pasted multiline prompts could submit line-by-line because plain Enter was always the submit key in the TUI main input path
+  - after the fix, plain Enter no longer submits and the TUI uses an explicit submit key instead
+- Classification:
+  - runtime bug
+- Decision:
+  - fixed
+- Evidence:
+  - focused tests:
+    - `cargo test plain_enter_in_main_input_inserts_newline --bin localagent -- --nocapture`
+    - `cargo test ctrl_enter_in_main_input_submits --bin localagent -- --nocapture`
+    - `cargo build --bin localagent`
+  - manual repro:
+    - operator confirmed multiline paste now works with explicit submit after the change
+- Notes:
+  - this replaces the earlier failed heuristic attempt to infer pasted newlines from queued input events
+  - the visible TUI banner now says `Enter for newline, Ctrl+Enter to submit`
