@@ -228,6 +228,15 @@ impl<P: ModelProvider> Agent<P> {
         "Tool-only phase active. Return exactly one valid tool call and no prose.".to_string()
     }
 
+    pub(super) fn required_validation_phase_message(&self, user_prompt: &str) -> String {
+        let required_command =
+            crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
+                .unwrap_or("the required validation command");
+        format!(
+            "Required validation phase active. Return exactly one shell tool call that runs `{required_command}` and no prose."
+        )
+    }
+
     pub(super) fn emit_run_start_events(&mut self, run_id: &str) {
         self.emit_event(
             run_id,

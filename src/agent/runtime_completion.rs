@@ -6,6 +6,19 @@ use crate::types::{Message, TokenUsage, ToolCall};
 
 use super::{Agent, ToolDecisionRecord};
 
+fn assistant_content_fabricates_tool_result(assistant_content: Option<&str>) -> bool {
+    let text = assistant_content.unwrap_or_default().to_ascii_uppercase();
+    text.contains("[TOOL_RESULT]") || text.contains("[END_TOOL_RESULT]")
+}
+
+fn last_successful_read_path(observed_tool_executions: &[ToolExecutionRecord]) -> Option<String> {
+    observed_tool_executions.iter().rev().find_map(|record| {
+        (record.ok && record.name == "read_file")
+            .then(|| record.path.clone())
+            .flatten()
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeCompletionDecision {
     ExecuteTools,
@@ -245,8 +258,35 @@ impl<P: ModelProvider> Agent<P> {
                 if self.assistant_content_has_protocol_artifacts(assistant_content) {
                     let blocked_runtime_completion_count =
                         blocked_runtime_completion_count.saturating_add(1);
-                    let corrective_instruction =
-                        "Your last message repeated tool protocol artifacts instead of a user-facing answer. Do not echo [TOOL_CALL] or [TOOL_RESULT] blocks. If the task is complete, reply with the final answer only.";
+                    let fabricated_tool_result =
+                        assistant_content_fabricates_tool_result(assistant_content);
+                    let recent_read_path =
+                        if fabricated_tool_result && enforce_implementation_integrity_guard {
+                            last_successful_read_path(observed_tool_executions)
+                        } else {
+                            None
+                        };
+                    let (corrective_instruction, reason_code) = if let Some(path) = recent_read_path
+                    {
+                        (
+                            format!(
+                                "Do not simulate tool results. Emit exactly one real tool call now and no prose. You already read `{path}`. Use edit or apply_patch on that file."
+                            ),
+                            "assistant_fabricated_tool_result_after_read",
+                        )
+                    } else if fabricated_tool_result {
+                        (
+                            "Do not simulate tool results. Emit exactly one real tool call now and no prose. If you already inspected the file, use edit or apply_patch on that file."
+                                .to_string(),
+                            "assistant_fabricated_tool_result",
+                        )
+                    } else {
+                        (
+                            "Your last message repeated tool protocol artifacts instead of a user-facing answer. Do not echo [TOOL_CALL] or [TOOL_RESULT] blocks. If the task is complete, reply with the final answer only."
+                                .to_string(),
+                            "assistant_protocol_artifact_echo",
+                        )
+                    };
                     self.emit_event(
                         &run_id,
                         step,
@@ -254,7 +294,7 @@ impl<P: ModelProvider> Agent<P> {
                         serde_json::json!({
                             "error": corrective_instruction,
                             "source": "tool_protocol_guard",
-                            "reason_code": "assistant_protocol_artifact_echo",
+                            "reason_code": reason_code,
                             "blocked_count": blocked_runtime_completion_count
                         }),
                     );
@@ -263,13 +303,13 @@ impl<P: ModelProvider> Agent<P> {
                         step,
                         crate::events::EventKind::StepBlocked,
                         serde_json::json!({
-                            "reason": "assistant_protocol_artifact_echo",
+                            "reason": reason_code,
                             "blocked_count": blocked_runtime_completion_count
                         }),
                     );
                     messages.push(Message {
                         role: crate::types::Role::Developer,
-                        content: Some(corrective_instruction.to_string()),
+                        content: Some(corrective_instruction),
                         tool_call_id: None,
                         tool_name: None,
                         tool_calls: None,

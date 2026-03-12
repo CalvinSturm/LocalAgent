@@ -133,9 +133,11 @@ impl<P: ModelProvider> Agent<P> {
         let mut post_write_follow_on_turn_count: u32 = 0;
         let mut exact_final_answer_retry_count: u32 = 0;
         let mut required_validation_retry_count: u32 = 0;
+        let mut required_validation_phase_active = false;
         let mut operator_delivery_count: u32 = 0;
         let mut blocked_control_envelope_count: u32 = 0;
         let mut blocked_tool_only_count: u32 = 0;
+        let mut blocked_required_validation_phase_count: u32 = 0;
         let mut tool_only_phase_active = prompt_requires_tool_only(user_prompt);
         let mut exact_final_answer_only_phase_active = false;
         let mut last_user_output: Option<String> = None;
@@ -543,6 +545,72 @@ impl<P: ModelProvider> Agent<P> {
             }
             let has_actionable_tool_calls = !resp.tool_calls.is_empty();
             let model_signaled_finalize = !has_actionable_tool_calls;
+            if required_validation_phase_active {
+                let assistant_has_prose = !resp
+                    .assistant
+                    .content
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty();
+                let valid_required_validation_turn = resp.tool_calls.len() == 1
+                    && resp.tool_calls[0].name == "shell"
+                    && !assistant_has_prose;
+                if !valid_required_validation_turn {
+                    blocked_required_validation_phase_count =
+                        blocked_required_validation_phase_count.saturating_add(1);
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": "required_validation_phase_requires_shell",
+                            "blocked_count": blocked_required_validation_phase_count
+                        }),
+                    );
+                    if blocked_required_validation_phase_count >= 2 {
+                        let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: required validation phase requires exactly one shell tool call and no prose".to_string();
+                        self.emit_event(
+                            &run_id,
+                            step as u32,
+                            EventKind::Error,
+                            serde_json::json!({
+                                "error": reason,
+                                "source": "runtime_required_validation_guard",
+                                "failure_class": "E_PROTOCOL_REQUIRED_VALIDATION_PHASE"
+                            }),
+                        );
+                        return self.finalize_planner_error_with_output_with_end(
+                            step as u32,
+                            run_id,
+                            started_at,
+                            reason,
+                            messages,
+                            observed_tool_calls,
+                            observed_tool_decisions,
+                            request_context_chars,
+                            last_compaction_report,
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            &total_token_usage,
+                            &taint_state,
+                        );
+                    }
+                    messages.push(resp.assistant.clone());
+                    messages.push(Message {
+                        role: Role::Developer,
+                        content: Some(self.required_validation_phase_message(user_prompt)),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    });
+                    continue;
+                }
+                required_validation_phase_active = false;
+                blocked_required_validation_phase_count = 0;
+            }
             if tool_only_phase_active
                 && model_signaled_finalize
                 && !resp
@@ -967,6 +1035,7 @@ impl<P: ModelProvider> Agent<P> {
                     blocked_runtime_completion_count = next_count;
                     operator_delivery_count = next_op_count;
                     required_validation_retry_count += 1;
+                    required_validation_phase_active = true;
                     exact_final_answer_only_phase_active = false;
                     continue 'agent_steps;
                 }
@@ -974,6 +1043,7 @@ impl<P: ModelProvider> Agent<P> {
                     blocked_runtime_completion_count: next_count,
                 } => {
                     blocked_runtime_completion_count = next_count;
+                    required_validation_phase_active = false;
                     exact_final_answer_only_phase_active = false;
                 }
                 RuntimeCompletionAction::Finalize(outcome) => return *outcome,
