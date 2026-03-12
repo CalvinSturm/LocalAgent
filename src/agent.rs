@@ -15,7 +15,8 @@ use crate::providers::ModelProvider;
 use crate::taint::{TaintMode, TaintState, TaintToggle};
 use crate::tools::ToolRuntime;
 use crate::trust::policy::Policy;
-use crate::types::{Message, Role, TokenUsage, ToolDef};
+use crate::types::{Message, Role, TokenUsage, ToolCall, ToolDef};
+use serde_json::json;
 use uuid::Uuid;
 
 mod agent_types;
@@ -100,6 +101,28 @@ pub struct Agent<P: ModelProvider> {
     pub operator_queue_rx: Option<std::sync::mpsc::Receiver<QueueSubmitRequest>>,
 }
 impl<P: ModelProvider> Agent<P> {
+    fn synthesize_required_validation_shell_call(
+        &self,
+        user_prompt: &str,
+        assistant: &Message,
+    ) -> Option<ToolCall> {
+        let required_command =
+            crate::agent_impl_guard::prompt_required_validation_command(user_prompt)?;
+        let raw = assistant.content.as_deref()?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+
+        if let Some(args) = synthesize_shell_args_from_validation_text(raw, required_command) {
+            return Some(ToolCall {
+                id: format!("tc_validation_shell_{}", Uuid::new_v4().simple()),
+                name: "shell".to_string(),
+                arguments: args,
+            });
+        }
+        None
+    }
+
     pub async fn run(
         &mut self,
         user_prompt: &str,
@@ -546,6 +569,23 @@ impl<P: ModelProvider> Agent<P> {
             let has_actionable_tool_calls = !resp.tool_calls.is_empty();
             let model_signaled_finalize = !has_actionable_tool_calls;
             if required_validation_phase_active {
+                if resp.tool_calls.is_empty() {
+                    if let Some(shell_call) =
+                        self.synthesize_required_validation_shell_call(user_prompt, &resp.assistant)
+                    {
+                        self.emit_event(
+                            &run_id,
+                            step as u32,
+                            EventKind::StepBlocked,
+                            serde_json::json!({
+                                "reason": "required_validation_phase_shell_shape_repaired",
+                                "tool_name": "shell"
+                            }),
+                        );
+                        resp.tool_calls.push(shell_call);
+                        resp.assistant.content = Some(String::new());
+                    }
+                }
                 let assistant_has_prose = !resp
                     .assistant
                     .content
@@ -1353,6 +1393,96 @@ impl<P: ModelProvider> Agent<P> {
             &total_token_usage,
             &taint_state,
         )
+    }
+}
+
+fn synthesize_shell_args_from_validation_text(
+    raw: &str,
+    required_command: &str,
+) -> Option<serde_json::Value> {
+    if let Some(v) = crate::agent_tool_exec::parse_jsonish(raw) {
+        let normalized = crate::tools::normalize_builtin_tool_args("shell", &v);
+        if normalized_shell_command(&normalized).as_deref() == Some(required_command) {
+            return Some(normalized);
+        }
+    }
+
+    let trimmed = strip_simple_code_fence(raw).trim();
+    if trimmed == required_command {
+        return Some(json!({ "command": required_command }));
+    }
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if let Some(command) = line.strip_prefix("command=") {
+            if command.trim() == required_command {
+                return Some(json!({ "command": required_command }));
+            }
+        }
+    }
+    None
+}
+
+fn normalized_shell_command(args: &serde_json::Value) -> Option<String> {
+    let obj = args.as_object()?;
+    if let Some(command) = obj.get("command").and_then(|v| v.as_str()) {
+        return Some(command.trim().to_string());
+    }
+    let cmd = obj.get("cmd").and_then(|v| v.as_str())?;
+    let mut parts = vec![cmd.trim().to_string()];
+    if let Some(arr) = obj.get("args").and_then(|v| v.as_array()) {
+        for item in arr {
+            parts.push(item.as_str()?.trim().to_string());
+        }
+    }
+    Some(parts.join(" ").trim().to_string())
+}
+
+fn strip_simple_code_fence(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with("```") || !trimmed.ends_with("```") {
+        return trimmed;
+    }
+    let inner = &trimmed[3..trimmed.len() - 3];
+    match inner.find('\n') {
+        Some(idx) => inner[idx + 1..].trim(),
+        None => inner.trim(),
+    }
+}
+
+#[cfg(test)]
+mod validation_shell_shape_tests {
+    use super::{normalized_shell_command, synthesize_shell_args_from_validation_text};
+    use serde_json::json;
+
+    #[test]
+    fn repairs_bare_required_command_to_shell_args() {
+        let args = synthesize_shell_args_from_validation_text("node --test", "node --test")
+            .expect("shell args");
+        assert_eq!(
+            normalized_shell_command(&args).as_deref(),
+            Some("node --test")
+        );
+    }
+
+    #[test]
+    fn repairs_fenced_required_command_to_shell_args() {
+        let args =
+            synthesize_shell_args_from_validation_text("```bash\nnode --test\n```", "node --test")
+                .expect("shell args");
+        assert_eq!(
+            normalized_shell_command(&args).as_deref(),
+            Some("node --test")
+        );
+    }
+
+    #[test]
+    fn repairs_command_line_in_exact_answer_shape() {
+        let args = synthesize_shell_args_from_validation_text(
+            "verified=yes\ncommand=node --test\nresult=passed",
+            "node --test",
+        )
+        .expect("shell args");
+        assert_eq!(args, json!({ "command": "node --test" }));
     }
 }
 
