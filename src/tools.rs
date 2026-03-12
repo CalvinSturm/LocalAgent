@@ -16,6 +16,7 @@ mod exec_support;
 mod exec_write;
 mod schema;
 
+pub(crate) use catalog::normalize_builtin_tool_args;
 pub use catalog::{builtin_tools_enabled, tool_side_effects};
 pub use envelope::{
     envelope_to_message, invalid_args_tool_message, to_tool_result_envelope,

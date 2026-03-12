@@ -1316,6 +1316,21 @@ impl<P: ModelProvider> Agent<P> {
                         });
                         continue 'agent_steps;
                     }
+                    runtime_completion::VerifiedWriteResult::StartRequiredValidationPhase(
+                        message,
+                    ) => {
+                        post_write_guard_retry_count = 0;
+                        blocked_runtime_completion_count = 0;
+                        required_validation_phase_active = true;
+                        messages.push(Message {
+                            role: Role::Developer,
+                            content: Some(message),
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_calls: None,
+                        });
+                        continue 'agent_steps;
+                    }
                 }
             }
         }

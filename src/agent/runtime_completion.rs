@@ -552,7 +552,7 @@ impl<P: ModelProvider> Agent<P> {
                             )
                             .unwrap_or("the required validation command");
                         let corrective_instruction = format!(
-                            "Do not give the final answer yet. Run `{required_command}` now using the shell tool. If it succeeds, then reply with the final answer only. Do not call another write tool unless the validation output proves more code changes are still required."
+                            "Validation required now. Return exactly one shell tool call and no prose. Run `{required_command}`. Example arguments: {{\"command\":\"{required_command}\"}}. After it succeeds, reply with the final answer only."
                         );
                         self.emit_event(
                             &run_id,
@@ -763,4 +763,5 @@ pub(super) enum VerifiedWriteResult {
     Done(Box<super::agent_types::AgentOutcome>),
     GuardRetry(String),
     FollowOnTurn(String),
+    StartRequiredValidationPhase(String),
 }

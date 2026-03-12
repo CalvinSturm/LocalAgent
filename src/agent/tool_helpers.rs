@@ -304,9 +304,11 @@ impl<P: ModelProvider> Agent<P> {
                     .err()
             })
         } else {
+            let normalized_args =
+                crate::tools::normalize_builtin_tool_args(&tc.name, &tc.arguments);
             crate::tools::validate_builtin_tool_args(
                 &tc.name,
-                &tc.arguments,
+                &normalized_args,
                 self.tool_rt.tool_args_strict,
             )
             .err()

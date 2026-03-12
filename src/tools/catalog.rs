@@ -142,7 +142,7 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
     tools
 }
 
-pub(super) fn normalize_builtin_tool_args(tool_name: &str, args: &Value) -> Value {
+pub(crate) fn normalize_builtin_tool_args(tool_name: &str, args: &Value) -> Value {
     let Some(obj) = args.as_object() else {
         return args.clone();
     };

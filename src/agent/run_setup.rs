@@ -233,7 +233,7 @@ impl<P: ModelProvider> Agent<P> {
             crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
                 .unwrap_or("the required validation command");
         format!(
-            "Required validation phase active. Return exactly one shell tool call that runs `{required_command}` and no prose."
+            "Required validation phase active. Return exactly one shell tool call and no prose. Run `{required_command}`. Example arguments: {{\"command\":\"{required_command}\"}}."
         )
     }
 

@@ -72,7 +72,7 @@ fn select_runtime_context_messages(
     };
     let repo_map_message = repo_map_resolution.and_then(crate::repo_map::repo_map_message);
     let lsp_context_message = if compact {
-        None
+        lsp_context_resolution.and_then(crate::lsp_context::compact_lsp_context_message)
     } else {
         lsp_context_resolution.and_then(crate::lsp_context::lsp_context_message)
     };
@@ -683,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_manual_repair_context_drops_agents_and_skips_lsp() {
+    fn compact_manual_repair_context_drops_agents_and_keeps_targeted_lsp() {
         let workdir = PathBuf::from(
             r"C:\repo\.tmp\manual-testing\control\T-tests\20260311-190246-970-2ec132\T5",
         );
@@ -736,7 +736,12 @@ mod tests {
                 Some(&lsp),
             );
         assert!(project_guidance_message.is_none());
-        assert!(lsp_context_message.is_none());
+        let lsp_body = lsp_context_message
+            .and_then(|m| m.content)
+            .expect("targeted lsp message");
+        assert!(lsp_body.contains("target_file=src/parsing/parser.js"));
+        assert!(lsp_body.contains("focus_diagnostic="));
+        assert!(!lsp_body.contains("BEGIN_LSP_CONTEXT"));
     }
 }
 

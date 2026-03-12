@@ -139,6 +139,24 @@ impl<P: ModelProvider> Agent<P> {
             .to_string();
         let has_post_tool_assistant_closeout =
             self.has_user_facing_assistant_closeout_after_last_tool(&messages);
+        let required_validation_command =
+            crate::agent_impl_guard::prompt_required_validation_command(user_prompt);
+        if required_validation_command.is_some() && !has_post_tool_assistant_closeout {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::StepBlocked,
+                serde_json::json!({
+                    "reason": "post_write_validation_only_phase",
+                    "source": "runtime_post_write_follow_on"
+                }),
+            );
+            let required_command =
+                required_validation_command.unwrap_or("the required validation command");
+            return VerifiedWriteResult::StartRequiredValidationPhase(format!(
+                "Validation required now. Return exactly one shell tool call and no prose. Run `{required_command}`. Example arguments: {{\"command\":\"{required_command}\"}}. After it succeeds, reply with the final answer only."
+            ));
+        }
         let needs_follow_on_turn =
             crate::agent_impl_guard::prompt_requires_post_write_follow_on(user_prompt)
                 && !has_post_tool_assistant_closeout;
@@ -154,11 +172,11 @@ impl<P: ModelProvider> Agent<P> {
                 }),
             );
             let follow_on_message = if verified_paths.is_empty() {
-                "Post-write verification succeeded. The user prompt still requires a follow-on step. Take exactly one more turn now: if the prompt asked for validation or tests, your next turn must run that exact validation command with the shell tool, and you must not give the final answer until it succeeds; otherwise provide the final user-facing answer summarizing what changed. Do not call another write tool unless a still-unfinished required step makes it necessary."
+                "Post-write verification succeeded. One required step remains. If the prompt requires validation or tests, your next turn must be exactly one shell tool call for that command and no prose. Do not give the final answer yet. Do not call another write tool unless validation proves another code change is required."
                     .to_string()
             } else {
                 format!(
-                    "Post-write verification succeeded for {}. The user prompt still requires a follow-on step. Take exactly one more turn now: if the prompt asked for validation or tests, your next turn must run that exact validation command with the shell tool, and you must not give the final answer until it succeeds; otherwise provide the final user-facing answer summarizing what changed. Do not call another write tool for those paths unless a still-unfinished required step makes it necessary.",
+                    "Post-write verification succeeded for {}. One required step remains. If the prompt requires validation or tests, your next turn must be exactly one shell tool call for that command and no prose. Do not give the final answer yet. Do not call another write tool for those paths unless validation proves another code change is required.",
                     verified_paths.join(", ")
                 )
             };
