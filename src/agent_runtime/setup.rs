@@ -204,18 +204,24 @@ pub(super) fn build_session_bootstrap(
 }
 
 pub(super) fn build_context_augmentations(
+    prompt: &str,
     args: &RunArgs,
     paths: &store::StatePaths,
     worker_model: &str,
 ) -> anyhow::Result<ContextAugmentations> {
     let instruction_resolution =
         instruction_runtime::resolve_instruction_messages(args, &paths.state_dir, worker_model)?;
-    let project_guidance_resolution = project_guidance::resolve_project_guidance(
-        &args.workdir,
-        project_guidance::ProjectGuidanceLimits::default(),
-    )
-    .ok()
-    .filter(|g| !g.merged_text.is_empty());
+    let compact_manual_context = super::use_compact_manual_repair_context(prompt, &args.workdir);
+    let project_guidance_resolution = if compact_manual_context {
+        None
+    } else {
+        project_guidance::resolve_project_guidance(
+            &args.workdir,
+            project_guidance::ProjectGuidanceLimits::default(),
+        )
+        .ok()
+        .filter(|g| !g.merged_text.is_empty())
+    };
     let repo_map_resolution = if args.use_repomap {
         repo_map::resolve_repo_map(
             &args.workdir,

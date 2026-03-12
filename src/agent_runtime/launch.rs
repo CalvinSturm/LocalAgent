@@ -80,6 +80,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
     provider_kind: ProviderKind,
     base_url: &str,
     default_model: &str,
+    prompt: &str,
     args: &RunArgs,
     paths: &store::StatePaths,
     external_ui_tx: Option<Sender<Event>>,
@@ -152,7 +153,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         repo_map_resolution,
         lsp_context_resolution,
         activated_packs,
-    } = build_context_augmentations(&args, paths, &worker_model)?;
+    } = build_context_augmentations(prompt, &args, paths, &worker_model)?;
     validate_runtime_owned_http_timeouts(
         &args,
         planner_strict_effective,

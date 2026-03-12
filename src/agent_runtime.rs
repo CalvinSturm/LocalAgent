@@ -132,6 +132,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         provider_kind,
         base_url,
         default_model,
+        prompt,
         args,
         paths,
         external_ui_tx,
