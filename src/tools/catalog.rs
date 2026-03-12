@@ -84,7 +84,7 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
     if enable_write_tools {
         tools.push(ToolDef {
             name: "write_file".to_string(),
-            description: "Write UTF-8 text content to a file.".to_string(),
+            description: "Write UTF-8 text content to a file. Prefer this for new files or explicit full rewrites, not routine edits to an existing file.".to_string(),
             parameters: json!({
                 "type":"object",
                 "properties":{
@@ -99,7 +99,7 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
         });
         tools.push(ToolDef {
             name: "apply_patch".to_string(),
-            description: "Apply a unified diff patch to an existing file using a workdir-relative path. Prefer this for larger edits or after str_replace exact-match repair fails.".to_string(),
+            description: "Apply a unified diff patch to an existing file using a workdir-relative path. Prefer this for larger or multi-hunk edits, or after edit/str_replace exact-match repair fails.".to_string(),
             parameters: json!({
                 "type":"object",
                 "properties":{"path":{"type":"string"},"patch":{"type":"string"}},
@@ -109,7 +109,7 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
         });
         tools.push(ToolDef {
             name: "edit".to_string(),
-            description: "Edit an existing file by replacing exactly one matching string with a new string using a workdir-relative path. Prefer this for small in-place edits. Accepts path/old_string/new_string and OpenCode-style aliases filePath/oldString/newString.".to_string(),
+            description: "Edit an existing file by replacing exactly one matching string with a new string using a workdir-relative path. This is the default tool for ordinary small in-place fixes after read_file. Accepts path/old_string/new_string and OpenCode-style aliases filePath/oldString/newString.".to_string(),
             parameters: json!({
                 "type":"object",
                 "properties":{
@@ -126,7 +126,7 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
         });
         tools.push(ToolDef {
             name: "str_replace".to_string(),
-            description: "Replace an exact string occurrence in a file using a workdir-relative path. The old_string must match exactly once; include surrounding lines for uniqueness if needed. If exact matching is brittle, switch to apply_patch.".to_string(),
+            description: "Replace an exact string occurrence in a file using a workdir-relative path. Use this only for trivial exact unique matches when edit would be unnecessary. The old_string must match exactly once; include surrounding lines for uniqueness if needed. If exact matching is brittle, switch to edit or apply_patch.".to_string(),
             parameters: json!({
                 "type":"object",
                 "properties":{

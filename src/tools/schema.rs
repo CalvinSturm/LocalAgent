@@ -97,19 +97,17 @@ pub fn minimal_builtin_example(tool_name: &str) -> Option<Value> {
 }
 
 pub fn sorted_builtin_tool_names() -> Vec<String> {
-    let mut names = vec![
-        "apply_patch".to_string(),
-        "edit".to_string(),
+    vec![
+        "list_dir".to_string(),
         "glob".to_string(),
         "grep".to_string(),
-        "list_dir".to_string(),
         "read_file".to_string(),
+        "edit".to_string(),
+        "apply_patch".to_string(),
         "shell".to_string(),
         "str_replace".to_string(),
         "write_file".to_string(),
-    ];
-    names.sort();
-    names
+    ]
 }
 
 pub fn invalid_args_detail(tool_name: &str, args: &Value, err: &str) -> ToolErrorDetail {

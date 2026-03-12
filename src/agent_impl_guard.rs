@@ -314,13 +314,77 @@ pub(crate) fn final_output_matches_required_exact_answer(prompt: &str, final_out
     final_output.trim() == required.trim()
 }
 
+pub(crate) fn recover_required_exact_final_answer(
+    prompt: &str,
+    final_output: &str,
+) -> Option<String> {
+    let required = prompt_required_exact_final_answer(prompt)?;
+    let required_trimmed = required.trim();
+    let output_trimmed = final_output.trim();
+    if output_trimmed == required_trimmed {
+        return Some(required);
+    }
+
+    let fenced_matches: Vec<&str> = fenced_code_blocks(output_trimmed)
+        .into_iter()
+        .filter(|block| block.trim() == required_trimmed)
+        .collect();
+    if fenced_matches.len() == 1 {
+        return Some(required);
+    }
+
+    let mut substring_matches = 0usize;
+    let mut search_start = 0usize;
+    while let Some(rel_idx) = output_trimmed[search_start..].find(required_trimmed) {
+        let idx = search_start + rel_idx;
+        let before_ok = idx == 0
+            || output_trimmed[..idx]
+                .chars()
+                .last()
+                .is_some_and(|c| c == '\n' || c == '\r');
+        let after_idx = idx + required_trimmed.len();
+        let after_ok = after_idx == output_trimmed.len()
+            || output_trimmed[after_idx..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == '\n' || c == '\r');
+        if before_ok && after_ok {
+            substring_matches += 1;
+            if substring_matches > 1 {
+                return None;
+            }
+        }
+        search_start = idx + required_trimmed.len();
+    }
+    (substring_matches == 1).then_some(required)
+}
+
+fn fenced_code_blocks(text: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("```") {
+        let after_ticks = &rest[start + 3..];
+        let after_lang = match after_ticks.find('\n') {
+            Some(idx) => &after_ticks[idx + 1..],
+            None => break,
+        };
+        let Some(end) = after_lang.find("```") else {
+            break;
+        };
+        blocks.push(&after_lang[..end]);
+        rest = &after_lang[end + 3..];
+    }
+    blocks
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         final_output_matches_required_exact_answer,
         implementation_integrity_violation_with_tool_executions,
         pending_post_write_verification_paths, prompt_required_exact_final_answer,
-        required_validation_command_satisfied, ToolExecutionRecord,
+        recover_required_exact_final_answer, required_validation_command_satisfied,
+        ToolExecutionRecord,
     };
     use crate::types::ToolCall;
 
@@ -345,6 +409,25 @@ mod tests {
             prompt,
             "verified=yes"
         ));
+    }
+
+    #[test]
+    fn exact_final_answer_can_be_recovered_from_fenced_block() {
+        let prompt =
+            "Your final answer must be exactly:\n\nverified=yes\ncommand=node --test\nresult=passed\n";
+        let wrapped =
+            "Validation passed.\n\n```\nverified=yes\ncommand=node --test\nresult=passed\n```";
+        assert_eq!(
+            recover_required_exact_final_answer(prompt, wrapped).as_deref(),
+            Some("verified=yes\ncommand=node --test\nresult=passed")
+        );
+    }
+
+    #[test]
+    fn exact_final_answer_recovery_requires_single_unambiguous_match() {
+        let prompt = "Your final answer must be exactly:\n\nverified=yes\nfile=main.rs\n";
+        let ambiguous = "verified=yes\nfile=main.rs\n\nextra\n\nverified=yes\nfile=main.rs\n";
+        assert!(recover_required_exact_final_answer(prompt, ambiguous).is_none());
     }
 
     #[test]

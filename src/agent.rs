@@ -1130,7 +1130,8 @@ impl<P: ModelProvider> Agent<P> {
                     planning_ctx.failed_repeat_name_count,
                     &planning_ctx.repeat_key,
                     started_at.clone(),
-                    messages.clone(),
+                    &mut messages,
+                    &mut failed_repeat_counts,
                     observed_tool_calls.clone(),
                     observed_tool_decisions.clone(),
                     request_context_chars,
@@ -1143,6 +1144,7 @@ impl<P: ModelProvider> Agent<P> {
                     &taint_state,
                 ) {
                     FailedRepeatGuardDecision::Continue => {}
+                    FailedRepeatGuardDecision::RestartAgentStep => continue 'agent_steps,
                     FailedRepeatGuardDecision::Finalize(outcome) => return *outcome,
                 }
                 let invalid_args_error = match self.handle_malformed_tool_call(
@@ -1419,6 +1421,9 @@ fn synthesize_shell_args_from_validation_text(
             }
         }
     }
+    if trimmed.matches(required_command).count() == 1 {
+        return Some(json!({ "command": required_command }));
+    }
     None
 }
 
@@ -1479,6 +1484,16 @@ mod validation_shell_shape_tests {
     fn repairs_command_line_in_exact_answer_shape() {
         let args = synthesize_shell_args_from_validation_text(
             "verified=yes\ncommand=node --test\nresult=passed",
+            "node --test",
+        )
+        .expect("shell args");
+        assert_eq!(args, json!({ "command": "node --test" }));
+    }
+
+    #[test]
+    fn repairs_single_required_command_mention_inside_prose() {
+        let args = synthesize_shell_args_from_validation_text(
+            "<think>I should run node --test now before finalizing.</think>",
             "node --test",
         )
         .expect("shell args");

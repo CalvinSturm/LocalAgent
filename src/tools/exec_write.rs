@@ -220,7 +220,7 @@ async fn run_exact_replace(rt: &ToolRuntime, args: &Value, tool_name: &str) -> T
             rt,
             SideEffects::FilesystemWrite,
             format!(
-                "{tool_name}: old_string not found in '{path}'. Make sure the string matches exactly, including whitespace and indentation. If exact matching is brittle, re-read the file and switch to apply_patch."
+                "{tool_name}: old_string not found in '{path}'. Make sure the string matches exactly, including whitespace and indentation. If exact matching is brittle, re-read the file and switch to edit or apply_patch."
             ),
             None,
         );
@@ -230,7 +230,7 @@ async fn run_exact_replace(rt: &ToolRuntime, args: &Value, tool_name: &str) -> T
             rt,
             SideEffects::FilesystemWrite,
             format!(
-                "{tool_name}: old_string matches {} locations in '{path}'. Include more surrounding context to make it unique, or switch to apply_patch for this edit.",
+                "{tool_name}: old_string matches {} locations in '{path}'. Include more surrounding context to make it unique, or switch to edit or apply_patch for this edit.",
                 matches.len()
             ),
             None,

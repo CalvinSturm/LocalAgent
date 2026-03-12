@@ -97,6 +97,7 @@ pub(super) enum MalformedToolCallDecision {
 
 pub(super) enum FailedRepeatGuardDecision {
     Continue,
+    RestartAgentStep,
     Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
@@ -457,7 +458,8 @@ impl<P: ModelProvider> Agent<P> {
         failed_repeat_name_count: u32,
         repeat_key: &str,
         started_at: String,
-        messages: Vec<Message>,
+        messages: &mut Vec<Message>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
         observed_tool_calls: Vec<ToolCall>,
         observed_tool_decisions: Vec<super::ToolDecisionRecord>,
         request_context_chars: usize,
@@ -473,6 +475,36 @@ impl<P: ModelProvider> Agent<P> {
             && failed_repeat_name_count < super::MAX_FAILED_REPEAT_PER_TOOL_NAME
         {
             return FailedRepeatGuardDecision::Continue;
+        }
+        if tc.name == "str_replace" {
+            if let Some(path) = normalized_tool_path_from_args(tc) {
+                let pivot_key = format!("pivot::str_replace::{path}");
+                if !failed_repeat_counts.contains_key(&pivot_key) {
+                    failed_repeat_counts.insert(pivot_key, 1);
+                    self.emit_event(
+                        &run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "source": "tool_repeat_guard",
+                            "reason": "str_replace_repeat_requires_pivot",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "path": path
+                        }),
+                    );
+                    messages.push(Message {
+                        role: Role::Developer,
+                        content: Some(format!(
+                            "Stop using str_replace on `{path}` for this repair. Re-read `{path}` now, then use edit or apply_patch instead. Do not emit str_replace again on that file unless the file contents materially change."
+                        )),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    });
+                    return FailedRepeatGuardDecision::RestartAgentStep;
+                }
+            }
         }
         let reason = format!(
             "TOOL_REPEAT_BLOCKED: repeated failed tool call for '{}' exceeded repeat limit",
@@ -509,7 +541,7 @@ impl<P: ModelProvider> Agent<P> {
                 run_id,
                 started_at,
                 reason,
-                messages,
+                messages.clone(),
                 observed_tool_calls,
                 observed_tool_decisions,
                 request_context_chars,
