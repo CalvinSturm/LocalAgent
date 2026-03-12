@@ -2134,21 +2134,6 @@ impl ModelProvider for ReadPatchThenExactThenEmptyThenShellThenExactProvider {
                 tool_calls: Vec::new(),
                 usage: None,
             }),
-            4 => Ok(GenerateResponse {
-                assistant: Message {
-                    role: Role::Assistant,
-                    content: Some(String::new()),
-                    tool_call_id: None,
-                    tool_name: None,
-                    tool_calls: None,
-                },
-                tool_calls: vec![crate::types::ToolCall {
-                    id: "tc_shell".to_string(),
-                    name: "shell".to_string(),
-                    arguments: serde_json::json!({"cmd":"node","args":["--test"]}),
-                }],
-                usage: None,
-            }),
             _ => Ok(GenerateResponse {
                 assistant: Message {
                     role: Role::Assistant,
@@ -5986,7 +5971,7 @@ async fn runtime_required_validation_guard_allows_one_bounded_shell_retry() {
 }
 
 #[tokio::test]
-async fn runtime_required_validation_phase_direct_handoff_blocks_empty_turn() {
+async fn runtime_required_validation_phase_direct_handoff_repairs_empty_turn() {
     let tmp = tempfile::tempdir().expect("tmp");
     tokio::fs::write(
         tmp.path().join("main.rs"),
@@ -6124,21 +6109,12 @@ async fn runtime_required_validation_phase_direct_handoff_blocks_empty_turn() {
             }],
         )
         .await;
-    assert!(
-        matches!(out.exit_reason, AgentExitReason::PlannerError),
-        "{out:?}"
-    );
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
     assert_eq!(
         out.final_output,
-        "MODEL_TOOL_PROTOCOL_VIOLATION: required validation phase requires exactly one shell tool call and no prose"
+        "verified=yes\ncommand=node --test\nresult=passed"
     );
-    assert_eq!(
-        out.error.as_deref(),
-        Some(
-            "MODEL_TOOL_PROTOCOL_VIOLATION: required validation phase requires exactly one shell tool call and no prose"
-        )
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
     let evs = events.lock().expect("lock");
     assert!(evs.iter().any(|e| {
         matches!(e.kind, crate::events::EventKind::StepBlocked)
@@ -6152,7 +6128,162 @@ async fn runtime_required_validation_phase_direct_handoff_blocks_empty_turn() {
             && e.data
                 .get("reason")
                 .and_then(|v| v.as_str())
-                .is_some_and(|s| s == "required_validation_phase_requires_shell")
+                .is_some_and(|s| s == "required_validation_phase_shell_shape_repaired")
+    }));
+}
+
+#[tokio::test]
+async fn runtime_required_validation_phase_repairs_exact_final_answer_into_shell() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let mut agent = Agent {
+        provider: ReadPatchThenExactWithoutShellProvider {
+            calls: calls.clone(),
+            exact_answer: "verified=yes\ncommand=node --test\nresult=passed",
+        },
+        model: "m".to_string(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        tools: vec![
+            crate::types::ToolDef {
+                name: "read_file".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "properties":{"path":{"type":"string"}},
+                    "required":["path"]
+                }),
+                side_effects: crate::types::SideEffects::FilesystemRead,
+            },
+            crate::types::ToolDef {
+                name: "apply_patch".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "properties":{"path":{"type":"string"},"patch":{"type":"string"}},
+                    "required":["path","patch"]
+                }),
+                side_effects: crate::types::SideEffects::FilesystemWrite,
+            },
+            crate::types::ToolDef {
+                name: "shell".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "properties":{"cmd":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},
+                    "required":["cmd"]
+                }),
+                side_effects: crate::types::SideEffects::ShellExec,
+            },
+        ],
+        max_steps: 8,
+        tool_rt: ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: true,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(ShellSuccessExecTarget::default()),
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: true,
+            allow_write: true,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Ollama,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        mcp_registry: None,
+        stream: false,
+        event_sink: Some(Box::new(EventCaptureSink {
+            events: events.clone(),
+        })),
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    };
+    let out = agent
+        .run(
+            "Edit main.rs to return 2.\nBefore finishing, run node --test successfully.\n\nYour final answer must be exactly:\n\nverified=yes\ncommand=node --test\nresult=passed",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    assert_eq!(
+        out.final_output,
+        "verified=yes\ncommand=node --test\nresult=passed"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    let evs = events.lock().expect("lock");
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::StepBlocked)
+            && e.data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "required_validation_phase_shell_shape_repaired")
     }));
 }
 

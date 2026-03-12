@@ -108,9 +108,15 @@ impl<P: ModelProvider> Agent<P> {
     ) -> Option<ToolCall> {
         let required_command =
             crate::agent_impl_guard::prompt_required_validation_command(user_prompt)?;
-        let raw = assistant.content.as_deref()?.trim();
-        if raw.is_empty() {
-            return None;
+        let raw = assistant.content.as_deref().unwrap_or_default().trim();
+        if raw.is_empty()
+            || crate::agent_impl_guard::final_output_matches_required_exact_answer(user_prompt, raw)
+        {
+            return Some(ToolCall {
+                id: format!("tc_validation_shell_{}", Uuid::new_v4().simple()),
+                name: "shell".to_string(),
+                arguments: json!({ "command": required_command }),
+            });
         }
 
         if let Some(args) = synthesize_shell_args_from_validation_text(raw, required_command) {
@@ -566,8 +572,6 @@ impl<P: ModelProvider> Agent<P> {
                     &taint_state,
                 );
             }
-            let has_actionable_tool_calls = !resp.tool_calls.is_empty();
-            let model_signaled_finalize = !has_actionable_tool_calls;
             if required_validation_phase_active {
                 if resp.tool_calls.is_empty() {
                     if let Some(shell_call) =
@@ -651,6 +655,8 @@ impl<P: ModelProvider> Agent<P> {
                 required_validation_phase_active = false;
                 blocked_required_validation_phase_count = 0;
             }
+            let has_actionable_tool_calls = !resp.tool_calls.is_empty();
+            let model_signaled_finalize = !has_actionable_tool_calls;
             if tool_only_phase_active
                 && model_signaled_finalize
                 && !resp
@@ -1494,6 +1500,16 @@ mod validation_shell_shape_tests {
     fn repairs_single_required_command_mention_inside_prose() {
         let args = synthesize_shell_args_from_validation_text(
             "<think>I should run node --test now before finalizing.</think>",
+            "node --test",
+        )
+        .expect("shell args");
+        assert_eq!(args, json!({ "command": "node --test" }));
+    }
+
+    #[test]
+    fn repairs_exact_final_answer_prose_because_command_is_known() {
+        let args = synthesize_shell_args_from_validation_text(
+            "verified=yes\ncommand=node --test\nresult=passed",
             "node --test",
         )
         .expect("shell args");

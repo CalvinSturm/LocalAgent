@@ -47,7 +47,9 @@ fn write_tool_descriptions_bias_toward_relative_paths_and_apply_patch_recovery()
     let tools = builtin_tools_enabled(true, false);
     let edit = tools.iter().find(|tool| tool.name == "edit").expect("edit");
     assert!(edit.description.contains("workdir-relative path"));
-    assert!(edit.description.contains("default tool for ordinary small in-place fixes"));
+    assert!(edit
+        .description
+        .contains("default tool for ordinary small in-place fixes"));
     assert!(edit.description.contains("OpenCode-style aliases"));
 
     let apply_patch = tools
@@ -55,7 +57,9 @@ fn write_tool_descriptions_bias_toward_relative_paths_and_apply_patch_recovery()
         .find(|tool| tool.name == "apply_patch")
         .expect("apply_patch");
     assert!(apply_patch.description.contains("workdir-relative path"));
-    assert!(apply_patch.description.contains("larger or multi-hunk edits"));
+    assert!(apply_patch
+        .description
+        .contains("larger or multi-hunk edits"));
     assert!(apply_patch.description.contains("edit/str_replace"));
 
     let str_replace = tools
@@ -63,14 +67,20 @@ fn write_tool_descriptions_bias_toward_relative_paths_and_apply_patch_recovery()
         .find(|tool| tool.name == "str_replace")
         .expect("str_replace");
     assert!(str_replace.description.contains("workdir-relative path"));
-    assert!(str_replace.description.contains("only for trivial exact unique matches"));
-    assert!(str_replace.description.contains("switch to edit or apply_patch"));
+    assert!(str_replace
+        .description
+        .contains("only for trivial exact unique matches"));
+    assert!(str_replace
+        .description
+        .contains("switch to edit or apply_patch"));
 
     let write_file = tools
         .iter()
         .find(|tool| tool.name == "write_file")
         .expect("write_file");
-    assert!(write_file.description.contains("new files or explicit full rewrites"));
+    assert!(write_file
+        .description
+        .contains("new files or explicit full rewrites"));
 }
 
 #[test]
