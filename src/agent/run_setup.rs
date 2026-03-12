@@ -237,6 +237,14 @@ impl<P: ModelProvider> Agent<P> {
         )
     }
 
+    pub(super) fn post_validation_final_answer_only_message(&self, user_prompt: &str) -> String {
+        if crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt).is_some() {
+            "Validation already succeeded. Do not call more tools. Reply with the required final answer only.".to_string()
+        } else {
+            "Validation already succeeded. Do not call more tools. Reply with the final answer only.".to_string()
+        }
+    }
+
     pub(super) fn emit_run_start_events(&mut self, run_id: &str) {
         self.emit_event(
             run_id,

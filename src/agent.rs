@@ -163,10 +163,12 @@ impl<P: ModelProvider> Agent<P> {
         let mut exact_final_answer_retry_count: u32 = 0;
         let mut required_validation_retry_count: u32 = 0;
         let mut required_validation_phase_active = false;
+        let mut post_validation_final_answer_only_phase_active = false;
         let mut operator_delivery_count: u32 = 0;
         let mut blocked_control_envelope_count: u32 = 0;
         let mut blocked_tool_only_count: u32 = 0;
         let mut blocked_required_validation_phase_count: u32 = 0;
+        let mut blocked_post_validation_final_answer_count: u32 = 0;
         let mut tool_only_phase_active = prompt_requires_tool_only(user_prompt);
         let mut exact_final_answer_only_phase_active = false;
         let mut last_user_output: Option<String> = None;
@@ -657,6 +659,58 @@ impl<P: ModelProvider> Agent<P> {
             }
             let has_actionable_tool_calls = !resp.tool_calls.is_empty();
             let model_signaled_finalize = !has_actionable_tool_calls;
+            if post_validation_final_answer_only_phase_active && has_actionable_tool_calls {
+                blocked_post_validation_final_answer_count =
+                    blocked_post_validation_final_answer_count.saturating_add(1);
+                self.emit_event(
+                    &run_id,
+                    step as u32,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": "post_validation_final_answer_only",
+                        "blocked_count": blocked_post_validation_final_answer_count
+                    }),
+                );
+                if blocked_post_validation_final_answer_count >= 2 {
+                    let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: validation already succeeded; reply with final answer only".to_string();
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "runtime_required_validation_guard",
+                            "failure_class": "E_PROTOCOL_POST_VALIDATION_TOOL_CALL"
+                        }),
+                    );
+                    return self.finalize_planner_error_with_output_with_end(
+                        step as u32,
+                        run_id,
+                        started_at,
+                        reason,
+                        messages,
+                        observed_tool_calls,
+                        observed_tool_decisions,
+                        request_context_chars,
+                        last_compaction_report,
+                        hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    );
+                }
+                messages.push(resp.assistant.clone());
+                messages.push(Message {
+                    role: Role::Developer,
+                    content: Some(self.post_validation_final_answer_only_message(user_prompt)),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                });
+                continue 'agent_steps;
+            }
             if tool_only_phase_active
                 && model_signaled_finalize
                 && !resp
@@ -1082,6 +1136,8 @@ impl<P: ModelProvider> Agent<P> {
                     operator_delivery_count = next_op_count;
                     required_validation_retry_count += 1;
                     required_validation_phase_active = true;
+                    post_validation_final_answer_only_phase_active = false;
+                    blocked_post_validation_final_answer_count = 0;
                     exact_final_answer_only_phase_active = false;
                     continue 'agent_steps;
                 }
@@ -1311,6 +1367,18 @@ impl<P: ModelProvider> Agent<P> {
                         GateNonAllowDecision::Finalize(outcome) => return *outcome,
                     },
                 }
+            }
+
+            if crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt).is_some()
+                && crate::agent_impl_guard::required_validation_command_satisfied(
+                    user_prompt,
+                    &observed_tool_calls,
+                    &observed_tool_executions,
+                )
+            {
+                post_validation_final_answer_only_phase_active = true;
+                blocked_post_validation_final_answer_count = 0;
+                required_validation_phase_active = false;
             }
 
             if enforce_implementation_integrity_guard && successful_write_tool_ok_this_step {

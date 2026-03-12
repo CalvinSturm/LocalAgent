@@ -296,8 +296,14 @@ pub(crate) fn required_validation_command_satisfied(
 
 pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String> {
     let lower = prompt.to_ascii_lowercase();
-    let marker = "your final answer must be exactly:";
-    let idx = lower.find(marker)?;
+    let markers = [
+        "your final answer must be exactly:",
+        "reply with exactly:",
+    ];
+    let (idx, marker) = markers
+        .iter()
+        .filter_map(|marker| lower.find(marker).map(|idx| (idx, *marker)))
+        .min_by_key(|(idx, _)| *idx)?;
     let rest = &prompt[idx + marker.len()..];
     let normalized = rest.trim();
     if normalized.is_empty() {
@@ -399,6 +405,15 @@ mod tests {
     }
 
     #[test]
+    fn extracts_required_exact_final_answer_block_from_reply_with_exactly() {
+        let prompt = "Fix it.\n\nReply with exactly:\n\nverified fix\n";
+        assert_eq!(
+            prompt_required_exact_final_answer(prompt).as_deref(),
+            Some("verified fix")
+        );
+    }
+
+    #[test]
     fn exact_final_answer_match_is_trim_tolerant() {
         let prompt = "Your final answer must be exactly:\n\nverified=yes\nfile=src/status.ts\n";
         assert!(final_output_matches_required_exact_answer(
@@ -409,6 +424,13 @@ mod tests {
             prompt,
             "verified=yes"
         ));
+    }
+
+    #[test]
+    fn exact_final_answer_match_supports_reply_with_exactly() {
+        let prompt = "Reply with exactly:\n\nverified fix\n";
+        assert!(final_output_matches_required_exact_answer(prompt, "verified fix\n"));
+        assert!(!final_output_matches_required_exact_answer(prompt, "verified"));
     }
 
     #[test]
