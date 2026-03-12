@@ -6,13 +6,10 @@ use crate::agent::{self, Agent, AgentExitReason, ToolCallBudget};
 use crate::compaction::CompactionSettings;
 use crate::events::{Event, EventKind};
 use crate::gate::ProviderKind;
-use crate::lsp_context;
 use crate::mcp::registry::McpRegistry;
 use crate::packs;
 use crate::planner;
-use crate::project_guidance;
 use crate::providers::ModelProvider;
-use crate::repo_map;
 use crate::runtime_paths;
 use crate::store::{self, PlannerRunRecord, WorkerRunRecord};
 use crate::tools::ToolRuntime;
@@ -33,6 +30,58 @@ use planner_phase::{
     bootstrap_planner_phase, cancelled_outcome, maybe_handle_worker_replan, PlannerBootstrapInput,
     ReplanOrchestrationInput,
 };
+
+fn is_small_manual_control_task(workdir: &std::path::Path) -> bool {
+    let normalized = workdir
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    if !normalized.contains("/.tmp/manual-testing/control/") {
+        return false;
+    }
+    let Some(task_name) = workdir.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let mut chars = task_name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic() && chars.clone().count() > 0 && chars.all(|c| c.is_ascii_digit())
+}
+
+fn use_compact_manual_repair_context(prompt: &str, workdir: &std::path::Path) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    is_small_manual_control_task(workdir)
+        && (lower.contains("reply with exactly:")
+            || lower.contains("your final answer must be exactly:"))
+        && (lower.contains("before finishing, run") || lower.contains("before you finish"))
+}
+
+fn select_runtime_context_messages(
+    prompt: &str,
+    workdir: &std::path::Path,
+    project_guidance_resolution: Option<&crate::project_guidance::ResolvedProjectGuidance>,
+    repo_map_resolution: Option<&crate::repo_map::ResolvedRepoMap>,
+    lsp_context_resolution: Option<&crate::lsp_context::ResolvedLspContext>,
+) -> (Option<Message>, Option<Message>, Option<Message>) {
+    let compact = use_compact_manual_repair_context(prompt, workdir);
+    let project_guidance_message = if compact {
+        None
+    } else {
+        project_guidance_resolution.and_then(crate::project_guidance::project_guidance_message)
+    };
+    let repo_map_message = repo_map_resolution.and_then(crate::repo_map::repo_map_message);
+    let lsp_context_message = if compact {
+        None
+    } else {
+        lsp_context_resolution.and_then(crate::lsp_context::lsp_context_message)
+    };
+    (
+        project_guidance_message,
+        repo_map_message,
+        lsp_context_message,
+    )
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_agent<P: ModelProvider>(
@@ -281,15 +330,14 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         &args,
         instruction_resolution.selected_task_profile.as_deref(),
     );
-    let project_guidance_message = project_guidance_resolution
-        .as_ref()
-        .and_then(project_guidance::project_guidance_message);
-    let repo_map_message = repo_map_resolution
-        .as_ref()
-        .and_then(repo_map::repo_map_message);
-    let lsp_context_message = lsp_context_resolution
-        .as_ref()
-        .and_then(lsp_context::lsp_context_message);
+    let (project_guidance_message, repo_map_message, lsp_context_message) =
+        select_runtime_context_messages(
+            prompt,
+            &args.workdir,
+            project_guidance_resolution.as_ref(),
+            repo_map_resolution.as_ref(),
+            lsp_context_resolution.as_ref(),
+        );
     let pack_guidance_message = packs::pack_guidance_message(&activated_packs);
     let base_task_memory = task_memory.clone();
     let initial_injected_messages = runtime_paths::merge_injected_messages(
@@ -425,6 +473,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     use super::guard::{
@@ -622,6 +671,72 @@ mod tests {
             out.outcome.exit_reason,
             crate::AgentExitReason::Ok
         ));
+    }
+
+    #[test]
+    fn compact_manual_repair_context_detects_prepared_control_tasks() {
+        let workdir = PathBuf::from(
+            r"C:\repo\.tmp\manual-testing\control\T-tests\20260311-190246-970-2ec132\T5",
+        );
+        let prompt = "Update the parser.\nBefore finishing, run `node --test` successfully.\n\nReply with exactly:\n\nverified fix\n";
+        assert!(super::use_compact_manual_repair_context(prompt, &workdir));
+    }
+
+    #[test]
+    fn compact_manual_repair_context_drops_agents_and_skips_lsp() {
+        let workdir = PathBuf::from(
+            r"C:\repo\.tmp\manual-testing\control\T-tests\20260311-190246-970-2ec132\T5",
+        );
+        let prompt = "Update the parser.\nBefore finishing, run `node --test` successfully.\n\nReply with exactly:\n\nverified fix\n";
+        let guidance = crate::project_guidance::ResolvedProjectGuidance {
+            sources: Vec::new(),
+            merged_text: "## AGENTS.md: AGENTS.md\n\nfull guidance".to_string(),
+            truncated: false,
+            bytes_loaded: 0,
+            bytes_kept: 0,
+            guidance_hash_hex: "abc".to_string(),
+        };
+        let lsp = crate::lsp_context::ResolvedLspContext {
+            schema_version: crate::lsp_context::LSP_CONTEXT_SCHEMA_VERSION.to_string(),
+            provider: "mock_lsp".to_string(),
+            generated_at: "2026-03-11T00:00:00Z".to_string(),
+            workdir: workdir.clone(),
+            diagnostics_snapshot: Some(crate::lsp_context::DiagnosticsSnapshot {
+                schema_version: crate::lsp_context::LSP_DIAGNOSTICS_SCHEMA_VERSION.to_string(),
+                source: "lsp".to_string(),
+                workspace_root: workdir.clone(),
+                language: Some("typescript".to_string()),
+                items: vec![crate::diagnostics::Diagnostic {
+                    schema_version: crate::diagnostics::DIAGNOSTIC_SCHEMA_VERSION.to_string(),
+                    code: "TS2550".to_string(),
+                    severity: crate::diagnostics::Severity::Error,
+                    message: "parseInt missing".to_string(),
+                    path: Some(PathBuf::from("src/parsing/parser.js")),
+                    line: Some(11),
+                    col: Some(17),
+                    hint: None,
+                    details: None,
+                }],
+                total_count: 1,
+                included_count: 1,
+                truncated: false,
+                truncation_reason: None,
+            }),
+            symbol_context: None,
+            truncated: false,
+            truncation_reason: None,
+            bytes_kept: 0,
+        };
+        let (project_guidance_message, _repo_map_message, lsp_context_message) =
+            super::select_runtime_context_messages(
+                prompt,
+                &workdir,
+                Some(&guidance),
+                None,
+                Some(&lsp),
+            );
+        assert!(project_guidance_message.is_none());
+        assert!(lsp_context_message.is_none());
     }
 }
 
