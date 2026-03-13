@@ -1452,3 +1452,71 @@ When a provider can serve different quantizations or presets behind the same mod
   - baseline `qwen2.5-coder-7b-instruct@q8_0` remains weaker on `T5`, especially because it finalizes before required validation in non-stream
   - `crow-9b-opus-4.6-distill-heretic_qwen3.5` adds contrast, but mainly reinforces `T5` as an edit-recovery pressure task rather than pointing to a shared runtime defect
   - the streamed `qwen/qwen3.5-9b` and `crow-9b-opus-4.6-distill-heretic_qwen3.5` failures suggest `T5` is still useful for edit-recovery pressure, but this run set does not justify a runtime change by itself
+
+---
+
+### 2026-03-13 - `omnicoder-9b@q8_0` - `manual T1-T5 sweep`
+- Commit baseline:
+  - `3c4df82` Honor explicit task kinds in runtime guard
+- Provider:
+  - LM Studio via OpenAI-compatible path
+- Base URL:
+  - `http://localhost:1234/v1`
+- Model variant:
+  - `omnicoder-9b@q8_0`
+- Provider-side preset:
+  - not recorded separately; used the currently loaded LM Studio model as served under this ID
+- Mode:
+  - direct `run` for `T2`/`T3`/`T4`/`T5`
+  - `tasks run` for `T1`
+- Eval settings:
+  - temperature:
+    - default
+  - top_p:
+    - default
+  - max_tokens:
+    - default
+  - seed:
+    - unset
+- Prompt/task:
+  - `T1` directory summary task through `tasks run` with explicit `--task-kind analysis`
+  - `T2` exact-output single-file edit task
+  - `T3` parser-fix plus required `node --test`
+  - `T4` inspect-first typo fix with exact final answer
+  - `T5` nested parser recovery task plus required `node --test`
+- Outcome:
+  - `T1` passed after the task-graph explicit-task-kind guard fix
+  - `T2` passed cleanly: `read_file -> apply_patch -> read_file -> exact final answer`
+  - `T3` landed the correct edit, but failed in the required-validation phase before issuing the required `shell` tool call
+  - `T4` passed cleanly and only edited `src/labels.js`
+  - `T5` recovered from an incorrect initial path guess, found the nested parser file, landed the correct edit, but then failed in the same required-validation phase pattern as `T3`
+- First exact divergence:
+  - on the harder tasks, the model does not primarily fail at repo discovery or edit execution
+  - instead, after successful tool-backed edits, it emits prose during the required-validation phase where LocalAgent requires exactly one `shell` tool call and no prose
+  - this is visible on both `T3` and `T5`
+- Classification:
+  - compatibility gap
+- Decision:
+  - accepted limitation
+- Evidence:
+  - `T1`
+    - checkpoint: [lmstudio-t1-analysis-built-checkpoint.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/lmstudio-t1-analysis-built-checkpoint.json)
+  - `T2`
+    - run record: [6f5d4122-09e2-4ae5-bfb7-6b14177374de.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/lmstudio-t2-state/runs/6f5d4122-09e2-4ae5-bfb7-6b14177374de.json)
+  - `T3`
+    - run record: [4280128a-a665-479e-84d7-4e0881578da3.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/lmstudio-t3-state/runs/4280128a-a665-479e-84d7-4e0881578da3.json)
+  - `T4`
+    - run record: [dca559d5-2377-4511-9ce4-3a109eac12a6.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/lmstudio-t4-state/runs/dca559d5-2377-4511-9ce4-3a109eac12a6.json)
+  - `T5`
+    - run record: [2a6d44d2-db1c-4acc-a73c-b40f7a1e1f6d.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/lmstudio-t5-state/runs/2a6d44d2-db1c-4acc-a73c-b40f7a1e1f6d.json)
+  - provider trace:
+    - not separately captured for this manual sweep
+  - qualification trace:
+    - not applicable; this was a direct manual run sweep rather than a qualification/eval harness run
+  - external/control transcript:
+    - not applicable
+- Notes:
+  - this model did better than a simple pass/fail summary suggests
+  - `T3` and `T5` both reached the correct semantic fix before failing
+  - `T5` also showed useful recovery behavior by abandoning the bad initial path guess and discovering `src/parsing/parser.js`
+  - the repeated weak point is strict validation-phase tool-protocol discipline, not basic file search/edit capability
