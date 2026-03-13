@@ -389,6 +389,11 @@ Notes:
 - `localagent tasks status --checkpoint <PATH>`
 - `localagent tasks reset --checkpoint <PATH>`
 
+Notes:
+- `tasks run` starts from the top-level `RunArgs` and then applies taskfile defaults and per-node overrides.
+- Global flags like `--task-kind`, `--instruction-task-profile`, and provider/trust/tool flags still apply unless a taskfile override replaces the same surface.
+- Current taskfile schema does not yet expose per-node or per-default `task_kind` / `instruction_task_profile` fields; use global CLI flags when you need explicit non-default task classification across a task-graph run.
+
 ## Common Full Commands
 
 Fast local test run:

@@ -12,11 +12,12 @@ Historical temporary pickup/implementation docs from the migration closeout have
 
 ## Current Baseline
 
-Current verified baseline at `HEAD` `1f03e4600527da1ce1d948aa6fb72d55f542e93a`:
+Current verified baseline:
 
-- worktree is clean
-- `cargo test --quiet` passes
-- `cargo clippy -- -D warnings` passes
+- `7fb7341` (`Close out runtime heuristic reconciliation plan`) is the pinned runtime closeout baseline
+- `3c4df82` (`Honor explicit task kinds in runtime guard`) is the follow-on runtime-guard fix that also landed immediately after closeout
+- runtime heuristic reconciliation and explicit task-contract slices are landed
+- validation recorded at runtime closeout: `cargo test`, `cargo clippy -- -D warnings`
 - the v1 runtime target is effectively achieved
 
 ## What Landed

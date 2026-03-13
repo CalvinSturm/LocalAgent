@@ -51,6 +51,15 @@ Why:
 - best mode: either mode for `T1`/`T2`
 - accepted limitation: `T3`/`T5` edit convergence / tool-protocol instability
 
+`omnicoder-9b@q8_0`
+- passed `T1`, `T2`, and `T4` in the manual T1-T5 sweep
+- on `T3` and `T5`, it reached the correct semantic edit boundary before failing
+- strongest observed behavior was repo discovery, targeted edits, and recovery after a bad initial path guess on `T5`
+- current weak point is strict required-validation phase discipline: it emits prose where the runtime requires exactly one `shell` tool call and no prose
+- useful secondary contrast for “good edit capability, weak validation-only protocol compliance”
+- best mode: non-stream direct run for edit tasks; `tasks run` also worked for `T1` after the explicit-task-kind guard fix
+- accepted limitation: required-validation tool-protocol instability on `T3`/`T5`
+
 ### Mid-Tier Fits
 
 `zai-org/glm-4.6v-flash`
@@ -175,6 +184,7 @@ This appears in:
 - non-stream Tool B for `qwen/qwen3.5-9b` (effective `Q6_k` result)
 - non-stream `T5` for `qwen/qwen3.5-9b`, which reaches the semantic bug boundary after a real edit and validation attempt
 - both `Q8_0` reruns for `qwen/qwen3.5-9b`
+- `omnicoder-9b@q8_0` on `T3`/`T5`, where the edit lands but the model then misses the required validation-only shell-call protocol
 - both modes of `crow-9b-opus-4.6-distill-heretic_qwen3.5` on `T3`
 - both modes of `crow-9b-opus-4.6-distill-heretic_qwen3.5` on `T5`
 - `zai-org/glm-4.6v-flash` on `T2`/`T3`
@@ -196,6 +206,7 @@ For local-model regression testing now:
 - prefer non-stream mode for contract-complete multi-step tasks
 - use `qwen/qwen3.5-9b` (effective `Q6_k` result) as the positive `T3` streamed comparison
 - use `qwen/qwen3.5-9b` non-stream as the strongest current `T5` comparison path
+- use `omnicoder-9b@q8_0` as a useful secondary contrast when you want to isolate validation-phase protocol discipline from basic repo-edit capability
 - use `crow-9b-opus-4.6-distill-heretic_qwen3.5` as the secondary contrast for `T3`/`T5` edit-convergence behavior
 - record quantization, provider-side preset, and sampling settings explicitly for every leaderboard-affecting run
 - use the run procedure in [manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/manual-testing/LOCAL_MODEL_EVAL_RUNBOOK.md)
@@ -220,3 +231,10 @@ Why these next:
 - they are the next best contrast after the two coding-oriented candidates already tested today
 - one is an orchestrator-style distill and the other is a newer qwen-family instruct model
 - both are more likely to add ranking signal than continuing with obviously weak small-model variants
+
+## Suggested Next Direction
+
+Short-term next direction for the local-model matrix:
+- keep `qwen2.5-coder-7b-instruct@q8_0` as the baseline and use `omnicoder-9b@q8_0` as the targeted contrast for validation-phase discipline
+- prioritize rerunning `T3` and `T5` on candidate models that look edit-capable, because the current highest-signal differentiator is whether they can follow the required validation-only shell-call phase after making the right edit
+- treat additional `T1`/`T2` passes as lower signal unless a model first shows credible `T3`/`T5` contract-complete behavior
