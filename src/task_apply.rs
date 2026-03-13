@@ -55,6 +55,9 @@ pub(crate) fn apply_node_overrides(args: &mut RunArgs, s: &TaskNodeSettings) -> 
             provider: s.provider.clone(),
             base_url: s.base_url.clone(),
             model: s.model.clone(),
+            task_kind: s.task_kind.clone(),
+            validation_command: s.validation_command.clone(),
+            exact_final_answer: s.exact_final_answer.clone(),
             planner_model: s.planner_model.clone(),
             worker_model: s.worker_model.clone(),
             trust: s.trust.clone(),
@@ -87,6 +90,15 @@ fn apply_task_settings(
     }
     if let Some(v) = &s.model {
         args.model = Some(v.clone());
+    }
+    if let Some(v) = &s.task_kind {
+        args.task_kind = Some(v.clone());
+    }
+    if let Some(v) = &s.validation_command {
+        args.validation_command_override = Some(v.clone());
+    }
+    if let Some(v) = &s.exact_final_answer {
+        args.exact_final_answer_override = Some(v.clone());
     }
     if let Some(v) = &s.planner_model {
         args.planner_model = Some(v.clone());
@@ -167,6 +179,9 @@ mod tests {
         assert!(!args.enable_write_tools);
 
         let defaults = crate::taskgraph::TaskDefaults {
+            task_kind: Some("coding".to_string()),
+            validation_command: Some("cargo test".to_string()),
+            exact_final_answer: Some("validated".to_string()),
             flags: crate::taskgraph::TaskFlags {
                 allow_shell: Some(true),
                 allow_write: Some(false),
@@ -182,8 +197,20 @@ mod tests {
         assert!(args.enable_write_tools);
         assert!(args.stream);
         assert_eq!(args.mcp, vec!["playwright".to_string()]);
+        assert_eq!(args.task_kind.as_deref(), Some("coding"));
+        assert_eq!(
+            args.validation_command_override.as_deref(),
+            Some("cargo test")
+        );
+        assert_eq!(
+            args.exact_final_answer_override.as_deref(),
+            Some("validated")
+        );
 
         let node = crate::taskgraph::TaskNodeSettings {
+            task_kind: Some("analysis".to_string()),
+            validation_command: Some("cargo test --workspace".to_string()),
+            exact_final_answer: Some("validated: node".to_string()),
             flags: crate::taskgraph::TaskFlags {
                 allow_shell: Some(false),
                 allow_write: Some(true),
@@ -200,6 +227,15 @@ mod tests {
         assert!(args.enable_write_tools);
         assert!(args.stream);
         assert_eq!(args.mcp, vec!["playwright".to_string()]);
+        assert_eq!(args.task_kind.as_deref(), Some("analysis"));
+        assert_eq!(
+            args.validation_command_override.as_deref(),
+            Some("cargo test --workspace")
+        );
+        assert_eq!(
+            args.exact_final_answer_override.as_deref(),
+            Some("validated: node")
+        );
     }
 
     #[test]
@@ -216,5 +252,26 @@ mod tests {
         };
         apply_node_overrides(&mut args, &node).expect("node override");
         assert_eq!(args.mcp, vec!["stub".to_string()]);
+    }
+
+    #[test]
+    fn authored_contract_defaults_apply_without_node_overrides() {
+        let mut args = crate::RunArgs::parse_from(["localagent"]);
+        let defaults = crate::taskgraph::TaskDefaults {
+            task_kind: Some("coding".to_string()),
+            validation_command: Some("cargo test".to_string()),
+            exact_final_answer: Some("validated".to_string()),
+            ..crate::taskgraph::TaskDefaults::default()
+        };
+        apply_task_defaults(&mut args, &defaults).expect("defaults");
+        assert_eq!(args.task_kind.as_deref(), Some("coding"));
+        assert_eq!(
+            args.validation_command_override.as_deref(),
+            Some("cargo test")
+        );
+        assert_eq!(
+            args.exact_final_answer_override.as_deref(),
+            Some("validated")
+        );
     }
 }

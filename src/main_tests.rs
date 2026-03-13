@@ -603,6 +603,12 @@ fn task_settings_merge_defaults_then_overrides() {
 
         model: Some("m1".to_string()),
 
+        task_kind: None,
+
+        validation_command: None,
+
+        exact_final_answer: None,
+
         planner_model: Some("pm".to_string()),
 
         worker_model: Some("wm".to_string()),

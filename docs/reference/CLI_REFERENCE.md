@@ -326,12 +326,35 @@ localagent eval [OPTIONS]
 Major eval-only options:
 
 - `--models <CSV>`
-- `--pack <coding|browser|all>`
+- `--pack <coding|browser|common-coding-ux|all>`
+- `--instructions-config <PATH>`
+- `--instruction-model-profile <NAME>`
+- `--instruction-task-profile <NAME>`
+- `--task-kind <NAME>`
 - `--out <PATH>`
 - `--junit <PATH>`
 - `--summary-md <PATH>`
 - `--cost-model <PATH>`
 - `--runs-per-task <N>`
+
+Eval results JSON:
+
+- Per-run rows under `runs[*]` can include nested `ux` fields plus flattened `ux_metric_rows` for dashboard ingestion.
+- Top-level aggregate UX rows are exported in `ux_summary_metric_rows`.
+- Per-model aggregate UX rows are exported in `ux_summary_metric_rows_by_model.<MODEL>`.
+- Per-task-family aggregate UX rows are exported in `ux_summary_metric_rows_by_task_family.<TASK_FAMILY>`.
+- Eval config metadata can also record `instructions_config_path`, `instruction_model_profile`, `instruction_task_profile`, `instruction_task_profile_task_kind`, and `task_kind` when benchmark runs intentionally use instruction or task shaping.
+- When both `instruction_task_profile` and `instruction_task_profile_task_kind` are present, the first is the human-facing selected profile name and the second is the resolved canonical runtime task kind mapped from that profile.
+- Current UX metric keys include:
+  - `ux.task_success_rate`
+  - `ux.validation_completion_rate`
+  - `ux.closeout_quality_rate`
+  - `ux.non_skipped_runs`
+  - `ux.skipped_runs`
+  - `ux.validation_required_runs`
+  - `ux.exact_closeout_required_runs`
+  - `ux.failure_stage.<STAGE>.count`
+  - `ux.task_family.<TASK_FAMILY>.count`
 
 ### `repo`
 
@@ -392,7 +415,16 @@ Notes:
 Notes:
 - `tasks run` starts from the top-level `RunArgs` and then applies taskfile defaults and per-node overrides.
 - Global flags like `--task-kind`, `--instruction-task-profile`, and provider/trust/tool flags still apply unless a taskfile override replaces the same surface.
-- Current taskfile schema does not yet expose per-node or per-default `task_kind` / `instruction_task_profile` fields; use global CLI flags when you need explicit non-default task classification across a task-graph run.
+- Taskfile `defaults` and per-node `settings` can now author explicit coding-task contract fields:
+  - `task_kind`
+  - `validation_command`
+  - `exact_final_answer`
+- Node-level authored contract fields override taskfile defaults for the same surface.
+- Authored taskfile values use the same explicit contract precedence as CLI overrides:
+  - explicit `task_kind` beats inferred/default task-kind resolution
+  - explicit `validation_command` beats prompt-derived validation inference
+  - explicit `exact_final_answer` beats prompt-derived exact-final-answer inference
+- `instruction_task_profile` is still a global CLI/runtime surface; current taskfile schema does not yet expose per-node instruction-profile selection.
 
 ## Common Full Commands
 

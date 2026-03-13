@@ -14,6 +14,35 @@ use crate::taskgraph;
 use crate::trust;
 use crate::{run_agent, ProviderKind, RunArgs, TasksRunArgs};
 
+fn build_node_run_args(
+    base_run: &RunArgs,
+    taskfile: &taskgraph::TaskFile,
+    node: &taskgraph::TaskNode,
+    node_id: &str,
+    args: &TasksRunArgs,
+    summaries: &[String],
+) -> anyhow::Result<RunArgs> {
+    let mut node_args = base_run.clone();
+    task_apply::apply_task_defaults(&mut node_args, &taskfile.defaults)?;
+    task_apply::apply_node_overrides(&mut node_args, &node.settings)?;
+    node_args.tui = false;
+    node_args.stream = node_args.stream && !base_run.tui;
+    let node_workdir = task_apply::resolve_node_workdir(taskfile, node_id, &node_args.workdir)?;
+    node_args.workdir = node_workdir;
+    node_args.prompt = Some(
+        if args.propagate_summaries.enabled() && !summaries.is_empty() {
+            format!(
+                "NODE SUMMARIES (v1)\n{}\n\nTASK:\n{}",
+                summaries.join("\n"),
+                node.prompt
+            )
+        } else {
+            node.prompt.clone()
+        },
+    );
+    Ok(node_args)
+}
+
 pub(crate) async fn run_tasks_graph(
     args: &TasksRunArgs,
     base_run: &RunArgs,
@@ -94,25 +123,7 @@ pub(crate) async fn run_tasks_graph(
             }),
         );
         let node = taskgraph::node_by_id(&taskfile, node_id)?;
-        let mut node_args = base_run.clone();
-        task_apply::apply_task_defaults(&mut node_args, &taskfile.defaults)?;
-        task_apply::apply_node_overrides(&mut node_args, &node.settings)?;
-        node_args.tui = false;
-        node_args.stream = node_args.stream && !base_run.tui;
-        let node_workdir =
-            task_apply::resolve_node_workdir(&taskfile, node_id, &node_args.workdir)?;
-        node_args.workdir = node_workdir;
-        node_args.prompt = Some(
-            if args.propagate_summaries.enabled() && !summaries.is_empty() {
-                format!(
-                    "NODE SUMMARIES (v1)\n{}\n\nTASK:\n{}",
-                    summaries.join("\n"),
-                    node.prompt
-                )
-            } else {
-                node.prompt.clone()
-            },
-        );
+        let node_args = build_node_run_args(base_run, &taskfile, node, node_id, args, &summaries)?;
 
         let run_id = uuid::Uuid::new_v4().to_string();
         if let Some(n) = checkpoint.nodes.get_mut(node_id) {
@@ -283,11 +294,185 @@ pub(crate) async fn run_tasks_graph(
         nodes: node_records,
         config: serde_json::json!({
             "defaults": taskfile.defaults,
-            "workdir": taskfile.workdir
+            "workdir": taskfile.workdir,
+            "nodes": taskfile.nodes.iter().map(|node| {
+                serde_json::json!({
+                    "id": node.id,
+                    "settings": node.settings
+                })
+            }).collect::<Vec<_>>()
         }),
         propagate_summaries: args.propagate_summaries.enabled(),
     };
     let graph_path = taskgraph::write_graph_run_artifact(&paths.state_dir, &graph)?;
     println!("task graph artifact: {}", graph_path.display());
     Ok(if status == "ok" { 0 } else { 1 })
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::build_node_run_args;
+    use crate::agent::task_contract::{
+        resolve_task_contract, ContractValueSource, FinalAnswerMode, ValidationRequirement,
+    };
+    use crate::taskgraph::{
+        PropagateSummaries, TaskDefaults, TaskFile, TaskNode, TaskNodeSettings, TaskWorkdir,
+    };
+    use crate::types::{SideEffects, ToolDef};
+    use crate::{RunArgs, TasksRunArgs};
+
+    fn tool_defs(names: &[(&str, SideEffects)]) -> Vec<ToolDef> {
+        names
+            .iter()
+            .map(|(name, side_effects)| ToolDef {
+                name: (*name).to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+                side_effects: *side_effects,
+            })
+            .collect()
+    }
+
+    fn base_run_args() -> RunArgs {
+        RunArgs::parse_from(["localagent", "--provider", "mock", "--model", "test-model"])
+    }
+
+    fn tasks_run_args() -> TasksRunArgs {
+        TasksRunArgs {
+            taskfile: std::path::PathBuf::from("taskfile.json"),
+            resume: false,
+            checkpoint: None,
+            fail_fast: true,
+            max_nodes: 0,
+            propagate_summaries: PropagateSummaries::Off,
+        }
+    }
+
+    #[test]
+    fn node_authored_contract_values_override_prompt_inference() {
+        let taskfile = TaskFile {
+            schema_version: "openagent.taskfile.v1".to_string(),
+            name: "x".to_string(),
+            defaults: TaskDefaults {
+                task_kind: Some("analysis".to_string()),
+                validation_command: Some("cargo test".to_string()),
+                exact_final_answer: Some("validated".to_string()),
+                ..TaskDefaults::default()
+            },
+            workdir: TaskWorkdir::default(),
+            nodes: vec![TaskNode {
+                id: "fix-parser".to_string(),
+                depends_on: vec![],
+                prompt: "Before finishing, run node --test successfully.\n\nReply with exactly:\n\nverified fix\n".to_string(),
+                settings: TaskNodeSettings {
+                    task_kind: Some("coding".to_string()),
+                    validation_command: Some("cargo test --workspace".to_string()),
+                    exact_final_answer: Some("validated: src/lib.rs".to_string()),
+                    ..TaskNodeSettings::default()
+                },
+            }],
+        };
+        let node = &taskfile.nodes[0];
+        let node_args = build_node_run_args(
+            &base_run_args(),
+            &taskfile,
+            node,
+            &node.id,
+            &tasks_run_args(),
+            &[],
+        )
+        .expect("node args");
+        let resolution = resolve_task_contract(
+            &node_args,
+            node_args.prompt.as_deref().expect("prompt"),
+            None,
+            false,
+            &tool_defs(&[
+                ("read_file", SideEffects::FilesystemRead),
+                ("shell", SideEffects::ShellExec),
+            ]),
+        );
+
+        assert_eq!(resolution.contract.task_kind, "coding");
+        assert_eq!(
+            resolution.provenance.task_kind,
+            ContractValueSource::Explicit
+        );
+        assert_eq!(
+            resolution.contract.validation_requirement,
+            ValidationRequirement::Command {
+                command: "cargo test --workspace".to_string()
+            }
+        );
+        assert_eq!(
+            resolution.provenance.validation_requirement,
+            ContractValueSource::Explicit
+        );
+        assert_eq!(
+            resolution.contract.final_answer_mode,
+            FinalAnswerMode::Exact {
+                required_text: "validated: src/lib.rs".to_string()
+            }
+        );
+        assert_eq!(
+            resolution.provenance.final_answer_mode,
+            ContractValueSource::Explicit
+        );
+    }
+
+    #[test]
+    fn taskfile_defaults_apply_when_node_does_not_override_contract() {
+        let taskfile = TaskFile {
+            schema_version: "openagent.taskfile.v1".to_string(),
+            name: "x".to_string(),
+            defaults: TaskDefaults {
+                task_kind: Some("coding".to_string()),
+                validation_command: Some("cargo test --workspace".to_string()),
+                exact_final_answer: Some("validated".to_string()),
+                ..TaskDefaults::default()
+            },
+            workdir: TaskWorkdir::default(),
+            nodes: vec![TaskNode {
+                id: "fix-parser".to_string(),
+                depends_on: vec![],
+                prompt: "Before finishing, run node --test successfully.\n\nReply with exactly:\n\nverified fix\n".to_string(),
+                settings: TaskNodeSettings::default(),
+            }],
+        };
+        let node = &taskfile.nodes[0];
+        let node_args = build_node_run_args(
+            &base_run_args(),
+            &taskfile,
+            node,
+            &node.id,
+            &tasks_run_args(),
+            &[],
+        )
+        .expect("node args");
+        let resolution = resolve_task_contract(
+            &node_args,
+            node_args.prompt.as_deref().expect("prompt"),
+            None,
+            false,
+            &tool_defs(&[
+                ("read_file", SideEffects::FilesystemRead),
+                ("shell", SideEffects::ShellExec),
+            ]),
+        );
+
+        assert_eq!(
+            resolution.contract.validation_requirement,
+            ValidationRequirement::Command {
+                command: "cargo test --workspace".to_string()
+            }
+        );
+        assert_eq!(
+            resolution.contract.final_answer_mode,
+            FinalAnswerMode::Exact {
+                required_text: "validated".to_string()
+            }
+        );
+    }
 }
