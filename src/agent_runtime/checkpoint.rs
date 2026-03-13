@@ -63,6 +63,64 @@ pub(super) fn initial_runtime_state_checkpoint(
     }
 }
 
+pub(super) fn is_terminal_phase(phase: &RunPhase) -> bool {
+    matches!(phase, RunPhase::Done | RunPhase::Failed | RunPhase::Cancelled)
+}
+
+pub(super) fn validate_terminal_runtime_state_checkpoint(
+    outcome: &crate::agent::AgentOutcome,
+    checkpoint: &RuntimeStateCheckpointV1,
+) -> anyhow::Result<()> {
+    use anyhow::ensure;
+
+    if !is_terminal_phase(&checkpoint.phase) {
+        return Ok(());
+    }
+
+    ensure!(
+        checkpoint.terminal_boundary,
+        "terminal runtime checkpoint must set terminal_boundary=true"
+    );
+    ensure!(
+        !checkpoint.approval_state.awaiting_approval,
+        "terminal runtime checkpoint cannot leave approval_state.awaiting_approval active"
+    );
+
+    match checkpoint.phase {
+        RunPhase::Done => {
+            ensure!(
+                matches!(outcome.exit_reason, AgentExitReason::Ok),
+                "done runtime checkpoint must map to AgentExitReason::Ok"
+            );
+            ensure!(
+                checkpoint.validation_state.required_command.is_none()
+                    || checkpoint.validation_state.satisfied,
+                "done runtime checkpoint must satisfy required validation before finalization"
+            );
+        }
+        RunPhase::Failed => {
+            ensure!(
+                !matches!(
+                    outcome.exit_reason,
+                    AgentExitReason::Ok
+                        | AgentExitReason::Cancelled
+                        | AgentExitReason::ApprovalRequired
+                ),
+                "failed runtime checkpoint cannot map to ok/cancelled/approval_required outcomes"
+            );
+        }
+        RunPhase::Cancelled => {
+            ensure!(
+                matches!(outcome.exit_reason, AgentExitReason::Cancelled),
+                "cancelled runtime checkpoint must map to AgentExitReason::Cancelled"
+            );
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 pub(super) fn runtime_state_checkpoint_for_outcome(
     outcome: &crate::agent::AgentOutcome,
     prompt: &str,
@@ -568,8 +626,13 @@ pub(crate) fn parse_resume_args(argv: &[String]) -> anyhow::Result<RunArgs> {
 mod tests {
     use super::{
         checkpoint_for_outcome, parse_resume_args, runtime_checkpoint_record_for_outcome,
+        validate_terminal_runtime_state_checkpoint,
     };
     use crate::agent::{AgentExitReason, AgentOutcome, ToolDecisionRecord};
+    use crate::agent_runtime::state::{
+        ApprovalState, ExecutionTier, RetryState, RunCheckpointV1 as RuntimeStateCheckpointV1,
+        RunPhase, ToolProtocolState, ValidationState,
+    };
     use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
     use crate::store::{RunCheckpointInterruptKind, RunCheckpointPhase};
     use crate::types::{Message, Role, ToolCall};
@@ -696,5 +759,59 @@ mod tests {
         assert_eq!(resumed.prompt.as_deref(), Some("real prompt"));
         assert_eq!(resumed.task_kind.as_deref(), Some("coding"));
         assert!(resumed.allow_shell);
+    }
+
+    #[test]
+    fn terminal_checkpoint_validation_accepts_valid_done_state() {
+        let outcome = outcome(AgentExitReason::Ok, None);
+        let checkpoint = RuntimeStateCheckpointV1 {
+            schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+            phase: RunPhase::Done,
+            step_index: 1,
+            execution_tier: ExecutionTier::ScopedHostShell,
+            terminal_boundary: true,
+            retry_state: RetryState::default(),
+            tool_protocol_state: ToolProtocolState::default(),
+            validation_state: ValidationState {
+                required_command: Some("cargo test".to_string()),
+                satisfied: true,
+                repair_mode: false,
+                collecting_final_answer: false,
+            },
+            approval_state: ApprovalState::default(),
+            active_plan_step_id: None,
+            last_tool_fact_envelopes: Vec::new(),
+        };
+
+        validate_terminal_runtime_state_checkpoint(&outcome, &checkpoint).expect("valid done");
+    }
+
+    #[test]
+    fn terminal_checkpoint_validation_rejects_done_without_required_validation() {
+        let outcome = outcome(AgentExitReason::Ok, None);
+        let checkpoint = RuntimeStateCheckpointV1 {
+            schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+            phase: RunPhase::Done,
+            step_index: 1,
+            execution_tier: ExecutionTier::ScopedHostShell,
+            terminal_boundary: true,
+            retry_state: RetryState::default(),
+            tool_protocol_state: ToolProtocolState::default(),
+            validation_state: ValidationState {
+                required_command: Some("cargo test".to_string()),
+                satisfied: false,
+                repair_mode: false,
+                collecting_final_answer: false,
+            },
+            approval_state: ApprovalState::default(),
+            active_plan_step_id: None,
+            last_tool_fact_envelopes: Vec::new(),
+        };
+
+        let err = validate_terminal_runtime_state_checkpoint(&outcome, &checkpoint)
+            .expect_err("missing validation must fail");
+        assert!(err
+            .to_string()
+            .contains("must satisfy required validation"));
     }
 }

@@ -281,6 +281,20 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                         lsp_context_resolution: input.lsp_context_resolution,
                         activated_packs: input.activated_packs,
                     })?;
+                let final_checkpoint = super::checkpoint::runtime_state_checkpoint_for_outcome(
+                    &outcome,
+                    input.prompt,
+                    input.execution_tier.clone(),
+                    &[],
+                );
+                super::checkpoint::validate_terminal_runtime_state_checkpoint(
+                    &outcome,
+                    &final_checkpoint,
+                )?;
+                let completion_decisions = super::checkpoint::completion_decisions_for_outcome(
+                    &outcome,
+                    &final_checkpoint,
+                );
                 let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
                     paths: input.paths.clone(),
                     cli_config,
@@ -303,24 +317,11 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     tool_facts: Vec::new(),
                     tool_fact_envelopes: Vec::new(),
                     run_checkpoint: super::checkpoint::checkpoint_for_outcome(&outcome),
-                    final_checkpoint: Some(super::checkpoint::runtime_state_checkpoint_for_outcome(
-                        &outcome,
-                        input.prompt,
-                        input.execution_tier.clone(),
-                        &[],
-                    )),
+                    final_checkpoint: Some(final_checkpoint.clone()),
                     execution_tier: input.execution_tier.clone(),
                     interrupt_history: crate::agent::interrupts::interrupt_history_for_outcome(&outcome),
                     phase_summary: super::checkpoint::phase_summary_for_outcome(&outcome),
-                    completion_decisions: super::checkpoint::completion_decisions_for_outcome(
-                        &outcome,
-                        &super::checkpoint::runtime_state_checkpoint_for_outcome(
-                            &outcome,
-                            input.prompt,
-                            input.execution_tier.clone(),
-                            &[],
-                        ),
-                    ),
+                    completion_decisions,
                     config_fingerprint: Some(config_fingerprint.clone()),
                     repro_record: None,
                     mcp_runtime_trace: Vec::new(),
@@ -455,6 +456,20 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     lsp_context_resolution: input.lsp_context_resolution,
                     activated_packs: input.activated_packs,
                 })?;
+            let final_checkpoint = super::checkpoint::runtime_state_checkpoint_for_outcome(
+                &outcome,
+                input.prompt,
+                input.execution_tier.clone(),
+                &[],
+            );
+            super::checkpoint::validate_terminal_runtime_state_checkpoint(
+                &outcome,
+                &final_checkpoint,
+            )?;
+            let completion_decisions = super::checkpoint::completion_decisions_for_outcome(
+                &outcome,
+                &final_checkpoint,
+            );
             let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
                 paths: input.paths.clone(),
                 cli_config,
@@ -477,24 +492,11 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                 tool_facts: Vec::new(),
                 tool_fact_envelopes: Vec::new(),
                 run_checkpoint: super::checkpoint::checkpoint_for_outcome(&outcome),
-                final_checkpoint: Some(super::checkpoint::runtime_state_checkpoint_for_outcome(
-                    &outcome,
-                    input.prompt,
-                    input.execution_tier.clone(),
-                    &[],
-                )),
+                final_checkpoint: Some(final_checkpoint.clone()),
                 execution_tier: input.execution_tier.clone(),
                 interrupt_history: crate::agent::interrupts::interrupt_history_for_outcome(&outcome),
                 phase_summary: super::checkpoint::phase_summary_for_outcome(&outcome),
-                completion_decisions: super::checkpoint::completion_decisions_for_outcome(
-                    &outcome,
-                    &super::checkpoint::runtime_state_checkpoint_for_outcome(
-                        &outcome,
-                        input.prompt,
-                        input.execution_tier.clone(),
-                        &[],
-                    ),
-                ),
+                completion_decisions,
                 config_fingerprint: Some(config_fingerprint.clone()),
                 repro_record: None,
                 mcp_runtime_trace: Vec::new(),

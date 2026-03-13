@@ -425,6 +425,7 @@ pub(super) fn finalize_run_artifacts(
         input.execution_tier.clone(),
         &tool_fact_envelopes,
     );
+    super::checkpoint::validate_terminal_runtime_state_checkpoint(input.outcome, &final_checkpoint)?;
     let interrupt_history = crate::agent::interrupts::interrupt_history_for_outcome(input.outcome);
     let phase_summary = super::checkpoint::phase_summary_for_outcome(input.outcome);
     let completion_decisions =

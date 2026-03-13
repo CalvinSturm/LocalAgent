@@ -186,6 +186,7 @@ What is true now:
 - checkpoint-backed state is the main live control surface for validation / final-answer / post-write / tool-protocol runtime state
 - resume is checkpoint-backed rather than boundary-only
 - the main runtime loop is materially cleaner than before and now explicitly dispatches active runtime phases, but it is still not fully phase-dispatched end to end
+- terminal runtime checkpoints are now validated before final artifact writing so `Done` cannot be serialized with unsatisfied required validation evidence
 
 Most relevant files for the next person picking this up:
 
@@ -206,6 +207,7 @@ Recommended order:
 1. Treat Phase 5 as effectively closed unless a concrete runtime-loop regression appears.
 2. If future runtime work touches the loop again, use targeted regressions plus `cargo test --quiet` and avoid reopening broad coordinator refactors without evidence.
 3. Shift attention to later runtime priorities that build on the checkpoint-backed phase model rather than more structural cleanup for its own sake.
+4. Prefer narrow invariant hardening like terminal-checkpoint/runtime-artifact consistency checks over more coordinator reshaping.
 
 ## Suggested Handoff Rules
 
