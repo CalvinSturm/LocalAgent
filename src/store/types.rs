@@ -35,6 +35,12 @@ pub struct RunRecord {
     pub config_hash_hex: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_fingerprint: Option<ConfigFingerprintV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_contract: Option<crate::agent::TaskContractV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_contract_provenance: Option<crate::agent::TaskContractProvenanceV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_checkpoint: Option<RunCheckpointV1>,
     #[serde(default)]
     pub tool_schema_hash_hex_map: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,6 +49,10 @@ pub struct RunRecord {
     pub tool_calls: Vec<ToolCall>,
     #[serde(default)]
     pub tool_decisions: Vec<crate::agent::ToolDecisionRecord>,
+    #[serde(default)]
+    pub tool_facts: Vec<crate::agent::ToolFactV1>,
+    #[serde(default)]
+    pub tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction: Option<RunCompactionRecord>,
     #[serde(default)]
@@ -502,4 +512,63 @@ pub struct RunCompactionRecord {
     pub final_prompt_size_chars: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<CompactionReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunCheckpointPhase {
+    WaitingForApproval,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunCheckpointInterruptKind {
+    ApprovalRequired,
+    OperatorInterrupt,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunCheckpointInterruptV1 {
+    pub kind: RunCheckpointInterruptKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunCheckpointV1 {
+    pub schema_version: String,
+    pub phase: RunCheckpointPhase,
+    pub terminal_boundary: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_interrupt: Option<RunCheckpointInterruptV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingApprovalToolCallV1 {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub arguments: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeRunCheckpointRecordV1 {
+    pub schema_version: String,
+    pub runtime_run_id: String,
+    pub prompt: String,
+    pub resume_argv: Vec<String>,
+    pub checkpoint: RunCheckpointV1,
+    pub resume_session_messages: Vec<crate::types::Message>,
+    #[serde(default)]
+    pub tool_facts: Vec<crate::agent::ToolFactV1>,
+    #[serde(default)]
+    pub tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_tool_call: Option<PendingApprovalToolCallV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boundary_output: Option<String>,
 }

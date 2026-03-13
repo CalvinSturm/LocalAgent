@@ -124,6 +124,8 @@ struct RunRecord {
     exit_reason: Option<String>,
     error: Option<String>,
     run_artifact_path: Option<String>,
+    runtime_checkpoint_path: Option<String>,
+    runtime_checkpoint_phase: Option<String>,
     projected_events: Vec<crate::events::ProjectedRunEventV1>,
     event_notify: Arc<Notify>,
     input_tx: Option<std::sync::mpsc::Sender<QueueSubmitRequest>>,
@@ -163,6 +165,8 @@ struct RunInfoV1 {
     exit_reason: Option<String>,
     error: Option<String>,
     run_artifact_path: Option<String>,
+    runtime_checkpoint_path: Option<String>,
+    runtime_checkpoint_phase: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -548,6 +552,8 @@ async fn create_run(
             exit_reason: None,
             error: None,
             run_artifact_path: None,
+            runtime_checkpoint_path: None,
+            runtime_checkpoint_phase: None,
             projected_events: Vec::new(),
             event_notify: event_notify.clone(),
             input_tx: Some(input_tx.clone()),
@@ -906,6 +912,8 @@ impl RunInfoV1 {
             exit_reason: record.exit_reason.clone(),
             error: record.error.clone(),
             run_artifact_path: record.run_artifact_path.clone(),
+            runtime_checkpoint_path: record.runtime_checkpoint_path.clone(),
+            runtime_checkpoint_phase: record.runtime_checkpoint_phase.clone(),
         }
     }
 }
@@ -993,6 +1001,15 @@ async fn execute_backend_run(
                 .run_artifact_path
                 .as_ref()
                 .map(|path| path.display().to_string());
+            let runtime_checkpoint_path = exec
+                .runtime_checkpoint_path
+                .as_ref()
+                .map(|path| path.display().to_string());
+            let runtime_checkpoint_phase = exec.runtime_checkpoint_path.as_ref().and_then(|_| {
+                crate::store::load_runtime_checkpoint_record(&state.paths, &exec.outcome.run_id)
+                    .ok()
+                    .map(|record| format!("{:?}", record.checkpoint.phase))
+            });
             update_run_record(&state, &run_id, |record| {
                 record.status = terminal_status.clone();
                 record.finished_at = finished_at.clone();
@@ -1000,6 +1017,8 @@ async fn execute_backend_run(
                 record.exit_reason = Some(exit_reason.clone());
                 record.error = error.clone();
                 record.run_artifact_path = run_artifact_path.clone();
+                record.runtime_checkpoint_path = runtime_checkpoint_path.clone();
+                record.runtime_checkpoint_phase = runtime_checkpoint_phase.clone();
                 record.input_tx = None;
                 record.cancel_tx = None;
                 record.event_notify.notify_waiters();
@@ -1390,9 +1409,11 @@ mod tests {
                 started_at: Some(crate::trust::now_rfc3339()),
                 finished_at: None,
                 exit_reason: None,
-                error: None,
-                run_artifact_path: None,
-                projected_events: vec![crate::events::ProjectedRunEventV1 {
+            error: None,
+            run_artifact_path: None,
+            runtime_checkpoint_path: None,
+            runtime_checkpoint_phase: None,
+            projected_events: vec![crate::events::ProjectedRunEventV1 {
                     schema_version: "v1".to_string(),
                     sequence: 1,
                     ts: crate::trust::now_rfc3339(),
@@ -1448,9 +1469,11 @@ mod tests {
                 started_at: None,
                 finished_at: None,
                 exit_reason: None,
-                error: None,
-                run_artifact_path: None,
-                projected_events: Vec::new(),
+            error: None,
+            run_artifact_path: None,
+            runtime_checkpoint_path: None,
+            runtime_checkpoint_phase: None,
+            projected_events: Vec::new(),
                 event_notify: event_notify.clone(),
                 input_tx: Some(input_tx),
                 cancel_tx: Some(cancel_tx.clone()),
@@ -1521,6 +1544,19 @@ mod tests {
                         .run_artifact_path
                         .as_ref()
                         .map(|path| path.display().to_string());
+                    let runtime_checkpoint_path = exec
+                        .runtime_checkpoint_path
+                        .as_ref()
+                        .map(|path| path.display().to_string());
+                    let runtime_checkpoint_phase =
+                        exec.runtime_checkpoint_path.as_ref().and_then(|_| {
+                            crate::store::load_runtime_checkpoint_record(
+                                &state_for_task.paths,
+                                &exec.outcome.run_id,
+                            )
+                            .ok()
+                            .map(|record| format!("{:?}", record.checkpoint.phase))
+                        });
                     update_run_record(&state_for_task, &run_id_for_task, |record| {
                         record.status = terminal_status.clone();
                         record.finished_at = Some(exec.outcome.finished_at.clone());
@@ -1528,6 +1564,8 @@ mod tests {
                         record.exit_reason = Some(exec.outcome.exit_reason.as_str().to_string());
                         record.error = exec.outcome.error.clone();
                         record.run_artifact_path = run_artifact_path.clone();
+                        record.runtime_checkpoint_path = runtime_checkpoint_path.clone();
+                        record.runtime_checkpoint_phase = runtime_checkpoint_phase.clone();
                         record.input_tx = None;
                         record.cancel_tx = None;
                         record.event_notify.notify_waiters();

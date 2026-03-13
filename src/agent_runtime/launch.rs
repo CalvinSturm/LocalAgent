@@ -21,7 +21,7 @@ use crate::trust::policy::Policy;
 use crate::types::Message;
 use crate::RunArgs;
 
-use super::guard::validate_runtime_owned_http_timeouts;
+use super::guard::{should_enable_implementation_guard, validate_runtime_owned_http_timeouts};
 use super::setup::{
     build_context_augmentations, build_exec_target, build_gate_context, build_hook_and_tool_setup,
     build_session_bootstrap, build_ui_runtime_setup, resolve_mcp_runtime_registry,
@@ -47,6 +47,8 @@ pub(super) struct RuntimeLaunch {
     pub(super) session_messages: Vec<Message>,
     pub(super) task_memory: Option<Message>,
     pub(super) instruction_resolution: crate::instructions::InstructionResolution,
+    pub(super) task_contract: crate::agent::TaskContractV1,
+    pub(super) task_contract_provenance: crate::agent::TaskContractProvenanceV1,
     pub(super) project_guidance_resolution:
         Option<crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<crate::repo_map::ResolvedRepoMap>,
@@ -159,6 +161,10 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         planner_strict_effective,
         instruction_resolution.selected_task_profile.as_deref(),
     )?;
+    let implementation_guard_enabled = should_enable_implementation_guard(
+        &args,
+        instruction_resolution.selected_task_profile.as_deref(),
+    );
 
     let (mcp_config_path, mcp_registry) =
         resolve_mcp_runtime_registry(&args, paths, shared_mcp_registry).await?;
@@ -191,6 +197,13 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         hook_manager,
         tool_catalog,
     } = build_hook_and_tool_setup(&args, paths, &resolved_settings, &prep.all_tools)?;
+    let task_contract_resolution = crate::agent::resolve_task_contract(
+        &args,
+        prompt,
+        instruction_resolution.selected_task_profile.as_deref(),
+        implementation_guard_enabled,
+        &prep.all_tools,
+    );
     gate_ctx.tool_schema_hashes = tool_schema_hash_hex_map.clone();
     gate_ctx.hooks_config_hash_hex = hooks_config_hash_hex.clone();
 
@@ -232,6 +245,8 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         session_messages,
         task_memory,
         instruction_resolution,
+        task_contract: task_contract_resolution.contract,
+        task_contract_provenance: task_contract_resolution.provenance,
         project_guidance_resolution,
         repo_map_resolution,
         lsp_context_resolution,
@@ -325,6 +340,122 @@ pub(super) fn emit_startup_runtime_events(launch: &mut RuntimeLaunch, run_id: &s
                 "error": note,
                 "source": "orchestrator_qualification_fallback"
             }),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use tempfile::tempdir;
+
+    use super::prepare_runtime_launch;
+    use crate::agent::{
+        AllowedToolsSemantics, ContractValueSource, FinalAnswerMode, ValidationRequirement,
+        WriteRequirement,
+    };
+    use crate::gate::ProviderKind;
+    use crate::providers::mock::MockProvider;
+
+    async fn launch_for_args(
+        argv: &[&str],
+        prompt: &str,
+    ) -> anyhow::Result<super::RuntimeLaunch> {
+        let tmp = tempdir().expect("tempdir");
+        let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
+        let mut args = crate::RunArgs::parse_from(argv);
+        args.workdir = tmp.path().to_path_buf();
+        prepare_runtime_launch(
+            &MockProvider::new(),
+            ProviderKind::Mock,
+            "mock://local",
+            "mock-model",
+            prompt,
+            &args,
+            &paths,
+            None,
+            None,
+            None,
+            true,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn launch_resolves_explicit_task_kind_contract() {
+        let launch = launch_for_args(
+            &["localagent", "--agent-mode", "plan", "--task-kind", "code fix"],
+            "Inspect and fix the project.",
+        )
+        .await
+        .expect("launch");
+        assert_eq!(launch.task_contract.task_kind, "coding");
+        assert_eq!(
+            launch.task_contract_provenance.task_kind,
+            ContractValueSource::Explicit
+        );
+        assert_eq!(
+            launch.task_contract.allowed_tools_semantics,
+            AllowedToolsSemantics::ExposedSnapshot
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_disabling_implementation_guard_relaxes_write_contract() {
+        let launch = launch_for_args(
+            &[
+                "localagent",
+                "--agent-mode",
+                "build",
+                "--disable-implementation-guard",
+            ],
+            "Inspect the repository and summarize risks.",
+        )
+        .await
+        .expect("launch");
+        assert_eq!(launch.task_contract.write_requirement, WriteRequirement::Optional);
+        assert!(!launch.task_contract.completion_policy.require_pre_write_read);
+        assert!(!launch.task_contract.completion_policy.require_post_write_readback);
+        assert!(!launch.task_contract.completion_policy.require_effective_write);
+    }
+
+    #[tokio::test]
+    async fn launch_infers_validation_requirement_from_prompt() {
+        let launch = launch_for_args(
+            &["localagent", "--agent-mode", "plan"],
+            "Make the fix. Before finishing, run cargo test successfully.",
+        )
+        .await
+        .expect("launch");
+        assert_eq!(
+            launch.task_contract.validation_requirement,
+            ValidationRequirement::Command {
+                command: "cargo test".to_string(),
+            }
+        );
+        assert_eq!(
+            launch.task_contract_provenance.validation_requirement,
+            ContractValueSource::Inferred
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_infers_exact_final_answer_from_prompt() {
+        let launch = launch_for_args(
+            &["localagent", "--agent-mode", "plan"],
+            "Update the file.\n\nReply with exactly:\n\nverified fix\n",
+        )
+        .await
+        .expect("launch");
+        assert_eq!(
+            launch.task_contract.final_answer_mode,
+            FinalAnswerMode::Exact {
+                required_text: "verified fix".to_string(),
+            }
+        );
+        assert_eq!(
+            launch.task_contract_provenance.final_answer_mode,
+            ContractValueSource::Inferred
         );
     }
 }

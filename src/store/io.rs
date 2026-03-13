@@ -10,7 +10,8 @@ use crate::planner::RunMode;
 
 use super::{
     ConfigFingerprintV1, McpPinSnapshotRecord, PlannerRunRecord, PolicyRecordInfo, RunCliConfig,
-    RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths, StatePaths,
+    RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths, RuntimeRunCheckpointRecordV1,
+    StatePaths,
     ToolReliabilityRecord, WorkerRunRecord,
 };
 
@@ -95,6 +96,11 @@ pub fn write_run_record(
     worker: Option<WorkerRunRecord>,
     tool_schema_hash_hex_map: BTreeMap<String, String>,
     hooks_config_hash_hex: Option<String>,
+    task_contract: Option<crate::agent::TaskContractV1>,
+    task_contract_provenance: Option<crate::agent::TaskContractProvenanceV1>,
+    tool_facts: Vec<crate::agent::ToolFactV1>,
+    tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
+    run_checkpoint: Option<super::RunCheckpointV1>,
     config_fingerprint: Option<ConfigFingerprintV1>,
     repro: Option<crate::repro::RunReproRecord>,
     mcp_runtime_trace: Vec<crate::agent::McpRuntimeTraceEntry>,
@@ -127,11 +133,16 @@ pub fn write_run_record(
         mcp_allowlist: policy.mcp_allowlist,
         config_hash_hex,
         config_fingerprint,
+        task_contract,
+        task_contract_provenance,
+        run_checkpoint,
         tool_schema_hash_hex_map,
         hooks_config_hash_hex,
         transcript: outcome.messages.clone(),
         tool_calls: outcome.tool_calls.clone(),
         tool_decisions: outcome.tool_decisions.clone(),
+        tool_facts,
+        tool_fact_envelopes,
         compaction: Some(RunCompactionRecord {
             settings: outcome.compaction_settings.clone(),
             final_prompt_size_chars: outcome.final_prompt_size_chars,
@@ -156,6 +167,41 @@ pub fn load_run_record(state_dir: &Path, run_id: &str) -> anyhow::Result<RunReco
     let content = std::fs::read_to_string(path)?;
     let record: RunRecord = serde_json::from_str(&content)?;
     Ok(record)
+}
+
+pub(crate) fn runtime_checkpoint_path(paths: &StatePaths, runtime_run_id: &str) -> PathBuf {
+    paths.checkpoints_dir.join(format!("{runtime_run_id}.json"))
+}
+
+pub fn write_runtime_checkpoint_record(
+    paths: &StatePaths,
+    checkpoint: &RuntimeRunCheckpointRecordV1,
+) -> anyhow::Result<PathBuf> {
+    ensure_dir(&paths.checkpoints_dir)?;
+    let path = runtime_checkpoint_path(paths, &checkpoint.runtime_run_id);
+    write_json_atomic(&path, checkpoint)?;
+    Ok(path)
+}
+
+pub fn load_runtime_checkpoint_record(
+    paths: &StatePaths,
+    runtime_run_id: &str,
+) -> anyhow::Result<RuntimeRunCheckpointRecordV1> {
+    let path = runtime_checkpoint_path(paths, runtime_run_id);
+    let content = std::fs::read_to_string(&path)?;
+    let checkpoint: RuntimeRunCheckpointRecordV1 = serde_json::from_str(&content)?;
+    Ok(checkpoint)
+}
+
+pub fn delete_runtime_checkpoint_record(
+    paths: &StatePaths,
+    runtime_run_id: &str,
+) -> anyhow::Result<()> {
+    let path = runtime_checkpoint_path(paths, runtime_run_id);
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {

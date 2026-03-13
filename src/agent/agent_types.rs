@@ -103,6 +103,8 @@ pub struct ToolDecisionRecord {
     pub reason: Option<String>,
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub taint_overall: Option<String>,
     #[serde(default)]
     pub taint_enforced: bool,

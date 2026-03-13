@@ -129,11 +129,13 @@
       "policy_source",
       "policy_version",
       "resolved_paths",
-      "tool_calls",
-      "tool_catalog",
-      "tool_decisions",
-      "tool_reliability",
-      "tool_schema_hash_hex_map",
+        "tool_calls",
+        "tool_catalog",
+        "tool_decisions",
+        "tool_fact_envelopes",
+        "tool_facts",
+        "tool_reliability",
+        "tool_schema_hash_hex_map",
       "transcript",
       "worker"
     ]
@@ -171,6 +173,7 @@
       "tool_call_id": "tc_deny"
     },
     {
+      "approval_id": "approval_golden",
       "decision": "require_approval",
       "escalated": false,
       "reason": "shell requires approval",

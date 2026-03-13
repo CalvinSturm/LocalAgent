@@ -106,6 +106,8 @@ pub(super) struct PlannerBootstrapInput<'a, P: ModelProvider> {
     pub(super) hooks_config_hash_hex: Option<String>,
     pub(super) mcp_pin_snapshot: Option<store::McpPinSnapshotRecord>,
     pub(super) instruction_resolution: &'a crate::instructions::InstructionResolution,
+    pub(super) task_contract: &'a crate::agent::TaskContractV1,
+    pub(super) task_contract_provenance: &'a crate::agent::TaskContractProvenanceV1,
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<&'a crate::repo_map::ResolvedRepoMap>,
@@ -295,12 +297,22 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     worker_record: input.worker_record.clone(),
                     tool_schema_hash_hex_map: input.tool_schema_hash_hex_map,
                     hooks_config_hash_hex: input.hooks_config_hash_hex,
+                    task_contract: input.task_contract.clone(),
+                    task_contract_provenance: input.task_contract_provenance.clone(),
+                    tool_facts: Vec::new(),
+                    tool_fact_envelopes: Vec::new(),
+                    run_checkpoint: super::checkpoint::checkpoint_for_outcome(&outcome),
                     config_fingerprint: Some(config_fingerprint.clone()),
                     repro_record: None,
                     mcp_runtime_trace: Vec::new(),
                     mcp_pin_snapshot: input.mcp_pin_snapshot,
                 });
-                return finalize_early_run_result(input.ui_join.take(), outcome, run_artifact_path)
+                return finalize_early_run_result(
+                    input.ui_join.take(),
+                    outcome,
+                    run_artifact_path,
+                    None,
+                )
                     .map(Some);
             }
             emit_planner_end_event(
@@ -441,12 +453,18 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                 worker_record: None,
                 tool_schema_hash_hex_map: input.tool_schema_hash_hex_map,
                 hooks_config_hash_hex: input.hooks_config_hash_hex,
+                task_contract: input.task_contract.clone(),
+                task_contract_provenance: input.task_contract_provenance.clone(),
+                tool_facts: Vec::new(),
+                tool_fact_envelopes: Vec::new(),
+                run_checkpoint: super::checkpoint::checkpoint_for_outcome(&outcome),
                 config_fingerprint: Some(config_fingerprint.clone()),
                 repro_record: None,
                 mcp_runtime_trace: Vec::new(),
                 mcp_pin_snapshot: input.mcp_pin_snapshot,
             });
-            finalize_early_run_result(input.ui_join.take(), outcome, run_artifact_path).map(Some)
+            finalize_early_run_result(input.ui_join.take(), outcome, run_artifact_path, None)
+                .map(Some)
         }
     }
 }

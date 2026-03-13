@@ -327,6 +327,7 @@ impl<P: ModelProvider> Agent<P> {
                         self.effective_post_write_verify_timeout_ms();
                     let pending_post_write_paths =
                         crate::agent_impl_guard::pending_post_write_verification_paths(
+                            &observed_tool_calls,
                             observed_tool_executions,
                         );
                     for path in pending_post_write_paths
@@ -464,24 +465,22 @@ impl<P: ModelProvider> Agent<P> {
                         ),
                     ));
                 }
-                let validation_satisfied =
-                    crate::agent_impl_guard::required_validation_command_satisfied(
+                let validation_facts = crate::agent::completion_policy::collect_validation_facts(
+                    user_prompt,
+                    &crate::agent::tool_facts_from_calls_and_executions(
                         user_prompt,
                         &observed_tool_calls,
                         observed_tool_executions,
-                    );
-                if !validation_satisfied {
-                    if required_validation_retry_count < 1 {
+                    ),
+                );
+                match crate::agent::completion_policy::decide_required_validation_completion(
+                    &validation_facts,
+                    required_validation_retry_count,
+                ) {
+                    crate::agent::completion_policy::RequiredValidationCompletionDecision::FinalizeNow => {}
+                    crate::agent::completion_policy::RequiredValidationCompletionDecision::ContinueRequiredValidation(corrective_instruction) => {
                         let blocked_runtime_completion_count =
                             blocked_runtime_completion_count.saturating_add(1);
-                        let required_command =
-                            crate::agent_impl_guard::prompt_required_validation_command(
-                                user_prompt,
-                            )
-                            .unwrap_or("the required validation command");
-                        let corrective_instruction = format!(
-                            "Validation required now. Return exactly one shell tool call and no prose. Run `{required_command}`. Example arguments: {{\"command\":\"{required_command}\"}}. After it succeeds, reply with the final answer only."
-                        );
                         self.emit_event(
                             &run_id,
                             step,
@@ -514,37 +513,37 @@ impl<P: ModelProvider> Agent<P> {
                             operator_delivery_count,
                         };
                     }
-                    let reason =
-                        "required validation command was not executed successfully before final answer";
-                    self.emit_event(
-                        &run_id,
-                        step,
-                        crate::events::EventKind::Error,
-                        serde_json::json!({
-                            "error": reason,
-                            "source": "runtime_required_validation_guard",
-                            "failure_class": "E_RUNTIME_COMPLETION_REQUIRED_VALIDATION"
-                        }),
-                    );
-                    return RuntimeCompletionAction::Finalize(Box::new(
-                        self.finalize_planner_error_with_end(
+                    crate::agent::completion_policy::RequiredValidationCompletionDecision::FinalizeError(reason) => {
+                        self.emit_event(
+                            &run_id,
                             step,
-                            run_id,
-                            started_at,
-                            reason.to_string(),
-                            messages.clone(),
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            total_token_usage,
-                            taint_state,
-                        ),
-                    ));
+                            crate::events::EventKind::Error,
+                            serde_json::json!({
+                                "error": reason,
+                                "source": "runtime_required_validation_guard",
+                                "failure_class": "E_RUNTIME_COMPLETION_REQUIRED_VALIDATION"
+                            }),
+                        );
+                        return RuntimeCompletionAction::Finalize(Box::new(
+                            self.finalize_planner_error_with_end(
+                                step,
+                                run_id,
+                                started_at,
+                                reason.to_string(),
+                                messages.clone(),
+                                observed_tool_calls,
+                                observed_tool_decisions,
+                                request_context_chars,
+                                last_compaction_report,
+                                hook_invocations,
+                                provider_retry_count,
+                                provider_error_count,
+                                saw_token_usage,
+                                total_token_usage,
+                                taint_state,
+                            ),
+                        ));
+                    }
                 }
                 if crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt)
                     .is_some()
@@ -680,6 +679,7 @@ impl<P: ModelProvider> Agent<P> {
         let post_write_verify_timeout_ms = self.effective_post_write_verify_timeout_ms();
         let pending_post_write_paths =
             crate::agent_impl_guard::pending_post_write_verification_paths(
+                &observed_tool_calls,
                 observed_tool_executions,
             );
         let verified_paths = pending_post_write_paths

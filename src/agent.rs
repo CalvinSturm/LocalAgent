@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 mod agent_types;
 mod budget_guard;
+mod completion_policy;
 mod gate_paths;
 mod mcp_drift;
 mod model_io;
@@ -31,12 +32,30 @@ mod run_events;
 mod run_finalize;
 mod run_setup;
 mod runtime_completion;
+mod task_contract;
 mod timeouts;
+mod tool_facts;
 mod tool_helpers;
 pub use agent_types::{
     AgentExitReason, AgentOutcome, AgentTaintRecord, McpPinEnforcementMode, McpRuntimeTraceEntry,
     PlanStepConstraint, PlanToolEnforcementMode, PolicyLoadedInfo, ToolCallBudget,
     ToolDecisionRecord,
+};
+pub use tool_facts::{ToolFactEnvelopeV1, ToolFactSourceV1, ToolFactV1};
+#[allow(unused_imports)]
+pub use task_contract::{
+    AllowedToolsSemantics, CompletionPolicyV1, ContractValueSource, FinalAnswerMode,
+    RetryPolicyV1,
+    TaskContractProvenanceV1, TaskContractV1, ValidationRequirement, WriteRequirement,
+};
+#[allow(unused_imports)]
+pub(crate) use task_contract::resolve_task_contract;
+#[allow(unused_imports)]
+pub(crate) use tool_facts::{
+    implementation_integrity_violation_from_facts, pending_post_write_verification_paths_from_facts,
+    read_before_edit_violation_from_facts, required_validation_command_satisfied_from_facts,
+    required_validation_failure_needs_repair_from_facts, tool_fact_envelopes_from_facts,
+    tool_facts_from_calls_and_executions, tool_facts_from_transcript,
 };
 
 pub(crate) use agent_types::WorkerStepStatus;
@@ -1429,28 +1448,33 @@ impl<P: ModelProvider> Agent<P> {
                 }
             }
 
-            if crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt).is_some()
-                && crate::agent_impl_guard::required_validation_command_satisfied(
+            let validation_facts = crate::agent::completion_policy::collect_validation_facts(
+                user_prompt,
+                &crate::agent::tool_facts_from_calls_and_executions(
                     user_prompt,
                     &observed_tool_calls,
                     &observed_tool_executions,
-                )
-            {
-                post_validation_final_answer_only_phase_active = true;
-                blocked_post_validation_final_answer_count = 0;
-                required_validation_phase_active = false;
-            }
-            if crate::agent_impl_guard::required_validation_failure_needs_repair(
-                user_prompt,
-                &observed_tool_calls,
-                &observed_tool_executions,
+                ),
+            );
+            match crate::agent::completion_policy::decide_validation_phase_transition(
+                &validation_facts,
+                successful_write_tool_ok_this_step,
             ) {
-                validation_failure_repair_phase_active = true;
-                required_validation_phase_active = false;
-                post_validation_final_answer_only_phase_active = false;
-            } else if successful_write_tool_ok_this_step {
-                validation_failure_repair_phase_active = false;
-                blocked_validation_failure_repair_count = 0;
+                crate::agent::completion_policy::ValidationPhaseTransitionDecision::EnterRepair => {
+                    validation_failure_repair_phase_active = true;
+                    required_validation_phase_active = false;
+                    post_validation_final_answer_only_phase_active = false;
+                }
+                crate::agent::completion_policy::ValidationPhaseTransitionDecision::EnterPostValidationFinalAnswerOnly => {
+                    post_validation_final_answer_only_phase_active = true;
+                    blocked_post_validation_final_answer_count = 0;
+                    required_validation_phase_active = false;
+                }
+                crate::agent::completion_policy::ValidationPhaseTransitionDecision::ClearRepair => {
+                    validation_failure_repair_phase_active = false;
+                    blocked_validation_failure_repair_count = 0;
+                }
+                crate::agent::completion_policy::ValidationPhaseTransitionDecision::NoChange => {}
             }
 
             if enforce_implementation_integrity_guard && successful_write_tool_ok_this_step {

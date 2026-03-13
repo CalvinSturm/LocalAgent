@@ -17,6 +17,7 @@ use crate::types::Message;
 use crate::RunArgs;
 mod finalize;
 mod guard;
+pub(crate) mod checkpoint;
 mod launch;
 mod planner_phase;
 mod setup;
@@ -163,6 +164,8 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         session_messages,
         task_memory,
         instruction_resolution,
+        task_contract,
+        task_contract_provenance,
         project_guidance_resolution,
         repo_map_resolution,
         lsp_context_resolution,
@@ -233,6 +236,8 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             hooks_config_hash_hex: hooks_config_hash_hex.clone(),
             mcp_pin_snapshot: mcp_pin_snapshot.clone(),
             instruction_resolution: &instruction_resolution,
+            task_contract: &task_contract,
+            task_contract_provenance: &task_contract_provenance,
             project_guidance_resolution: project_guidance_resolution.as_ref(),
             repo_map_resolution: repo_map_resolution.as_ref(),
             lsp_context_resolution: lsp_context_resolution.as_ref(),
@@ -420,9 +425,11 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         &outcome,
     );
 
-    let run_artifact_path = finalize_run_artifacts(FinalizeRunArtifactsInput {
+    let (run_artifact_path, runtime_checkpoint_path) = finalize_run_artifacts(
+        FinalizeRunArtifactsInput {
         event_sink: &mut agent.event_sink,
         args: &args,
+        prompt,
         paths,
         provider_kind,
         base_url,
@@ -444,6 +451,8 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         tool_schema_hash_hex_map,
         hooks_config_hash_hex,
         instruction_resolution: &instruction_resolution,
+        task_contract: &task_contract,
+        task_contract_provenance: &task_contract_provenance,
         project_guidance_resolution: project_guidance_resolution.as_ref(),
         repo_map_resolution: repo_map_resolution.as_ref(),
         lsp_context_resolution: lsp_context_resolution.as_ref(),
@@ -453,7 +462,8 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         worker_record,
         mcp_runtime_trace: agent.mcp_runtime_trace.clone(),
         mcp_pin_snapshot,
-    })?;
+    },
+    )?;
 
     if !suppress_stdout_stream {
         if args.tui {
@@ -468,6 +478,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     Ok(RunExecutionResult {
         outcome,
         run_artifact_path,
+        runtime_checkpoint_path,
     })
 }
 
@@ -750,4 +761,5 @@ mod tests {
 pub(crate) struct RunExecutionResult {
     pub(crate) outcome: agent::AgentOutcome,
     pub(crate) run_artifact_path: Option<PathBuf>,
+    pub(crate) runtime_checkpoint_path: Option<PathBuf>,
 }

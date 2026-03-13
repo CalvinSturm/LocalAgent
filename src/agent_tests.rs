@@ -20,7 +20,7 @@ use crate::target::{
     TargetResult, WriteReq,
 };
 use crate::tools::{ToolArgsStrict, ToolRuntime};
-use crate::types::{GenerateRequest, GenerateResponse, Message, Role};
+use crate::types::{GenerateRequest, GenerateResponse, Message, Role, ToolCall};
 
 struct MockProvider {
     generate_calls: Arc<AtomicUsize>,
@@ -1007,6 +1007,28 @@ fn implementation_guard_requires_explicit_enforcement_signal() {
 
 #[test]
 fn pending_post_write_verification_paths_tracks_only_unverified_writes() {
+    let calls = vec![
+        ToolCall {
+            id: "tc1".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"a.rs"}),
+        },
+        ToolCall {
+            id: "tc2".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({"path":"a.rs"}),
+        },
+        ToolCall {
+            id: "tc3".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path":"b.rs"}),
+        },
+        ToolCall {
+            id: "tc4".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path":"a.rs"}),
+        },
+    ];
     let executions = vec![
         crate::agent_impl_guard::ToolExecutionRecord {
             name: "read_file".to_string(),
@@ -1033,7 +1055,7 @@ fn pending_post_write_verification_paths_tracks_only_unverified_writes() {
             changed: None,
         },
     ];
-    let pending = crate::agent_impl_guard::pending_post_write_verification_paths(&executions);
+    let pending = crate::agent_impl_guard::pending_post_write_verification_paths(&calls, &executions);
     assert_eq!(pending.len(), 1);
     assert!(pending.contains("b.rs"));
 }

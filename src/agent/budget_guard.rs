@@ -177,6 +177,7 @@ impl<P: ModelProvider> Agent<P> {
             decision: "deny".to_string(),
             reason: Some(reason.clone()),
             source: Some("runtime_budget".to_string()),
+            approval_id: None,
             taint_overall: Some(taint_state.overall_str().to_string()),
             taint_enforced: false,
             escalated: false,

@@ -39,6 +39,11 @@ pub(super) struct RunArtifactWriteInput {
     pub(super) worker_record: Option<WorkerRunRecord>,
     pub(super) tool_schema_hash_hex_map: std::collections::BTreeMap<String, String>,
     pub(super) hooks_config_hash_hex: Option<String>,
+    pub(super) task_contract: crate::agent::TaskContractV1,
+    pub(super) task_contract_provenance: crate::agent::TaskContractProvenanceV1,
+    pub(super) tool_facts: Vec<crate::agent::ToolFactV1>,
+    pub(super) tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
+    pub(super) run_checkpoint: Option<store::RunCheckpointV1>,
     pub(super) config_fingerprint: Option<store::ConfigFingerprintV1>,
     pub(super) repro_record: Option<crate::repro::RunReproRecord>,
     pub(super) mcp_runtime_trace: Vec<crate::agent::McpRuntimeTraceEntry>,
@@ -78,6 +83,7 @@ pub(super) struct RunCliFingerprintBuildInput<'a> {
 pub(super) struct FinalizeRunArtifactsInput<'a> {
     pub(super) event_sink: &'a mut Option<Box<dyn crate::events::EventSink>>,
     pub(super) args: &'a RunArgs,
+    pub(super) prompt: &'a str,
     pub(super) paths: &'a store::StatePaths,
     pub(super) provider_kind: ProviderKind,
     pub(super) base_url: &'a str,
@@ -99,6 +105,8 @@ pub(super) struct FinalizeRunArtifactsInput<'a> {
     pub(super) tool_schema_hash_hex_map: std::collections::BTreeMap<String, String>,
     pub(super) hooks_config_hash_hex: Option<String>,
     pub(super) instruction_resolution: &'a crate::instructions::InstructionResolution,
+    pub(super) task_contract: &'a crate::agent::TaskContractV1,
+    pub(super) task_contract_provenance: &'a crate::agent::TaskContractProvenanceV1,
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<&'a crate::repo_map::ResolvedRepoMap>,
@@ -125,6 +133,11 @@ pub(super) fn write_run_artifact_with_warning(
         input.worker_record,
         input.tool_schema_hash_hex_map,
         input.hooks_config_hash_hex,
+        Some(input.task_contract),
+        Some(input.task_contract_provenance),
+        input.tool_facts,
+        input.tool_fact_envelopes,
+        input.run_checkpoint,
         input.config_fingerprint,
         input.repro_record,
         input.mcp_runtime_trace,
@@ -142,6 +155,7 @@ pub(super) fn finalize_early_run_result(
     ui_join: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
     outcome: agent::AgentOutcome,
     run_artifact_path: Option<std::path::PathBuf>,
+    runtime_checkpoint_path: Option<std::path::PathBuf>,
 ) -> anyhow::Result<RunExecutionResult> {
     if let Some(h) = ui_join {
         let _ = h.join();
@@ -149,6 +163,7 @@ pub(super) fn finalize_early_run_result(
     Ok(RunExecutionResult {
         outcome,
         run_artifact_path,
+        runtime_checkpoint_path,
     })
 }
 
@@ -320,7 +335,7 @@ pub(super) fn build_run_cli_config_fingerprint_bundle(
 
 pub(super) fn finalize_run_artifacts(
     input: FinalizeRunArtifactsInput<'_>,
-) -> anyhow::Result<Option<std::path::PathBuf>> {
+) -> anyhow::Result<(Option<std::path::PathBuf>, Option<std::path::PathBuf>)> {
     let worker_record = input.worker_record.or_else(|| {
         Some(WorkerRunRecord {
             model: input.worker_model.to_string(),
@@ -382,7 +397,18 @@ pub(super) fn finalize_run_artifacts(
         },
     )?;
     *input.event_sink = None;
-    Ok(write_run_artifact_with_warning(RunArtifactWriteInput {
+    let run_checkpoint = super::checkpoint::checkpoint_for_outcome(input.outcome);
+    let tool_facts =
+        crate::agent::tool_facts_from_transcript(input.prompt, &input.outcome.tool_calls, &input.outcome.messages);
+    let tool_fact_envelopes = crate::agent::tool_fact_envelopes_from_facts(
+        &tool_facts,
+        crate::agent::ToolFactSourceV1::Transcript,
+        Some("finalize"),
+        run_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint_phase_name(&checkpoint.phase)),
+    );
+    let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
         paths: input.paths.clone(),
         cli_config,
         policy_info: store::PolicyRecordInfo {
@@ -399,9 +425,41 @@ pub(super) fn finalize_run_artifacts(
         worker_record,
         tool_schema_hash_hex_map: input.tool_schema_hash_hex_map,
         hooks_config_hash_hex: input.hooks_config_hash_hex,
+        task_contract: input.task_contract.clone(),
+        task_contract_provenance: input.task_contract_provenance.clone(),
+        tool_facts: tool_facts.clone(),
+        tool_fact_envelopes,
+        run_checkpoint: run_checkpoint.clone(),
         config_fingerprint: Some(config_fingerprint),
         repro_record,
         mcp_runtime_trace: input.mcp_runtime_trace,
         mcp_pin_snapshot: input.mcp_pin_snapshot,
-    }))
+    });
+    let runtime_checkpoint_path = if let Some(record) =
+        super::checkpoint::runtime_checkpoint_record_for_outcome(
+            input.outcome,
+            input.prompt,
+            input.args,
+            &tool_facts,
+        )
+    {
+        match store::write_runtime_checkpoint_record(input.paths, &record) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                eprintln!("WARN: failed to write runtime checkpoint: {e}");
+                None
+            }
+        }
+    } else {
+        let _ = store::delete_runtime_checkpoint_record(input.paths, &input.outcome.run_id);
+        None
+    };
+    Ok((run_artifact_path, runtime_checkpoint_path))
+}
+
+fn checkpoint_phase_name(phase: &store::RunCheckpointPhase) -> &'static str {
+    match phase {
+        store::RunCheckpointPhase::WaitingForApproval => "waiting_for_approval",
+        store::RunCheckpointPhase::Interrupted => "interrupted",
+    }
 }

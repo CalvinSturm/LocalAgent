@@ -10,6 +10,7 @@ pub(crate) mod agent_tool_exec;
 pub(crate) mod agent_utils;
 pub(crate) mod agent_worker_protocol;
 pub mod checks;
+pub(crate) mod cli_args;
 pub mod compaction;
 pub mod diagnostics;
 pub mod eval;

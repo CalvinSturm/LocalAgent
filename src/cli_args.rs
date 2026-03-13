@@ -708,6 +708,9 @@ pub(crate) enum ReplaySubcommand {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    Resume {
+        run_id: String,
+    },
 }
 
 #[derive(Debug, Parser)]

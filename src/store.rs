@@ -12,10 +12,15 @@ pub use hash::{
 };
 pub(crate) use io::write_json_atomic;
 pub use io::{ensure_dir, load_run_record, write_run_record};
+pub use io::{
+    delete_runtime_checkpoint_record, load_runtime_checkpoint_record, write_runtime_checkpoint_record,
+};
 pub use render::{extract_session_messages, render_replay};
 pub use types::{
     ActivatedPackRecord, ConfigFingerprintV1, McpPinSnapshotRecord, McpToolSnapshotEntry,
-    PlannerRunRecord, RunCliConfig, RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths,
+    PendingApprovalToolCallV1, RuntimeRunCheckpointRecordV1,
+    PlannerRunRecord, RunCheckpointInterruptKind, RunCheckpointInterruptV1, RunCheckpointPhase,
+    RunCheckpointV1, RunCliConfig, RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths,
     ToolCatalogEntry, ToolReliabilityRecord, WorkerRunRecord,
 };
 
@@ -26,6 +31,7 @@ pub struct StatePaths {
     pub approvals_path: PathBuf,
     pub audit_path: PathBuf,
     pub runs_dir: PathBuf,
+    pub checkpoints_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub using_legacy_dir: bool,
 }
@@ -52,6 +58,7 @@ pub fn resolve_state_paths(
     let audit_path = audit_override.unwrap_or_else(|| state_dir.join("audit.jsonl"));
     StatePaths {
         runs_dir: state_dir.join("runs"),
+        checkpoints_dir: state_dir.join("checkpoints"),
         sessions_dir: state_dir.join("sessions"),
         state_dir,
         policy_path,
@@ -79,11 +86,18 @@ mod tests {
     use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
 
     use super::{
-        config_hash_hex, load_run_record, render_replay, resolve_state_dir, sha256_hex,
-        write_run_record, ConfigFingerprintV1, PlannerRunRecord, PolicyRecordInfo, RunCliConfig,
-        RunMetadata, RunRecord, RunResolvedPaths, ToolReliabilityRecord, WorkerRunRecord,
+        config_hash_hex, load_run_record, load_runtime_checkpoint_record, render_replay,
+        resolve_state_dir, sha256_hex, write_run_record, write_runtime_checkpoint_record,
+        ConfigFingerprintV1, PlannerRunRecord, PolicyRecordInfo, RunCliConfig,
+        RunMetadata, RunRecord, RunResolvedPaths, RunCheckpointInterruptKind,
+        RunCheckpointInterruptV1, RunCheckpointPhase, RunCheckpointV1,
+        RuntimeRunCheckpointRecordV1, ToolReliabilityRecord, WorkerRunRecord,
     };
-    use crate::agent::{AgentExitReason, AgentOutcome};
+    use crate::agent::{
+        AgentExitReason, AgentOutcome, AllowedToolsSemantics, CompletionPolicyV1,
+        ContractValueSource, FinalAnswerMode, RetryPolicyV1, TaskContractProvenanceV1,
+        TaskContractV1, ValidationRequirement, WriteRequirement,
+    };
     use crate::planner::RunMode;
     use crate::session::SessionStore;
     use crate::types::{Message, Role};
@@ -403,6 +417,39 @@ mod tests {
             }),
             BTreeMap::new(),
             None,
+            Some(TaskContractV1 {
+                task_kind: "coding".to_string(),
+                write_requirement: WriteRequirement::Required,
+                validation_requirement: ValidationRequirement::Command {
+                    command: "cargo test".to_string(),
+                },
+                allowed_tools: Some(vec!["read_file".to_string(), "shell".to_string()]),
+                allowed_tools_semantics: AllowedToolsSemantics::ExposedSnapshot,
+                completion_policy: CompletionPolicyV1 {
+                    require_pre_write_read: true,
+                    require_post_write_readback: true,
+                    require_effective_write: true,
+                },
+                retry_policy: RetryPolicyV1 {
+                    max_schema_repairs: 2,
+                    max_repeat_failures_per_key: 3,
+                    max_runtime_blocked_completions: 2,
+                },
+                final_answer_mode: FinalAnswerMode::Freeform,
+            }),
+            Some(TaskContractProvenanceV1 {
+                task_kind: ContractValueSource::Explicit,
+                write_requirement: ContractValueSource::Inferred,
+                validation_requirement: ContractValueSource::Inferred,
+                allowed_tools: ContractValueSource::Inferred,
+                allowed_tools_semantics: ContractValueSource::Defaulted,
+                completion_policy: ContractValueSource::Inferred,
+                retry_policy: ContractValueSource::Defaulted,
+                final_answer_mode: ContractValueSource::Defaulted,
+            }),
+            Vec::new(),
+            Vec::new(),
+            None,
             None,
             None,
             Vec::new(),
@@ -417,6 +464,14 @@ mod tests {
         assert_eq!(loaded.cli.exec_target, "host");
         assert_eq!(loaded.cli.lsp_context_provider, None);
         assert!(!loaded.cli.lsp_context_injected);
+        assert_eq!(
+            loaded.task_contract.as_ref().map(|contract| contract.task_kind.as_str()),
+            Some("coding")
+        );
+        assert_eq!(
+            loaded.task_contract_provenance.as_ref().map(|provenance| &provenance.task_kind),
+            Some(&ContractValueSource::Explicit)
+        );
         assert_eq!(
             loaded
                 .taint
@@ -456,6 +511,44 @@ mod tests {
             serde_json::from_value(legacy_value_missing_agent_mode)
                 .expect("deserialize missing agent_mode");
         assert_eq!(legacy_loaded_missing_agent_mode.cli.agent_mode, "build");
+    }
+
+    #[test]
+    fn runtime_checkpoint_write_and_read() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = super::resolve_state_paths(tmp.path(), None, None, None, None);
+        let checkpoint = RuntimeRunCheckpointRecordV1 {
+            schema_version: "openagent.runtime_checkpoint.v1".to_string(),
+            runtime_run_id: "run_approval".to_string(),
+            prompt: "fix it".to_string(),
+            resume_argv: vec!["localagent".to_string(), "--prompt".to_string(), "fix it".to_string()],
+            checkpoint: RunCheckpointV1 {
+                schema_version: "openagent.run_checkpoint.v1".to_string(),
+                phase: RunCheckpointPhase::WaitingForApproval,
+                terminal_boundary: true,
+                pending_interrupt: Some(RunCheckpointInterruptV1 {
+                    kind: RunCheckpointInterruptKind::ApprovalRequired,
+                    reason: Some("approval required".to_string()),
+                }),
+            },
+            resume_session_messages: vec![Message {
+                role: Role::User,
+                content: Some("fix it".to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+            tool_facts: Vec::new(),
+            tool_fact_envelopes: Vec::new(),
+            pending_tool_call: None,
+            boundary_output: Some("approval required".to_string()),
+        };
+        write_runtime_checkpoint_record(&paths, &checkpoint).expect("write checkpoint");
+        let loaded =
+            load_runtime_checkpoint_record(&paths, "run_approval").expect("load checkpoint");
+        assert_eq!(loaded.runtime_run_id, "run_approval");
+        assert_eq!(loaded.checkpoint.phase, RunCheckpointPhase::WaitingForApproval);
+        assert_eq!(loaded.resume_session_messages.len(), 1);
     }
 
     #[test]
@@ -624,6 +717,9 @@ mod tests {
             mcp_allowlist: None,
             config_hash_hex: "cfg".to_string(),
             config_fingerprint: None,
+            task_contract: None,
+            task_contract_provenance: None,
+            run_checkpoint: None,
             tool_schema_hash_hex_map: BTreeMap::new(),
             hooks_config_hash_hex: None,
             transcript: vec![Message {
@@ -635,6 +731,8 @@ mod tests {
             }],
             tool_calls: Vec::new(),
             tool_decisions: Vec::new(),
+            tool_facts: Vec::new(),
+            tool_fact_envelopes: Vec::new(),
             compaction: None,
             hook_report: Vec::new(),
             tool_catalog: Vec::new(),

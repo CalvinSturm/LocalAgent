@@ -45,103 +45,23 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
     tool_executions: &[ToolExecutionRecord],
     enforce_implementation_integrity_guard: bool,
 ) -> Option<String> {
-    if !enforce_implementation_integrity_guard {
-        return None;
-    }
-    if observed_tool_calls.is_empty() {
-        return Some(
-            "implementation guard: file-edit task finalized without any tool calls".to_string(),
-        );
-    }
-    if output_has_placeholder_artifacts(final_output) {
-        return Some(
-            "implementation guard: final answer contains placeholder artifacts instead of concrete implementation".to_string(),
-        );
-    }
-    let mut successful_read_paths = std::collections::BTreeSet::<String>::new();
-    let mut pending_post_write_verification = std::collections::BTreeSet::<String>::new();
-    let mut saw_effective_write = false;
-    let allow_new_file_without_read = prompt_allows_new_file_without_read(user_prompt);
-    for execution in tool_executions {
-        if !execution.ok {
-            continue;
-        }
-        if matches!(
-            execution.name.as_str(),
-            "apply_patch" | "edit" | "write_file" | "str_replace"
-        ) {
-            let actually_changed = execution.changed.unwrap_or(true);
-            if actually_changed {
-                saw_effective_write = true;
-            }
-        }
-        match execution.name.as_str() {
-            "read_file" => {
-                if let Some(path) = &execution.path {
-                    successful_read_paths.insert(path.clone());
-                    pending_post_write_verification.remove(path);
-                }
-            }
-            "apply_patch" | "edit" | "str_replace" => {
-                if let Some(path) = &execution.path {
-                    if !successful_read_paths.contains(path) {
-                        return Some(format!(
-                            "implementation guard: {} on '{path}' requires prior read_file on the same path",
-                            execution.name
-                        ));
-                    }
-                    pending_post_write_verification.insert(path.clone());
-                }
-            }
-            "write_file" => {
-                if let Some(path) = &execution.path {
-                    if !allow_new_file_without_read && !successful_read_paths.contains(path) {
-                        return Some(format!(
-                            "implementation guard: write_file on '{path}' requires prior read_file on the same path"
-                        ));
-                    }
-                    pending_post_write_verification.insert(path.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-    if prompt_requires_effective_write(user_prompt) && !saw_effective_write {
-        return Some(
-            "implementation guard: file-edit task finalized without an effective write (writes failed or write tool changed:false)".to_string(),
-        );
-    }
-    if let Some(path) = pending_post_write_verification.iter().next() {
-        return Some(format!(
-            "implementation guard: post-write verification missing read_file on '{path}'"
-        ));
-    }
-    None
+    let tool_facts =
+        crate::agent::tool_facts_from_calls_and_executions(user_prompt, observed_tool_calls, tool_executions);
+    crate::agent::implementation_integrity_violation_from_facts(
+        user_prompt,
+        final_output,
+        &tool_facts,
+        enforce_implementation_integrity_guard,
+    )
 }
 
 pub(crate) fn pending_post_write_verification_paths(
+    observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
 ) -> std::collections::BTreeSet<String> {
-    let mut pending_post_write_verification = std::collections::BTreeSet::<String>::new();
-    for execution in tool_executions {
-        if !execution.ok {
-            continue;
-        }
-        match execution.name.as_str() {
-            "read_file" => {
-                if let Some(path) = &execution.path {
-                    pending_post_write_verification.remove(path);
-                }
-            }
-            "apply_patch" | "edit" | "write_file" | "str_replace" => {
-                if let Some(path) = &execution.path {
-                    pending_post_write_verification.insert(path.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-    pending_post_write_verification
+    let tool_facts =
+        crate::agent::tool_facts_from_calls_and_executions("", observed_tool_calls, tool_executions);
+    crate::agent::pending_post_write_verification_paths_from_facts(&tool_facts)
 }
 
 pub(crate) fn normalize_tool_path(path: &str) -> String {
@@ -165,16 +85,6 @@ pub(crate) fn normalize_tool_path(path: &str) -> String {
     }
 }
 
-fn prompt_allows_new_file_without_read(prompt: &str) -> bool {
-    let p = prompt.to_ascii_lowercase();
-    p.contains("create a new file")
-        || p.contains("create new file")
-        || p.contains("new file at")
-        || p.contains("add new file")
-        || p.contains("create `")
-        || p.contains("create the file")
-}
-
 pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
     let p = prompt.to_ascii_lowercase();
     p.contains("apply_patch")
@@ -184,20 +94,6 @@ pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
         || p.contains("modify ")
         || p.contains("update ")
         || p.contains("change ")
-}
-
-fn output_has_placeholder_artifacts(text: &str) -> bool {
-    let t = text.to_ascii_lowercase();
-    let patterns = [
-        "... (full implementation) ...",
-        "...full implementation...",
-        "same css as before",
-        "same html structure",
-        "additional improvements coming",
-        "todo:",
-        "coming soon",
-    ];
-    patterns.iter().any(|p| t.contains(p))
 }
 
 pub(crate) fn prompt_requires_tool_only(prompt: &str) -> bool {
@@ -252,46 +148,14 @@ pub(crate) fn prompt_required_validation_command(prompt: &str) -> Option<&'stati
         .find(|needle| p.contains(needle))
 }
 
-fn shell_command_text(call: &ToolCall) -> Option<String> {
-    if call.name != "shell" {
-        return None;
-    }
-    let obj = call.arguments.as_object()?;
-    if let Some(command) = obj.get("command").and_then(|v| v.as_str()) {
-        return Some(command.to_string());
-    }
-    let cmd = obj.get("cmd").and_then(|v| v.as_str())?;
-    let mut parts = vec![cmd.to_string()];
-    if let Some(args) = obj.get("args").and_then(|v| v.as_array()) {
-        for arg in args {
-            if let Some(arg) = arg.as_str() {
-                parts.push(arg.to_string());
-            }
-        }
-    }
-    Some(parts.join(" "))
-}
-
 pub(crate) fn required_validation_command_satisfied(
     prompt: &str,
     observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
 ) -> bool {
-    let Some(required) = prompt_required_validation_command(prompt) else {
-        return true;
-    };
-    let mut successful_shell_executions = tool_executions
-        .iter()
-        .filter(|execution| execution.name == "shell" && execution.ok);
-    observed_tool_calls
-        .iter()
-        .filter(|call| call.name == "shell")
-        .any(|call| {
-            shell_command_text(call).is_some_and(|cmd| {
-                cmd.to_ascii_lowercase().contains(required)
-                    && successful_shell_executions.next().is_some()
-            })
-        })
+    let tool_facts =
+        crate::agent::tool_facts_from_calls_and_executions(prompt, observed_tool_calls, tool_executions);
+    crate::agent::required_validation_command_satisfied_from_facts(prompt, &tool_facts)
 }
 
 pub(crate) fn required_validation_failure_needs_repair(
@@ -299,31 +163,9 @@ pub(crate) fn required_validation_failure_needs_repair(
     observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
 ) -> bool {
-    let Some(required) = prompt_required_validation_command(prompt) else {
-        return false;
-    };
-    let mut needs_repair = false;
-    for (call, execution) in observed_tool_calls.iter().zip(tool_executions.iter()) {
-        if execution.ok
-            && matches!(
-                execution.name.as_str(),
-                "apply_patch" | "edit" | "write_file" | "str_replace"
-            )
-            && execution.changed.unwrap_or(true)
-        {
-            needs_repair = false;
-        }
-        if call.name != "shell" || execution.name != "shell" {
-            continue;
-        }
-        let matches_required =
-            shell_command_text(call).is_some_and(|cmd| cmd.to_ascii_lowercase().contains(required));
-        if !matches_required {
-            continue;
-        }
-        needs_repair = !execution.ok;
-    }
-    needs_repair
+    let tool_facts =
+        crate::agent::tool_facts_from_calls_and_executions(prompt, observed_tool_calls, tool_executions);
+    crate::agent::required_validation_failure_needs_repair_from_facts(prompt, &tool_facts)
 }
 
 pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String> {
@@ -610,7 +452,7 @@ mod tests {
         assert!(err.contains("post-write verification missing read_file"));
         assert!(!err.contains("without an effective write"));
 
-        let pending = pending_post_write_verification_paths(&execs);
+        let pending = pending_post_write_verification_paths(&calls, &execs);
         assert!(pending.contains("main.rs"));
     }
 }
