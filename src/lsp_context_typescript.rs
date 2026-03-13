@@ -725,11 +725,12 @@ fn map_severity(severity: Option<u32>) -> Severity {
 
 fn path_to_file_uri(path: &Path) -> String {
     let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut rendered = absolute.to_string_lossy().replace('\\', "/");
+    let rendered = absolute.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
-    if let Some(stripped) = rendered.strip_prefix("//?/") {
-        rendered = stripped.to_string();
-    }
+    let rendered = rendered
+        .strip_prefix("//?/")
+        .unwrap_or(rendered.as_str())
+        .to_string();
     if rendered.starts_with('/') {
         format!("file://{rendered}")
     } else {
