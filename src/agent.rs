@@ -132,6 +132,16 @@ enum PhaseLoopControl {
     ContinueAgentStep,
 }
 
+enum PlannerEnvelopeControl {
+    Proceed,
+    ContinueStep,
+}
+
+enum ToolLoopControl {
+    Proceed,
+    RestartAgentStep,
+}
+
 impl<P: ModelProvider> Agent<P> {
     fn initial_runtime_checkpoint(&self, user_prompt: &str) -> crate::agent_runtime::state::RunCheckpointV1 {
         let execution_tier = match self.tool_rt.exec_target_kind {
@@ -747,6 +757,570 @@ impl<P: ModelProvider> Agent<P> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn handle_planner_control_envelope(
+        &mut self,
+        assistant: &Message,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        request_context_chars: usize,
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+        has_actionable_tool_calls: bool,
+        model_signaled_finalize: bool,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+    ) -> Result<PlannerEnvelopeControl, AgentOutcome> {
+        let worker_step_status = self.parse_worker_step_status_if_enforced(assistant);
+        if self.plan_enforcement_active()
+            && !has_actionable_tool_calls
+            && worker_step_status.is_none()
+            && model_signaled_finalize
+        {
+            runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = runtime_checkpoint
+                .tool_protocol_state
+                .blocked_control_envelope_count
+                .saturating_add(1);
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::StepBlocked,
+                serde_json::json!({
+                    "reason": "invalid_control_envelope",
+                    "required_schema_version": crate::planner::STEP_RESULT_SCHEMA_VERSION,
+                    "blocked_count": runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count
+                }),
+            );
+            if runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count >= 2 {
+                return Err(self.finalize_planner_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    "worker response missing control envelope for planner-enforced mode"
+                        .to_string(),
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+            messages.push(Message {
+                role: Role::Developer,
+                content: Some(self.control_envelope_reminder_message()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            });
+            return Ok(PlannerEnvelopeControl::ContinueStep);
+        }
+
+        let Some(step_status) = worker_step_status.as_ref() else {
+            return Ok(PlannerEnvelopeControl::Proceed);
+        };
+        runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+        if let Some(user_output) = step_status.user_output.as_ref() {
+            if !user_output.trim().is_empty() {
+                *last_user_output = Some(user_output.trim().to_string());
+            }
+        }
+        let current_step_id = self.current_plan_step_id_or_unknown(*active_plan_step_idx);
+        match step_status.status.as_str() {
+            "done" => {
+                if step_status.step_id != current_step_id {
+                    let transition_error = format!(
+                        "invalid step completion transition: got done for {}, expected {}",
+                        step_status.step_id, current_step_id
+                    );
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "step_id": step_status.step_id,
+                            "expected_step_id": current_step_id,
+                            "reason": "invalid_done_transition"
+                        }),
+                    );
+                    return Err(self.finalize_planner_error_with_end(
+                        step,
+                        run_id.to_string(),
+                        started_at.to_string(),
+                        transition_error,
+                        messages.clone(),
+                        observed_tool_calls.to_vec(),
+                        observed_tool_decisions.to_vec(),
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.to_vec(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ));
+                }
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepVerified,
+                    serde_json::json!({
+                        "step_id": step_status.step_id,
+                        "next_step_id": step_status.next_step_id,
+                        "status": step_status.status
+                    }),
+                );
+                runtime_checkpoint.retry_state.blocked_runtime_completion_count = 0;
+                step_retry_counts.remove(&current_step_id);
+                if let Some(next) = &step_status.next_step_id {
+                    if next == "final" {
+                        *active_plan_step_idx = self.plan_step_constraints.len();
+                    } else if let Some(next_idx) = self
+                        .plan_step_constraints
+                        .iter()
+                        .position(|s| s.step_id == *next)
+                    {
+                        *active_plan_step_idx = next_idx;
+                    } else {
+                        self.emit_event(
+                            run_id,
+                            step,
+                            EventKind::StepBlocked,
+                            serde_json::json!({
+                                "step_id": step_status.step_id,
+                                "next_step_id": next,
+                                "reason": "invalid_next_step_id"
+                            }),
+                        );
+                        return Err(self.finalize_planner_error_with_end(
+                            step,
+                            run_id.to_string(),
+                            started_at.to_string(),
+                            format!("invalid next_step_id in worker status: {}", next),
+                            messages.clone(),
+                            observed_tool_calls.to_vec(),
+                            observed_tool_decisions.to_vec(),
+                            request_context_chars,
+                            last_compaction_report.clone(),
+                            hook_invocations.to_vec(),
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ));
+                    }
+                } else if *active_plan_step_idx < self.plan_step_constraints.len() {
+                    *active_plan_step_idx = active_plan_step_idx.saturating_add(1);
+                }
+            }
+            "retry" => {
+                if step_status.step_id != current_step_id {
+                    let transition_error = format!(
+                        "invalid retry transition: got retry for {}, expected {}",
+                        step_status.step_id, current_step_id
+                    );
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "step_id": step_status.step_id,
+                            "expected_step_id": current_step_id,
+                            "reason": "invalid_retry_transition"
+                        }),
+                    );
+                    return Err(self.finalize_planner_error_with_end(
+                        step,
+                        run_id.to_string(),
+                        started_at.to_string(),
+                        transition_error,
+                        messages.clone(),
+                        observed_tool_calls.to_vec(),
+                        observed_tool_decisions.to_vec(),
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.to_vec(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ));
+                }
+                let entry = step_retry_counts
+                    .entry(step_status.step_id.clone())
+                    .or_insert(0);
+                *entry = entry.saturating_add(1);
+                if *entry > 2 {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "step_id": step_status.step_id,
+                            "reason": "retry_limit_exceeded",
+                            "retry_count": *entry
+                        }),
+                    );
+                    return Err(self.finalize_planner_error_with_end(
+                        step,
+                        run_id.to_string(),
+                        started_at.to_string(),
+                        format!("step {} exceeded retry transition limit", step_status.step_id),
+                        messages.clone(),
+                        observed_tool_calls.to_vec(),
+                        observed_tool_decisions.to_vec(),
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.to_vec(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ));
+                }
+            }
+            "replan" => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepReplanned,
+                    serde_json::json!({
+                        "step_id": step_status.step_id,
+                        "status": step_status.status
+                    }),
+                );
+                return Err(self.finalize_planner_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    format!(
+                        "worker requested {} transition for step {}",
+                        step_status.status, step_status.step_id
+                    ),
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+            "fail" => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "step_id": step_status.step_id,
+                        "reason": "worker_fail_transition"
+                    }),
+                );
+                return Err(self.finalize_planner_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    format!(
+                        "worker requested {} transition for step {}",
+                        step_status.status, step_status.step_id
+                    ),
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+            _ => {}
+        }
+        Ok(PlannerEnvelopeControl::Proceed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn process_tool_calls_for_response(
+        &mut self,
+        tool_calls: &[ToolCall],
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        active_plan_step_idx: usize,
+        request_context_chars: usize,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        last_compaction_report: &Option<CompactionReport>,
+        provider_retry_count: u32,
+        provider_error_count: u32,
+        saw_token_usage: bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &mut TaintState,
+        successful_write_tool_ok_this_step: &mut bool,
+    ) -> Result<ToolLoopControl, AgentOutcome> {
+        for tc in tool_calls {
+            self.record_detected_tool_call(run_id, step, tc, observed_tool_calls);
+            match self
+                .check_mcp_drift_for_tool_call(
+                    run_id.to_string(),
+                    step,
+                    tc,
+                    expected_mcp_catalog_hash_hex,
+                    expected_mcp_docs_hash_hex,
+                    started_at.to_string(),
+                    messages.clone(),
+                    observed_tool_calls.clone(),
+                    observed_tool_decisions,
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                )
+                .await
+            {
+                McpDriftDecision::Continue => {}
+                McpDriftDecision::Finalize(outcome) => return Err(*outcome),
+            }
+            let planning_ctx =
+                self.build_tool_call_planning_context(active_plan_step_idx, tc, failed_repeat_counts);
+            match self.handle_failed_repeat_guard(
+                run_id.to_string(),
+                step,
+                tc,
+                planning_ctx.failed_repeat_count,
+                planning_ctx.failed_repeat_name_count,
+                &planning_ctx.repeat_key,
+                started_at.to_string(),
+                messages,
+                failed_repeat_counts,
+                observed_tool_calls.clone(),
+                observed_tool_decisions.clone(),
+                request_context_chars,
+                last_compaction_report.clone(),
+                hook_invocations.clone(),
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ) {
+                FailedRepeatGuardDecision::Continue => {}
+                FailedRepeatGuardDecision::RestartAgentStep => {
+                    return Ok(ToolLoopControl::RestartAgentStep);
+                }
+                FailedRepeatGuardDecision::Finalize(outcome) => return Err(*outcome),
+            }
+            let invalid_args_error = match self.handle_malformed_tool_call(
+                run_id.to_string(),
+                step,
+                tc,
+                planning_ctx.plan_tool_allowed,
+                malformed_tool_call_attempts,
+                schema_repair_attempts,
+                messages,
+                started_at.to_string(),
+                observed_tool_calls.clone(),
+                observed_tool_decisions.clone(),
+                request_context_chars,
+                last_compaction_report.clone(),
+                hook_invocations.clone(),
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ) {
+                MalformedToolCallDecision::ContinueToolLoop { invalid_args_error } => {
+                    invalid_args_error
+                }
+                MalformedToolCallDecision::RestartAgentStep => {
+                    return Ok(ToolLoopControl::RestartAgentStep);
+                }
+                MalformedToolCallDecision::Finalize(outcome) => return Err(*outcome),
+            };
+            let (
+                approval_mode_meta,
+                auto_scope_meta,
+                approval_key_version_meta,
+                tool_schema_hash_hex,
+                hooks_config_hash_hex,
+                planner_hash_hex,
+                decision_exec_target,
+            ) = self.gate_decision_metadata_for_tool(tc, taint_state);
+            if !planning_ctx.plan_tool_allowed {
+                match self.handle_plan_constraint_deny(
+                    run_id.to_string(),
+                    step,
+                    tc,
+                    planning_ctx.plan_step_id,
+                    active_plan_step_idx,
+                    planning_ctx.plan_allowed_tools,
+                    approval_mode_meta.clone(),
+                    auto_scope_meta.clone(),
+                    approval_key_version_meta.clone(),
+                    tool_schema_hash_hex.clone(),
+                    hooks_config_hash_hex.clone(),
+                    planner_hash_hex.clone(),
+                    decision_exec_target.clone(),
+                    started_at.to_string(),
+                    messages,
+                    observed_tool_calls.clone(),
+                    observed_tool_decisions,
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ) {
+                    PlanConstraintDecision::Continue => {}
+                    PlanConstraintDecision::ContinueToolLoop => continue,
+                    PlanConstraintDecision::RestartAgentStep => {
+                        return Ok(ToolLoopControl::RestartAgentStep);
+                    }
+                    PlanConstraintDecision::Finalize(outcome) => return Err(*outcome),
+                }
+            }
+            match self.gate.decide(&self.gate_ctx, tc) {
+                GateDecision::Allow {
+                    approval_id,
+                    approval_key,
+                    reason,
+                    source,
+                    taint_enforced,
+                    escalated,
+                    escalation_reason,
+                } => {
+                    match self
+                        .handle_gate_allow_tool_call(
+                            run_id.to_string(),
+                            step,
+                            tc,
+                            approval_id,
+                            approval_key,
+                            reason,
+                            source,
+                            taint_enforced,
+                            escalated,
+                            escalation_reason,
+                            invalid_args_error.clone(),
+                            planning_ctx.plan_tool_allowed,
+                            &planning_ctx.repeat_key,
+                            approval_mode_meta.clone(),
+                            auto_scope_meta.clone(),
+                            approval_key_version_meta.clone(),
+                            tool_schema_hash_hex.clone(),
+                            hooks_config_hash_hex.clone(),
+                            planner_hash_hex.clone(),
+                            decision_exec_target.clone(),
+                            started_at.to_string(),
+                            messages,
+                            observed_tool_calls.clone(),
+                            observed_tool_decisions,
+                            observed_tool_executions,
+                            request_context_chars,
+                            last_compaction_report.clone(),
+                            hook_invocations,
+                            provider_retry_count,
+                            provider_error_count,
+                            saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                            tool_budget_usage,
+                            failed_repeat_counts,
+                            invalid_patch_format_attempts,
+                            schema_repair_attempts,
+                            successful_write_tool_ok_this_step,
+                        )
+                        .await
+                    {
+                        AllowToolCallDecision::Continue => {}
+                        AllowToolCallDecision::RestartAgentStep => {
+                            return Ok(ToolLoopControl::RestartAgentStep);
+                        }
+                        AllowToolCallDecision::Finalize(outcome) => return Err(*outcome),
+                    }
+                }
+                gate_decision => match self.handle_non_allow_gate_decision(
+                    run_id.to_string(),
+                    step,
+                    tc,
+                    gate_decision,
+                    invalid_args_error.as_ref(),
+                    approval_mode_meta.clone(),
+                    auto_scope_meta.clone(),
+                    approval_key_version_meta.clone(),
+                    tool_schema_hash_hex.clone(),
+                    hooks_config_hash_hex.clone(),
+                    planner_hash_hex.clone(),
+                    decision_exec_target.clone(),
+                    started_at.to_string(),
+                    messages,
+                    observed_tool_calls.clone(),
+                    observed_tool_decisions,
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ) {
+                    GateNonAllowDecision::ContinueToolLoop => continue,
+                    GateNonAllowDecision::RestartAgentStep => {
+                        return Ok(ToolLoopControl::RestartAgentStep);
+                    }
+                    GateNonAllowDecision::Finalize(outcome) => return Err(*outcome),
+                },
+            }
+        }
+        Ok(ToolLoopControl::Proceed)
+    }
+
     pub async fn run(
         &mut self,
         user_prompt: &str,
@@ -1254,287 +1828,32 @@ impl<P: ModelProvider> Agent<P> {
                 assistant.content = Some(sanitize_user_visible_output(c));
             }
             messages.push(assistant.clone());
-            let worker_step_status = self.parse_worker_step_status_if_enforced(&assistant);
-            if self.plan_enforcement_active()
-                && worker_step_status.is_none()
-                && model_signaled_finalize
-            {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count =
-                    runtime_checkpoint
-                        .tool_protocol_state
-                        .blocked_control_envelope_count
-                        .saturating_add(1);
-                self.emit_event(
-                    &run_id,
-                    step as u32,
-                    EventKind::StepBlocked,
-                    serde_json::json!({
-                        "reason": "invalid_control_envelope",
-                        "required_schema_version": crate::planner::STEP_RESULT_SCHEMA_VERSION,
-                        "blocked_count": runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count
-                    }),
-                );
-                if runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count >= 2 {
-                    return self.finalize_planner_error_with_end(
-                        step as u32,
-                        run_id,
-                        started_at,
-                        "worker response missing control envelope for planner-enforced mode"
-                            .to_string(),
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    );
-                }
-                messages.push(Message {
-                    role: Role::Developer,
-                    content: Some(self.control_envelope_reminder_message()),
-                    tool_call_id: None,
-                    tool_name: None,
-                    tool_calls: None,
-                });
-                continue;
-            }
-            if let Some(step_status) = worker_step_status.as_ref() {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
-                if let Some(user_output) = step_status.user_output.as_ref() {
-                    if !user_output.trim().is_empty() {
-                        last_user_output = Some(user_output.trim().to_string());
-                    }
-                }
-                let current_step_id = self.current_plan_step_id_or_unknown(active_plan_step_idx);
-                match step_status.status.as_str() {
-                    "done" => {
-                        if step_status.step_id != current_step_id {
-                            let transition_error = format!(
-                                "invalid step completion transition: got done for {}, expected {}",
-                                step_status.step_id, current_step_id
-                            );
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::StepBlocked,
-                                serde_json::json!({
-                                    "step_id": step_status.step_id,
-                                    "expected_step_id": current_step_id,
-                                    "reason": "invalid_done_transition"
-                                }),
-                            );
-                            return self.finalize_planner_error_with_end(
-                                step as u32,
-                                run_id,
-                                started_at,
-                                transition_error,
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
-                                request_context_chars,
-                                last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &taint_state,
-                            );
-                        }
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::StepVerified,
-                            serde_json::json!({
-                                "step_id": step_status.step_id,
-                                "next_step_id": step_status.next_step_id,
-                                "status": step_status.status
-                            }),
-                        );
-                        runtime_checkpoint.retry_state.blocked_runtime_completion_count = 0;
-                        step_retry_counts.remove(&current_step_id);
-                        if let Some(next) = &step_status.next_step_id {
-                            if next == "final" {
-                                active_plan_step_idx = self.plan_step_constraints.len();
-                            } else if let Some(next_idx) = self
-                                .plan_step_constraints
-                                .iter()
-                                .position(|s| s.step_id == *next)
-                            {
-                                active_plan_step_idx = next_idx;
-                            } else {
-                                self.emit_event(
-                                    &run_id,
-                                    step as u32,
-                                    EventKind::StepBlocked,
-                                    serde_json::json!({
-                                        "step_id": step_status.step_id,
-                                        "next_step_id": next,
-                                        "reason": "invalid_next_step_id"
-                                    }),
-                                );
-                                return self.finalize_planner_error_with_end(
-                                    step as u32,
-                                    run_id,
-                                    started_at,
-                                    format!("invalid next_step_id in worker status: {}", next),
-                                    messages,
-                                    observed_tool_calls,
-                                    observed_tool_decisions,
-                                    request_context_chars,
-                                    last_compaction_report,
-                                    hook_invocations,
-                                    provider_retry_count,
-                                    provider_error_count,
-                                    saw_token_usage,
-                                    &total_token_usage,
-                                    &taint_state,
-                                );
-                            }
-                        } else if active_plan_step_idx < self.plan_step_constraints.len() {
-                            active_plan_step_idx = active_plan_step_idx.saturating_add(1);
-                        }
-                    }
-                    "retry" => {
-                        if step_status.step_id != current_step_id {
-                            let transition_error = format!(
-                                "invalid retry transition: got retry for {}, expected {}",
-                                step_status.step_id, current_step_id
-                            );
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::StepBlocked,
-                                serde_json::json!({
-                                    "step_id": step_status.step_id,
-                                    "expected_step_id": current_step_id,
-                                    "reason": "invalid_retry_transition"
-                                }),
-                            );
-                            return self.finalize_planner_error_with_end(
-                                step as u32,
-                                run_id,
-                                started_at,
-                                transition_error,
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
-                                request_context_chars,
-                                last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &taint_state,
-                            );
-                        }
-                        let entry = step_retry_counts
-                            .entry(step_status.step_id.clone())
-                            .or_insert(0);
-                        *entry = entry.saturating_add(1);
-                        if *entry > 2 {
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::StepBlocked,
-                                serde_json::json!({
-                                    "step_id": step_status.step_id,
-                                    "reason": "retry_limit_exceeded",
-                                    "retry_count": *entry
-                                }),
-                            );
-                            return self.finalize_planner_error_with_end(
-                                step as u32,
-                                run_id,
-                                started_at,
-                                format!(
-                                    "step {} exceeded retry transition limit",
-                                    step_status.step_id
-                                ),
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
-                                request_context_chars,
-                                last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &taint_state,
-                            );
-                        }
-                    }
-                    "replan" => {
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::StepReplanned,
-                            serde_json::json!({
-                                "step_id": step_status.step_id,
-                                "status": step_status.status
-                            }),
-                        );
-                        return self.finalize_planner_error_with_end(
-                            step as u32,
-                            run_id,
-                            started_at,
-                            format!(
-                                "worker requested {} transition for step {}",
-                                step_status.status, step_status.step_id
-                            ),
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
-                    "fail" => {
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::StepBlocked,
-                            serde_json::json!({
-                                "step_id": step_status.step_id,
-                                "reason": "worker_fail_transition"
-                            }),
-                        );
-                        return self.finalize_planner_error_with_end(
-                            step as u32,
-                            run_id,
-                            started_at,
-                            format!(
-                                "worker requested {} transition for step {}",
-                                step_status.status, step_status.step_id
-                            ),
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
-                    _ => {}
-                }
+            match self.handle_planner_control_envelope(
+                &assistant,
+                &run_id,
+                step as u32,
+                &started_at,
+                &mut runtime_checkpoint,
+                &mut messages,
+                &observed_tool_calls,
+                &observed_tool_decisions,
+                request_context_chars,
+                &last_compaction_report,
+                &hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                &total_token_usage,
+                &taint_state,
+                has_actionable_tool_calls,
+                model_signaled_finalize,
+                &mut active_plan_step_idx,
+                &mut last_user_output,
+                &mut step_retry_counts,
+            ) {
+                Ok(PlannerEnvelopeControl::Proceed) => {}
+                Ok(PlannerEnvelopeControl::ContinueStep) => continue,
+                Err(outcome) => return outcome,
             }
             if matches!(self.taint_toggle, TaintToggle::On) {
                 let idx = messages.len().saturating_sub(1);
@@ -1601,221 +1920,39 @@ impl<P: ModelProvider> Agent<P> {
             }
 
             let mut successful_write_tool_ok_this_step = false;
-            for tc in &resp.tool_calls {
-                self.record_detected_tool_call(&run_id, step as u32, tc, &mut observed_tool_calls);
-                match self
-                    .check_mcp_drift_for_tool_call(
-                        run_id.clone(),
-                        step as u32,
-                        tc,
-                        expected_mcp_catalog_hash_hex.as_ref(),
-                        expected_mcp_docs_hash_hex.as_ref(),
-                        started_at.clone(),
-                        messages.clone(),
-                        observed_tool_calls.clone(),
-                        &mut observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.clone(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    )
-                    .await
-                {
-                    McpDriftDecision::Continue => {}
-                    McpDriftDecision::Finalize(outcome) => return *outcome,
-                }
-                let planning_ctx = self.build_tool_call_planning_context(
+            match self
+                .process_tool_calls_for_response(
+                    &resp.tool_calls,
+                    &run_id,
+                    step as u32,
+                    &started_at,
                     active_plan_step_idx,
-                    tc,
-                    &failed_repeat_counts,
-                );
-                match self.handle_failed_repeat_guard(
-                    run_id.clone(),
-                    step as u32,
-                    tc,
-                    planning_ctx.failed_repeat_count,
-                    planning_ctx.failed_repeat_name_count,
-                    &planning_ctx.repeat_key,
-                    started_at.clone(),
+                    request_context_chars,
+                    expected_mcp_catalog_hash_hex.as_ref(),
+                    expected_mcp_docs_hash_hex.as_ref(),
                     &mut messages,
+                    &mut observed_tool_calls,
+                    &mut observed_tool_executions,
+                    &mut observed_tool_decisions,
+                    &mut hook_invocations,
                     &mut failed_repeat_counts,
-                    observed_tool_calls.clone(),
-                    observed_tool_decisions.clone(),
-                    request_context_chars,
-                    last_compaction_report.clone(),
-                    hook_invocations.clone(),
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    &total_token_usage,
-                    &taint_state,
-                ) {
-                    FailedRepeatGuardDecision::Continue => {}
-                    FailedRepeatGuardDecision::RestartAgentStep => continue 'agent_steps,
-                    FailedRepeatGuardDecision::Finalize(outcome) => return *outcome,
-                }
-                let invalid_args_error = match self.handle_malformed_tool_call(
-                    run_id.clone(),
-                    step as u32,
-                    tc,
-                    planning_ctx.plan_tool_allowed,
                     &mut malformed_tool_call_attempts,
+                    &mut invalid_patch_format_attempts,
                     &mut schema_repair_attempts,
-                    &mut messages,
-                    started_at.clone(),
-                    observed_tool_calls.clone(),
-                    observed_tool_decisions.clone(),
-                    request_context_chars,
-                    last_compaction_report.clone(),
-                    hook_invocations.clone(),
+                    &mut tool_budget_usage,
+                    &last_compaction_report,
                     provider_retry_count,
                     provider_error_count,
                     saw_token_usage,
                     &total_token_usage,
-                    &taint_state,
-                ) {
-                    MalformedToolCallDecision::ContinueToolLoop { invalid_args_error } => {
-                        invalid_args_error
-                    }
-                    MalformedToolCallDecision::RestartAgentStep => continue 'agent_steps,
-                    MalformedToolCallDecision::Finalize(outcome) => return *outcome,
-                };
-                let (
-                    approval_mode_meta,
-                    auto_scope_meta,
-                    approval_key_version_meta,
-                    tool_schema_hash_hex,
-                    hooks_config_hash_hex,
-                    planner_hash_hex,
-                    decision_exec_target,
-                ) = self.gate_decision_metadata_for_tool(tc, &taint_state);
-                if !planning_ctx.plan_tool_allowed {
-                    match self.handle_plan_constraint_deny(
-                        run_id.clone(),
-                        step as u32,
-                        tc,
-                        planning_ctx.plan_step_id,
-                        active_plan_step_idx,
-                        planning_ctx.plan_allowed_tools,
-                        approval_mode_meta.clone(),
-                        auto_scope_meta.clone(),
-                        approval_key_version_meta.clone(),
-                        tool_schema_hash_hex.clone(),
-                        hooks_config_hash_hex.clone(),
-                        planner_hash_hex.clone(),
-                        decision_exec_target.clone(),
-                        started_at.clone(),
-                        &mut messages,
-                        observed_tool_calls.clone(),
-                        &mut observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.clone(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    ) {
-                        PlanConstraintDecision::Continue => {}
-                        PlanConstraintDecision::ContinueToolLoop => continue,
-                        PlanConstraintDecision::RestartAgentStep => continue 'agent_steps,
-                        PlanConstraintDecision::Finalize(outcome) => return *outcome,
-                    }
-                }
-                match self.gate.decide(&self.gate_ctx, tc) {
-                    GateDecision::Allow {
-                        approval_id,
-                        approval_key,
-                        reason,
-                        source,
-                        taint_enforced,
-                        escalated,
-                        escalation_reason,
-                    } => {
-                        match self
-                            .handle_gate_allow_tool_call(
-                                run_id.clone(),
-                                step as u32,
-                                tc,
-                                approval_id,
-                                approval_key,
-                                reason,
-                                source,
-                                taint_enforced,
-                                escalated,
-                                escalation_reason,
-                                invalid_args_error.clone(),
-                                planning_ctx.plan_tool_allowed,
-                                &planning_ctx.repeat_key,
-                                approval_mode_meta.clone(),
-                                auto_scope_meta.clone(),
-                                approval_key_version_meta.clone(),
-                                tool_schema_hash_hex.clone(),
-                                hooks_config_hash_hex.clone(),
-                                planner_hash_hex.clone(),
-                                decision_exec_target.clone(),
-                                started_at.clone(),
-                                &mut messages,
-                                observed_tool_calls.clone(),
-                                &mut observed_tool_decisions,
-                                &mut observed_tool_executions,
-                                request_context_chars,
-                                last_compaction_report.clone(),
-                                &mut hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &mut taint_state,
-                                &mut tool_budget_usage,
-                                &mut failed_repeat_counts,
-                                &mut invalid_patch_format_attempts,
-                                &mut schema_repair_attempts,
-                                &mut successful_write_tool_ok_this_step,
-                            )
-                            .await
-                        {
-                            AllowToolCallDecision::Continue => {}
-                            AllowToolCallDecision::RestartAgentStep => continue 'agent_steps,
-                            AllowToolCallDecision::Finalize(outcome) => return *outcome,
-                        }
-                    }
-                    gate_decision => match self.handle_non_allow_gate_decision(
-                        run_id.clone(),
-                        step as u32,
-                        tc,
-                        gate_decision,
-                        invalid_args_error.as_ref(),
-                        approval_mode_meta.clone(),
-                        auto_scope_meta.clone(),
-                        approval_key_version_meta.clone(),
-                        tool_schema_hash_hex.clone(),
-                        hooks_config_hash_hex.clone(),
-                        planner_hash_hex.clone(),
-                        decision_exec_target.clone(),
-                        started_at.clone(),
-                        &mut messages,
-                        observed_tool_calls.clone(),
-                        &mut observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.clone(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    ) {
-                        GateNonAllowDecision::ContinueToolLoop => continue,
-                        GateNonAllowDecision::RestartAgentStep => continue 'agent_steps,
-                        GateNonAllowDecision::Finalize(outcome) => return *outcome,
-                    },
-                }
+                    &mut taint_state,
+                    &mut successful_write_tool_ok_this_step,
+                )
+                .await
+            {
+                Ok(ToolLoopControl::Proceed) => {}
+                Ok(ToolLoopControl::RestartAgentStep) => continue 'agent_steps,
+                Err(outcome) => return outcome,
             }
 
             self.refresh_phase_state_from_tool_facts(
