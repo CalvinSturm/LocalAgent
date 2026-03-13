@@ -42,7 +42,7 @@ fn is_small_manual_control_task(workdir: &std::path::Path) -> bool {
     if !normalized.contains("/.tmp/manual-testing/control/") {
         return false;
     }
-    let Some(task_name) = workdir.file_name().and_then(|s| s.to_str()) else {
+    let Some(task_name) = normalized.rsplit('/').next() else {
         return false;
     };
     let mut chars = task_name.chars();
