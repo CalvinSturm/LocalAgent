@@ -137,6 +137,9 @@ Recent consolidation slices already landed in `src/agent.rs`:
 - the dispatcher now names `Setup`, `Planning`, `Finalizing`, interrupt, and terminal handling individually rather than classifying them only via a shared non-active branch
 - the repeated active-turn setup now routes through one lower-level helper for response generation, normalization, and runtime-owned response processing while preserving explicit per-phase entrypoints
 - the remaining completion/tool coordinator path is now split into separate helpers for runtime completion decisions, tool execution, and post-tool follow-on handling
+- runtime completion checkpoint transitions and post-tool/post-write checkpoint refresh logic now route through `src/agent/phase_transitions.rs`, leaving `agent.rs` to handle orchestration and event emission
+- required-validation phase and post-response guard checkpoint logic now route through `src/agent/response_guards.rs`, leaving `agent.rs` to handle repair injection, events, and planner-error finalization
+- the remaining decision-to-effects translation for guard outcomes and post-tool follow-on now routes through `src/agent/runtime_effects.rs`, further reducing inline message/event/control adaptation in `agent.rs`
 
 Still incomplete:
 

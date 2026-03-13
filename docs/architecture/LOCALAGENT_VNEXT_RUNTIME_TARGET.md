@@ -1462,6 +1462,9 @@ Current state:
 - the dispatcher now also names `Setup`, `Planning`, `Finalizing`, interrupt, and terminal handling individually
 - the repeated active-turn setup now routes through one lower-level helper for generation/normalization/response-processing instead of being duplicated across active phases
 - the completion/tool coordinator path now also delegates runtime completion application, tool execution, and post-tool follow-on handling through smaller helpers
+- runtime completion checkpoint transitions and post-tool/post-write checkpoint mutation policy now route through a dedicated `phase_transitions` helper module
+- required-validation phase and post-response guard checkpoint mutation policy now route through a dedicated `response_guards` helper module
+- the remaining guard/post-tool decision-to-effects translation now routes through a dedicated `runtime_effects` helper module
 - the main loop is not yet fully rewritten around end-to-end explicit per-phase handlers
 
 ### Phase 6: Execution Tier Integration

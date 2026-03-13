@@ -27,12 +27,15 @@ pub(crate) mod interrupts;
 mod mcp_drift;
 mod model_io;
 mod operator_queue;
+mod phase_transitions;
 mod planner_phase;
+mod response_guards;
 mod response_normalization;
 mod run_control;
 mod run_events;
 mod run_finalize;
 mod run_setup;
+mod runtime_effects;
 mod runtime_completion;
 pub mod task_contract;
 mod timeouts;
@@ -59,22 +62,29 @@ pub(crate) use tool_facts::{
 };
 pub(crate) use completion_policy::{
     approval_boundary_transition_decision, exact_final_answer_boundary_transition_decision,
-    operator_boundary_transition_decision,
-    post_validation_final_answer_transition_decision,
-    required_validation_boundary_transition_decision,
-    validation_resume_execution_transition_decision,
+    operator_boundary_transition_decision, required_validation_boundary_transition_decision,
 };
 
 pub(crate) use agent_types::WorkerStepStatus;
 use gate_paths::{AllowToolCallDecision, GateNonAllowDecision, PlanConstraintDecision};
 use mcp_drift::McpDriftDecision;
+use phase_transitions::{
+    apply_runtime_completion_action_to_checkpoint, apply_verified_write_follow_on,
+    refresh_phase_state_from_tool_facts,
+};
 use planner_phase::{evaluate_planner_response, PlannerResponseDecision};
+use response_guards::{decide_post_response_phase_guard, decide_required_validation_phase_response};
 use response_normalization::{normalize_assistant_response, AssistantResponseNormalization};
+use runtime_effects::{
+    apply_post_response_guard_decision, apply_required_validation_guard_decision,
+    apply_verified_write_follow_on_update, completion_blocked_effect_from_post_tool_refresh,
+    GuardEffect,
+};
 use run_events::apply_usage_totals;
 #[cfg(test)]
 pub(crate) use runtime_completion::RuntimeCompletionDecision;
 use runtime_completion::{
-    runtime_completion_decision, RuntimeCompletionAction, RuntimeCompletionInputs,
+    runtime_completion_decision, RuntimeCompletionInputs,
 };
 use tool_helpers::injected_messages_enforce_implementation_integrity_guard;
 use tool_helpers::{FailedRepeatGuardDecision, MalformedToolCallDecision};
@@ -305,75 +315,88 @@ impl<P: ModelProvider> Agent<P> {
                 resp.assistant.content = Some(String::new());
             }
         }
-        let assistant_has_prose = !resp
-            .assistant
-            .content
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty();
-        let valid_required_validation_turn =
-            resp.tool_calls.len() == 1 && resp.tool_calls[0].name == "shell" && !assistant_has_prose;
-        if valid_required_validation_turn {
-            runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Executing;
-            runtime_checkpoint.retry_state.blocked_required_validation_phase_count = 0;
-            let transition = crate::agent::validation_resume_execution_transition_decision();
-            self.emit_phase_transition(run_id, step, &transition);
-            return Ok(PhaseLoopControl::Proceed);
+        match decide_required_validation_phase_response(
+            user_prompt,
+            self.validation_shell_available(),
+            runtime_checkpoint,
+            &resp.assistant,
+            &resp.tool_calls,
+            self.required_validation_phase_message(user_prompt),
+        ) {
+            decision => match apply_required_validation_guard_decision(
+                decision,
+                &resp.assistant,
+                messages,
+            ) {
+                GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
+                GuardEffect::EmitPhaseTransition(transition) => {
+                    self.emit_phase_transition(run_id, step, &transition);
+                    Ok(PhaseLoopControl::Proceed)
+                }
+                GuardEffect::ContinueStep(step_block) => {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": step_block.reason,
+                            "blocked_count": step_block.blocked_count
+                        }),
+                    );
+                    Ok(PhaseLoopControl::ContinueStep)
+                }
+                GuardEffect::ContinueAgentStep(step_block) => {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": step_block.reason,
+                            "blocked_count": step_block.blocked_count
+                        }),
+                    );
+                    Ok(PhaseLoopControl::ContinueAgentStep)
+                }
+                GuardEffect::PlannerError(error) => {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": error.step_block.reason,
+                            "blocked_count": error.step_block.blocked_count
+                        }),
+                    );
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": error.reason,
+                            "source": error.error_source,
+                            "failure_class": error.failure_class
+                        }),
+                    );
+                    Err(self.finalize_planner_error_with_output_with_end(
+                        step,
+                        run_id.to_string(),
+                        started_at.to_string(),
+                        error.reason,
+                        messages.clone(),
+                        observed_tool_calls.to_vec(),
+                        observed_tool_decisions.to_vec(),
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.to_vec(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ))
+                }
+            },
         }
-
-        runtime_checkpoint.retry_state.blocked_required_validation_phase_count = runtime_checkpoint
-            .retry_state
-            .blocked_required_validation_phase_count
-            .saturating_add(1);
-        self.emit_event(
-            run_id,
-            step,
-            EventKind::StepBlocked,
-            serde_json::json!({
-                "reason": "required_validation_phase_requires_shell",
-                "blocked_count": runtime_checkpoint.retry_state.blocked_required_validation_phase_count
-            }),
-        );
-        if runtime_checkpoint.retry_state.blocked_required_validation_phase_count >= 2 {
-            let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: required validation phase requires exactly one shell tool call and no prose".to_string();
-            self.emit_event(
-                run_id,
-                step,
-                EventKind::Error,
-                serde_json::json!({
-                    "error": reason,
-                    "source": "runtime_required_validation_guard",
-                    "failure_class": "E_PROTOCOL_REQUIRED_VALIDATION_PHASE"
-                }),
-            );
-            return Err(self.finalize_planner_error_with_output_with_end(
-                step,
-                run_id.to_string(),
-                started_at.to_string(),
-                reason,
-                messages.clone(),
-                observed_tool_calls.to_vec(),
-                observed_tool_decisions.to_vec(),
-                request_context_chars,
-                last_compaction_report.clone(),
-                hook_invocations.to_vec(),
-                provider_retry_count,
-                provider_error_count,
-                saw_token_usage,
-                total_token_usage,
-                taint_state,
-            ));
-        }
-        messages.push(resp.assistant.clone());
-        messages.push(Message {
-            role: Role::Developer,
-            content: Some(self.required_validation_phase_message(user_prompt)),
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-        });
-        Ok(PhaseLoopControl::ContinueStep)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -400,380 +423,84 @@ impl<P: ModelProvider> Agent<P> {
         taint_state: &TaintState,
         tool_calls: &[ToolCall],
     ) -> Result<PhaseLoopControl, AgentOutcome> {
-        if runtime_checkpoint.validation_state.repair_mode
-            && has_actionable_tool_calls
-            && tool_calls.iter().all(|tc| tc.name == "shell")
-        {
-            runtime_checkpoint.retry_state.blocked_validation_failure_repair_count =
-                runtime_checkpoint
-                    .retry_state
-                    .blocked_validation_failure_repair_count
-                    .saturating_add(1);
-            self.emit_event(
-                run_id,
-                step,
-                EventKind::StepBlocked,
-                serde_json::json!({
-                    "reason": "validation_failure_requires_code_fix",
-                    "blocked_count": runtime_checkpoint.retry_state.blocked_validation_failure_repair_count
-                }),
-            );
-            if runtime_checkpoint.retry_state.blocked_validation_failure_repair_count >= 2 {
-                let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: validation is still failing; inspect and change code before retrying shell".to_string();
-                self.emit_event(
-                    run_id,
-                    step,
-                    EventKind::Error,
-                    serde_json::json!({
-                        "error": reason,
-                        "source": "runtime_required_validation_guard",
-                        "failure_class": "E_PROTOCOL_VALIDATION_RETRY_WITHOUT_FIX"
-                    }),
-                );
-                return Err(self.finalize_planner_error_with_output_with_end(
-                    step,
-                    run_id.to_string(),
-                    started_at.to_string(),
-                    reason,
-                    messages.clone(),
-                    observed_tool_calls.to_vec(),
-                    observed_tool_decisions.to_vec(),
-                    request_context_chars,
-                    last_compaction_report.clone(),
-                    hook_invocations.to_vec(),
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    total_token_usage,
-                    taint_state,
-                ));
-            }
-            messages.push(assistant.clone());
-            messages.push(Message {
-                role: Role::Developer,
-                content: Some("Validation is still failing. Do not rerun shell yet. Use read_file or grep to inspect the code, make a real code change with edit/apply_patch, then rerun the validation command.".to_string()),
-                tool_call_id: None,
-                tool_name: None,
-                tool_calls: None,
-            });
-            return Ok(PhaseLoopControl::ContinueAgentStep);
-        }
-
-        if runtime_checkpoint.phase == crate::agent_runtime::state::RunPhase::CollectingFinalAnswer
-            && runtime_checkpoint.validation_state.satisfied
-            && has_actionable_tool_calls
-        {
-            runtime_checkpoint.retry_state.blocked_post_validation_final_answer_count =
-                runtime_checkpoint
-                    .retry_state
-                    .blocked_post_validation_final_answer_count
-                    .saturating_add(1);
-            self.emit_event(
-                run_id,
-                step,
-                EventKind::StepBlocked,
-                serde_json::json!({
-                    "reason": "post_validation_final_answer_only",
-                    "blocked_count": runtime_checkpoint.retry_state.blocked_post_validation_final_answer_count
-                }),
-            );
-            if runtime_checkpoint.retry_state.blocked_post_validation_final_answer_count >= 2 {
-                let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: validation already succeeded; reply with final answer only".to_string();
-                self.emit_event(
-                    run_id,
-                    step,
-                    EventKind::Error,
-                    serde_json::json!({
-                        "error": reason,
-                        "source": "runtime_required_validation_guard",
-                        "failure_class": "E_PROTOCOL_POST_VALIDATION_TOOL_CALL"
-                    }),
-                );
-                return Err(self.finalize_planner_error_with_output_with_end(
-                    step,
-                    run_id.to_string(),
-                    started_at.to_string(),
-                    reason,
-                    messages.clone(),
-                    observed_tool_calls.to_vec(),
-                    observed_tool_decisions.to_vec(),
-                    request_context_chars,
-                    last_compaction_report.clone(),
-                    hook_invocations.to_vec(),
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    total_token_usage,
-                    taint_state,
-                ));
-            }
-            messages.push(assistant.clone());
-            messages.push(Message {
-                role: Role::Developer,
-                content: Some(self.post_validation_final_answer_only_message(user_prompt)),
-                tool_call_id: None,
-                tool_name: None,
-                tool_calls: None,
-            });
-            return Ok(PhaseLoopControl::ContinueAgentStep);
-        }
-
-        if runtime_checkpoint.tool_protocol_state.tool_only_phase_active
-            && model_signaled_finalize
-            && !assistant.content.as_deref().unwrap_or_default().trim().is_empty()
-        {
-            runtime_checkpoint.tool_protocol_state.blocked_tool_only_count = runtime_checkpoint
-                .tool_protocol_state
-                .blocked_tool_only_count
-                .saturating_add(1);
-            self.emit_event(
-                run_id,
-                step,
-                EventKind::StepBlocked,
-                serde_json::json!({
-                    "reason": "tool_only_violation",
-                    "blocked_count": runtime_checkpoint.tool_protocol_state.blocked_tool_only_count
-                }),
-            );
-            if runtime_checkpoint.tool_protocol_state.blocked_tool_only_count >= 2 {
-                let reason =
-                    "MODEL_TOOL_PROTOCOL_VIOLATION: repeated prose output during tool-only phase"
-                        .to_string();
-                self.emit_event(
-                    run_id,
-                    step,
-                    EventKind::Error,
-                    serde_json::json!({
-                        "error": reason,
-                        "source": "tool_protocol_guard",
-                        "failure_class": "E_PROTOCOL_TOOL_ONLY"
-                    }),
-                );
-                return Err(self.finalize_planner_error_with_output_with_end(
-                    step,
-                    run_id.to_string(),
-                    started_at.to_string(),
-                    reason,
-                    messages.clone(),
-                    observed_tool_calls.to_vec(),
-                    observed_tool_decisions.to_vec(),
-                    request_context_chars,
-                    last_compaction_report.clone(),
-                    hook_invocations.to_vec(),
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    total_token_usage,
-                    taint_state,
-                ));
-            }
-            messages.push(assistant.clone());
-            messages.push(Message {
-                role: Role::Developer,
-                content: Some(self.tool_only_reminder_message()),
-                tool_call_id: None,
-                tool_name: None,
-                tool_calls: None,
-            });
-            return Ok(PhaseLoopControl::ContinueAgentStep);
-        }
-
-        Ok(PhaseLoopControl::Proceed)
-    }
-
-    fn apply_runtime_completion_action_to_checkpoint(
-        &self,
-        user_prompt: &str,
-        action: RuntimeCompletionAction,
-        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
-    ) -> Result<PhaseLoopControl, AgentOutcome> {
-        match action {
-            RuntimeCompletionAction::ContinueStep {
-                blocked_runtime_completion_count: next_count,
-            } => {
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = next_count;
-                Ok(PhaseLoopControl::ContinueStep)
-            }
-            RuntimeCompletionAction::ContinueAgentStep {
-                blocked_runtime_completion_count: next_count,
-                operator_delivery_count: next_op_count,
-            } => {
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = next_count;
-                runtime_checkpoint.tool_protocol_state.operator_delivery_count = next_op_count;
-                Ok(PhaseLoopControl::ContinueAgentStep)
-            }
-            RuntimeCompletionAction::ContinueExactFinalAnswer {
-                blocked_runtime_completion_count: next_count,
-                operator_delivery_count: next_op_count,
-            } => {
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = next_count;
-                runtime_checkpoint.tool_protocol_state.operator_delivery_count = next_op_count;
-                runtime_checkpoint.retry_state.exact_final_answer_retry_count += 1;
-                runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::CollectingFinalAnswer;
-                runtime_checkpoint.validation_state.collecting_final_answer = true;
-                Ok(PhaseLoopControl::ContinueAgentStep)
-            }
-            RuntimeCompletionAction::ContinueRequiredValidation {
-                blocked_runtime_completion_count: next_count,
-                operator_delivery_count: next_op_count,
-            } => {
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = next_count;
-                runtime_checkpoint.tool_protocol_state.operator_delivery_count = next_op_count;
-                runtime_checkpoint.retry_state.required_validation_retry_count += 1;
-                runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Validating;
-                runtime_checkpoint.validation_state.required_command =
-                    crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
-                        .map(ToOwned::to_owned);
-                runtime_checkpoint.validation_state.repair_mode = false;
-                runtime_checkpoint.validation_state.satisfied = false;
-                runtime_checkpoint.validation_state.collecting_final_answer =
-                    crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt).is_some();
-                runtime_checkpoint.retry_state.blocked_validation_failure_repair_count = 0;
-                runtime_checkpoint.retry_state.blocked_post_validation_final_answer_count = 0;
-                Ok(PhaseLoopControl::ContinueAgentStep)
-            }
-            RuntimeCompletionAction::ProceedToTools {
-                blocked_runtime_completion_count: next_count,
-            } => {
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = next_count;
-                runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Executing;
-                runtime_checkpoint.validation_state.repair_mode = false;
-                Ok(PhaseLoopControl::Proceed)
-            }
-            RuntimeCompletionAction::Finalize(outcome) => Err(*outcome),
-        }
-    }
-
-    fn refresh_phase_state_from_tool_facts(
-        &mut self,
-        user_prompt: &str,
-        run_id: &str,
-        step: u32,
-        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
-        observed_tool_calls: &[ToolCall],
-        observed_tool_executions: &[ToolExecutionRecord],
-        successful_write_tool_ok_this_step: bool,
-    ) {
-        let tool_facts = crate::agent::tool_facts_from_calls_and_executions(
-            user_prompt,
-            observed_tool_calls,
-            observed_tool_executions,
-        );
-        runtime_checkpoint.validation_state.required_command =
-            crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
-                .map(ToOwned::to_owned);
-        let validation_facts = crate::agent::completion_policy::collect_validation_facts(
-            user_prompt,
-            &tool_facts,
-        );
-        runtime_checkpoint.validation_state.satisfied = validation_facts.satisfied;
-        runtime_checkpoint.last_tool_fact_envelopes = crate::agent::tool_fact_envelopes_from_facts(
-            &tool_facts,
-            crate::agent::tool_facts::ToolFactSourceV1::ExecutionRecords,
-            Some(crate::agent::interrupts::run_phase_name(&runtime_checkpoint.phase)),
-            None,
-        );
-        match crate::agent::completion_policy::decide_validation_phase_transition(
-            &validation_facts,
-            successful_write_tool_ok_this_step,
+        match decide_post_response_phase_guard(
+            runtime_checkpoint,
+            assistant,
+            has_actionable_tool_calls,
+            model_signaled_finalize,
+            tool_calls,
+            self.post_validation_final_answer_only_message(user_prompt),
+            self.tool_only_reminder_message(),
         ) {
-            crate::agent::completion_policy::ValidationPhaseTransitionDecision::EnterRepair => {
-                runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Executing;
-                runtime_checkpoint.validation_state.repair_mode = true;
-                runtime_checkpoint.validation_state.collecting_final_answer = false;
-                let transition = crate::agent::validation_resume_execution_transition_decision();
-                self.emit_phase_transition(run_id, step, &transition);
-                self.emit_event(
-                    run_id,
-                    step,
-                    EventKind::CompletionBlocked,
-                    serde_json::json!({
-                        "reason": "validation failed and runtime requires a code-fix repair step",
-                        "next_phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
-                    }),
-                );
-            }
-            crate::agent::completion_policy::ValidationPhaseTransitionDecision::EnterPostValidationFinalAnswerOnly => {
-                runtime_checkpoint.phase =
-                    crate::agent_runtime::state::RunPhase::CollectingFinalAnswer;
-                runtime_checkpoint.validation_state.repair_mode = false;
-                runtime_checkpoint.validation_state.satisfied = true;
-                runtime_checkpoint.validation_state.collecting_final_answer = true;
-                runtime_checkpoint.retry_state.blocked_post_validation_final_answer_count = 0;
-                let transition = crate::agent::post_validation_final_answer_transition_decision();
-                self.emit_phase_transition(run_id, step, &transition);
-                self.emit_event(
-                    run_id,
-                    step,
-                    EventKind::CompletionBlocked,
-                    serde_json::json!({
-                        "reason": transition.completion_reason,
-                        "next_phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
-                    }),
-                );
-            }
-            crate::agent::completion_policy::ValidationPhaseTransitionDecision::ClearRepair => {
-                runtime_checkpoint.validation_state.repair_mode = false;
-                runtime_checkpoint.retry_state.blocked_validation_failure_repair_count = 0;
-            }
-            crate::agent::completion_policy::ValidationPhaseTransitionDecision::NoChange => {}
-        }
-    }
-
-    fn apply_verified_write_follow_on(
-        &self,
-        user_prompt: &str,
-        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
-        messages: &mut Vec<Message>,
-        result: &runtime_completion::VerifiedWriteResult,
-    ) -> Option<PhaseLoopControl> {
-        match result {
-            runtime_completion::VerifiedWriteResult::GuardRetry(message) => {
-                runtime_checkpoint.retry_state.post_write_guard_retry_count += 1;
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = 0;
-                runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::VerifyingChanges;
-                messages.push(Message {
-                    role: Role::Developer,
-                    content: Some(message.clone()),
-                    tool_call_id: None,
-                    tool_name: None,
-                    tool_calls: None,
-                });
-                Some(PhaseLoopControl::ContinueAgentStep)
-            }
-            runtime_completion::VerifiedWriteResult::FollowOnTurn(message) => {
-                runtime_checkpoint.retry_state.post_write_follow_on_turn_count += 1;
-                runtime_checkpoint.retry_state.post_write_guard_retry_count = 0;
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = 0;
-                runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::VerifyingChanges;
-                messages.push(Message {
-                    role: Role::Developer,
-                    content: Some(message.clone()),
-                    tool_call_id: None,
-                    tool_name: None,
-                    tool_calls: None,
-                });
-                Some(PhaseLoopControl::ContinueAgentStep)
-            }
-            runtime_completion::VerifiedWriteResult::StartRequiredValidationPhase(message) => {
-                runtime_checkpoint.retry_state.post_write_guard_retry_count = 0;
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = 0;
-                runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Validating;
-                runtime_checkpoint.validation_state.required_command =
-                    crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
-                        .map(ToOwned::to_owned);
-                runtime_checkpoint.validation_state.collecting_final_answer =
-                    crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt).is_some();
-                messages.push(Message {
-                    role: Role::Developer,
-                    content: Some(message.clone()),
-                    tool_call_id: None,
-                    tool_name: None,
-                    tool_calls: None,
-                });
-                Some(PhaseLoopControl::ContinueAgentStep)
-            }
-            runtime_completion::VerifiedWriteResult::Done(_) => None,
+            decision => match apply_post_response_guard_decision(decision, assistant, messages) {
+                GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
+                GuardEffect::EmitPhaseTransition(transition) => {
+                    self.emit_phase_transition(run_id, step, &transition);
+                    Ok(PhaseLoopControl::Proceed)
+                }
+                GuardEffect::ContinueStep(step_block) => {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": step_block.reason,
+                            "blocked_count": step_block.blocked_count
+                        }),
+                    );
+                    Ok(PhaseLoopControl::ContinueStep)
+                }
+                GuardEffect::ContinueAgentStep(step_block) => {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": step_block.reason,
+                            "blocked_count": step_block.blocked_count
+                        }),
+                    );
+                    Ok(PhaseLoopControl::ContinueAgentStep)
+                }
+                GuardEffect::PlannerError(error) => {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": error.step_block.reason,
+                            "blocked_count": error.step_block.blocked_count
+                        }),
+                    );
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": error.reason,
+                            "source": error.error_source,
+                            "failure_class": error.failure_class
+                        }),
+                    );
+                    Err(self.finalize_planner_error_with_output_with_end(
+                        step,
+                        run_id.to_string(),
+                        started_at.to_string(),
+                        error.reason,
+                        messages.clone(),
+                        observed_tool_calls.to_vec(),
+                        observed_tool_decisions.to_vec(),
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.to_vec(),
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ))
+                }
+            },
         }
     }
 
@@ -2617,13 +2344,8 @@ impl<P: ModelProvider> Agent<P> {
         match verified_write_result {
             runtime_completion::VerifiedWriteResult::Done(outcome) => Err(*outcome),
             other => {
-                let control = self
-                    .apply_verified_write_follow_on(user_prompt, runtime_checkpoint, messages, &other)
-                    .map(|control| match control {
-                        PhaseLoopControl::Proceed => PhaseStepDispatch::StepComplete,
-                        PhaseLoopControl::ContinueStep => PhaseStepDispatch::ContinueStep,
-                        PhaseLoopControl::ContinueAgentStep => PhaseStepDispatch::ContinueAgentStep,
-                    });
+                let control = apply_verified_write_follow_on(user_prompt, runtime_checkpoint, &other)
+                    .map(|update| apply_verified_write_follow_on_update(update, messages));
                 Ok(control)
             }
         }
@@ -2817,7 +2539,7 @@ impl<P: ModelProvider> Agent<P> {
                 runtime_checkpoint.retry_state.required_validation_retry_count,
             )
             .await;
-        match self.apply_runtime_completion_action_to_checkpoint(
+        match apply_runtime_completion_action_to_checkpoint(
             user_prompt,
             completion_action,
             runtime_checkpoint,
@@ -2898,15 +2620,26 @@ impl<P: ModelProvider> Agent<P> {
             Err(outcome) => return Err(outcome),
         }
 
-        self.refresh_phase_state_from_tool_facts(
-            user_prompt,
-            run_id,
-            step,
-            runtime_checkpoint,
-            observed_tool_calls,
-            observed_tool_executions,
-            successful_write_tool_ok_this_step,
-        );
+        if let Some(effect) = completion_blocked_effect_from_post_tool_refresh(
+            refresh_phase_state_from_tool_facts(
+                user_prompt,
+                runtime_checkpoint,
+                observed_tool_calls,
+                observed_tool_executions,
+                successful_write_tool_ok_this_step,
+            ),
+        ) {
+            self.emit_phase_transition(run_id, step, &effect.transition);
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::CompletionBlocked,
+                serde_json::json!({
+                    "reason": effect.reason,
+                    "next_phase": crate::agent::interrupts::run_phase_name(&effect.transition.to_phase)
+                }),
+            );
+        }
 
         Ok(Ok(successful_write_tool_ok_this_step))
     }
