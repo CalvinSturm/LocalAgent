@@ -59,34 +59,55 @@ Acceptance bar:
 
 ### Phase 2: Validation Requirement Formalization
 
+Status note:
+- fresh-run contract resolution is implemented
+- resume/checkpoint persistence of explicit validator provenance remains follow-on work
+
 - [x] Add an explicit validator-requirement input surface
 - [x] Thread that surface through runtime launch into `TaskContractV1`
 - [x] Preserve prompt-derived validation inference only as fallback, with provenance clearly marked as inferred
 - [x] Add tests showing explicit validator requirement overrides prompt inference
 - [x] Add tests showing fallback inference still works where explicit metadata is absent
 
-Implemented first slice:
+Implemented slices:
 
 - explicit runtime override path via `RunArgs.validation_command_override`
 - explicit check metadata via `CheckFrontmatter.validation_command`
-- contract resolution now prefers explicit validator requirement over prompt inference
-- eval/manual-pack metadata wiring remains future work
+- eval task verifier metadata now feeds the same explicit runtime validation requirement path
+- contract resolution and runtime state/final artifacts now prefer explicit validator requirement over prompt inference
+- resumable checkpoint replay does not yet persist explicit validator requirement provenance end-to-end
+- manual-pack validator metadata wiring still remains future work if packs need structured task contracts
 
 Acceptance bar:
 - validation requirement no longer depends primarily on substring matching
-- artifacts/checkpoints show whether validator requirement was explicit or inferred
+- run artifacts/events show whether validator requirement was explicit or inferred
+- checkpoint provenance for explicit vs inferred validator requirement remains follow-on work
 
 ### Phase 3: Exact Final Answer / Output Contract Formalization
 
-- [ ] Add an explicit output-contract surface for exact final answer requirements
-- [ ] Thread that surface through runtime launch into `TaskContractV1`
-- [ ] Preserve prompt-derived exact-answer inference only as fallback, with provenance clearly marked as inferred
-- [ ] Add tests showing explicit output contract overrides prompt inference
-- [ ] Add tests showing fallback inference still works where explicit metadata is absent
+Status note:
+- fresh-run contract resolution is implemented
+- resume/checkpoint persistence of explicit output-contract provenance remains follow-on work
+
+- [x] Add an explicit output-contract surface for exact final answer requirements
+- [x] Thread that surface through runtime launch into `TaskContractV1`
+- [x] Preserve prompt-derived exact-answer inference only as fallback, with provenance clearly marked as inferred
+- [x] Add tests showing explicit output contract overrides prompt inference
+- [x] Add tests showing fallback inference still works where explicit metadata is absent
+
+Implemented slices:
+
+- explicit runtime override path via `RunArgs.exact_final_answer_override`
+- explicit check metadata via `CheckFrontmatter.exact_final_answer`
+- explicit eval task metadata via `EvalTask.exact_final_answer`
+- runtime `Agent`, runtime state, and final-artifact paths now consume the explicit output contract instead of recomputing exact-answer semantics only from prompt markers
+- resumable checkpoint replay does not yet persist explicit output-contract provenance end-to-end
+- manual-pack output-contract metadata wiring still remains future work if packs need structured task contracts
 
 Acceptance bar:
 - exact-answer runtime behavior no longer depends primarily on prompt markers
-- artifacts/checkpoints show whether the output contract was explicit or inferred
+- run artifacts/events show whether the output contract was explicit or inferred
+- checkpoint provenance for explicit vs inferred output contract remains follow-on work
 
 ### Phase 4: Task Kind and Write/Completion Contract Tightening
 
