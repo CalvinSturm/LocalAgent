@@ -163,11 +163,13 @@ impl<P: ModelProvider> Agent<P> {
         let mut exact_final_answer_retry_count: u32 = 0;
         let mut required_validation_retry_count: u32 = 0;
         let mut required_validation_phase_active = false;
+        let mut validation_failure_repair_phase_active = false;
         let mut post_validation_final_answer_only_phase_active = false;
         let mut operator_delivery_count: u32 = 0;
         let mut blocked_control_envelope_count: u32 = 0;
         let mut blocked_tool_only_count: u32 = 0;
         let mut blocked_required_validation_phase_count: u32 = 0;
+        let mut blocked_validation_failure_repair_count: u32 = 0;
         let mut blocked_post_validation_final_answer_count: u32 = 0;
         let mut tool_only_phase_active = prompt_requires_tool_only(user_prompt);
         let mut exact_final_answer_only_phase_active = false;
@@ -659,6 +661,61 @@ impl<P: ModelProvider> Agent<P> {
             }
             let has_actionable_tool_calls = !resp.tool_calls.is_empty();
             let model_signaled_finalize = !has_actionable_tool_calls;
+            if validation_failure_repair_phase_active
+                && has_actionable_tool_calls
+                && resp.tool_calls.iter().all(|tc| tc.name == "shell")
+            {
+                blocked_validation_failure_repair_count =
+                    blocked_validation_failure_repair_count.saturating_add(1);
+                self.emit_event(
+                    &run_id,
+                    step as u32,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": "validation_failure_requires_code_fix",
+                        "blocked_count": blocked_validation_failure_repair_count
+                    }),
+                );
+                if blocked_validation_failure_repair_count >= 2 {
+                    let reason = "MODEL_TOOL_PROTOCOL_VIOLATION: validation is still failing; inspect and change code before retrying shell".to_string();
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "runtime_required_validation_guard",
+                            "failure_class": "E_PROTOCOL_VALIDATION_RETRY_WITHOUT_FIX"
+                        }),
+                    );
+                    return self.finalize_planner_error_with_output_with_end(
+                        step as u32,
+                        run_id,
+                        started_at,
+                        reason,
+                        messages,
+                        observed_tool_calls,
+                        observed_tool_decisions,
+                        request_context_chars,
+                        last_compaction_report,
+                        hook_invocations,
+                        provider_retry_count,
+                        provider_error_count,
+                        saw_token_usage,
+                        &total_token_usage,
+                        &taint_state,
+                    );
+                }
+                messages.push(resp.assistant.clone());
+                messages.push(Message {
+                    role: Role::Developer,
+                    content: Some("Validation is still failing. Do not rerun shell yet. Use read_file or grep to inspect the code, make a real code change with edit/apply_patch, then rerun the validation command.".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                });
+                continue 'agent_steps;
+            }
             if post_validation_final_answer_only_phase_active && has_actionable_tool_calls {
                 blocked_post_validation_final_answer_count =
                     blocked_post_validation_final_answer_count.saturating_add(1);
@@ -1136,6 +1193,8 @@ impl<P: ModelProvider> Agent<P> {
                     operator_delivery_count = next_op_count;
                     required_validation_retry_count += 1;
                     required_validation_phase_active = true;
+                    validation_failure_repair_phase_active = false;
+                    blocked_validation_failure_repair_count = 0;
                     post_validation_final_answer_only_phase_active = false;
                     blocked_post_validation_final_answer_count = 0;
                     exact_final_answer_only_phase_active = false;
@@ -1146,6 +1205,7 @@ impl<P: ModelProvider> Agent<P> {
                 } => {
                     blocked_runtime_completion_count = next_count;
                     required_validation_phase_active = false;
+                    validation_failure_repair_phase_active = false;
                     exact_final_answer_only_phase_active = false;
                 }
                 RuntimeCompletionAction::Finalize(outcome) => return *outcome,
@@ -1379,6 +1439,18 @@ impl<P: ModelProvider> Agent<P> {
                 post_validation_final_answer_only_phase_active = true;
                 blocked_post_validation_final_answer_count = 0;
                 required_validation_phase_active = false;
+            }
+            if crate::agent_impl_guard::required_validation_failure_needs_repair(
+                user_prompt,
+                &observed_tool_calls,
+                &observed_tool_executions,
+            ) {
+                validation_failure_repair_phase_active = true;
+                required_validation_phase_active = false;
+                post_validation_final_answer_only_phase_active = false;
+            } else if successful_write_tool_ok_this_step {
+                validation_failure_repair_phase_active = false;
+                blocked_validation_failure_repair_count = 0;
             }
 
             if enforce_implementation_integrity_guard && successful_write_tool_ok_this_step {

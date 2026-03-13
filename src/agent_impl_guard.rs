@@ -294,12 +294,41 @@ pub(crate) fn required_validation_command_satisfied(
         })
 }
 
+pub(crate) fn required_validation_failure_needs_repair(
+    prompt: &str,
+    observed_tool_calls: &[ToolCall],
+    tool_executions: &[ToolExecutionRecord],
+) -> bool {
+    let Some(required) = prompt_required_validation_command(prompt) else {
+        return false;
+    };
+    let mut needs_repair = false;
+    for (call, execution) in observed_tool_calls.iter().zip(tool_executions.iter()) {
+        if execution.ok
+            && matches!(
+                execution.name.as_str(),
+                "apply_patch" | "edit" | "write_file" | "str_replace"
+            )
+            && execution.changed.unwrap_or(true)
+        {
+            needs_repair = false;
+        }
+        if call.name != "shell" || execution.name != "shell" {
+            continue;
+        }
+        let matches_required =
+            shell_command_text(call).is_some_and(|cmd| cmd.to_ascii_lowercase().contains(required));
+        if !matches_required {
+            continue;
+        }
+        needs_repair = !execution.ok;
+    }
+    needs_repair
+}
+
 pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String> {
     let lower = prompt.to_ascii_lowercase();
-    let markers = [
-        "your final answer must be exactly:",
-        "reply with exactly:",
-    ];
+    let markers = ["your final answer must be exactly:", "reply with exactly:"];
     let (idx, marker) = markers
         .iter()
         .filter_map(|marker| lower.find(marker).map(|idx| (idx, *marker)))
@@ -390,7 +419,7 @@ mod tests {
         implementation_integrity_violation_with_tool_executions,
         pending_post_write_verification_paths, prompt_required_exact_final_answer,
         recover_required_exact_final_answer, required_validation_command_satisfied,
-        ToolExecutionRecord,
+        required_validation_failure_needs_repair, ToolExecutionRecord,
     };
     use crate::types::ToolCall;
 
@@ -429,8 +458,13 @@ mod tests {
     #[test]
     fn exact_final_answer_match_supports_reply_with_exactly() {
         let prompt = "Reply with exactly:\n\nverified fix\n";
-        assert!(final_output_matches_required_exact_answer(prompt, "verified fix\n"));
-        assert!(!final_output_matches_required_exact_answer(prompt, "verified"));
+        assert!(final_output_matches_required_exact_answer(
+            prompt,
+            "verified fix\n"
+        ));
+        assert!(!final_output_matches_required_exact_answer(
+            prompt, "verified"
+        ));
     }
 
     #[test]
@@ -480,6 +514,59 @@ mod tests {
             prompt,
             &calls,
             &failed_execs
+        ));
+    }
+
+    #[test]
+    fn failed_required_validation_without_changed_write_needs_repair() {
+        let prompt = "Before finishing, run node --test successfully.";
+        let calls = vec![ToolCall {
+            id: "tc_shell".to_string(),
+            name: "shell".to_string(),
+            arguments: serde_json::json!({"cmd":"node","args":["--test"]}),
+        }];
+        let execs = vec![ToolExecutionRecord {
+            name: "shell".to_string(),
+            path: None,
+            ok: false,
+            changed: None,
+        }];
+        assert!(required_validation_failure_needs_repair(
+            prompt, &calls, &execs
+        ));
+    }
+
+    #[test]
+    fn changed_write_clears_failed_validation_repair_need() {
+        let prompt = "Before finishing, run node --test successfully.";
+        let calls = vec![
+            ToolCall {
+                id: "tc_shell".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"cmd":"node","args":["--test"]}),
+            },
+            ToolCall {
+                id: "tc_edit".to_string(),
+                name: "edit".to_string(),
+                arguments: serde_json::json!({"path":"main.rs","old_string":"1","new_string":"2"}),
+            },
+        ];
+        let execs = vec![
+            ToolExecutionRecord {
+                name: "shell".to_string(),
+                path: None,
+                ok: false,
+                changed: None,
+            },
+            ToolExecutionRecord {
+                name: "edit".to_string(),
+                path: Some("main.rs".to_string()),
+                ok: true,
+                changed: Some(true),
+            },
+        ];
+        assert!(!required_validation_failure_needs_repair(
+            prompt, &calls, &execs
         ));
     }
 
