@@ -1,6 +1,6 @@
 # Common Coding UX Benchmark Draft
 
-Status: draft for PR1  
+Status: active PR1 benchmark note  
 Owner: LocalAgent maintainers  
 Scope: common coding UX benchmark on the eval path
 
@@ -17,10 +17,59 @@ Use it to:
 
 PR1 is complete when:
 - a `common_coding_ux` eval pack exists on the eval path
-- the pack covers the main user-facing coding task families
-- each task has explicit pass criteria and UX notes
-- one frozen baseline result is captured for the current recommended local baseline model
+- the first landing slice is stable enough to act as a decision surface for later PRs
+- each landed task has explicit pass criteria and UX notes
+- at least one frozen baseline result is captured for the current recommended local baseline model
 - protocol-only regressions remain covered separately by the existing narrow runtime/tool tests
+
+## Current PR1 State
+
+Implemented now:
+- [x] `common_coding_ux` exists as an `EvalPack` on the eval path
+- [x] first landing slice tasks are implemented: `U1`, `U3`, `U5`, `U6`
+- [x] per-run UX fields exist under `runs[*].ux`
+- [x] flattened per-run UX metric rows exist under `runs[*].ux_metric_rows`
+- [x] aggregate UX rows exist at:
+  - `ux_summary_metric_rows`
+  - `ux_summary_metric_rows_by_model`
+  - `ux_summary_metric_rows_by_task_family`
+- [x] RunScope ingest path has been proven against real LocalAgent eval artifacts
+
+Still open before PR1 closeout:
+- [ ] decide whether the current four-task slice is stable enough to freeze as the initial PR1 benchmark
+- [x] document the first frozen baseline result in a stable location
+- [ ] document benchmark caveats that materially affect interpretation
+
+## Pinned Initial PR1 Baseline Artifact
+
+Pinned baseline candidate:
+- model: `qwen2.5-coder-7b-instruct@q8_0`
+- date captured: `2026-03-13`
+- local eval artifact:
+  - [run.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/runscope/common-coding-ux/qwen2.5-coder-7b-instruct-q8_0/run.json)
+  - [SUMMARY.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/.tmp/runscope/common-coding-ux/qwen2.5-coder-7b-instruct-q8_0/SUMMARY.md)
+- RunScope ingest artifact:
+  - run id: `01KKMATEMP1DF1737H5DDFMRXF`
+  - [run.json](/C:/Users/Calvin/AppData/Local/RunScope/artifacts/localagent/2026/03/01KKMATEMP1DF1737H5DDFMRXF/run.json)
+
+Pinned baseline readout:
+- total runs: `4`
+- passed: `0`
+- failed: `4`
+- skipped: `0`
+- pass rate: `0.00%`
+
+Interpretation:
+- this is the first pinned PR1 baseline artifact for the current four-task landing slice
+- it is useful as a frozen comparison point even though the performance is poor
+- later PR1 or PR2 comparisons should reference this artifact explicitly rather than relying on ad hoc recollection
+
+## Current Caveats
+
+- `U5` and `U6` are currently high-signal but also highly sensitive to model-side protocol discipline during the validation-only shell phase
+- `common_coding_ux` now accepts `edit` as a valid existing-file edit path alongside `apply_patch` and `str_replace`; earlier task assertions were too narrow for the repo's own preferred edit workflow
+- current omnicoder instruction-profile tuning should be interpreted as PR1 benchmark evidence work, not as the formal start of PR3
+- current `validation_passed` UX reporting is verifier-oriented; it does not always distinguish "the verifier command would pass" from "the model itself correctly emitted the required validation tool call"
 
 ## Task Families
 
@@ -30,7 +79,7 @@ Goal:
 - measure whether the agent can inspect the repo and answer accurately without making edits
 
 Candidate tasks:
-- [ ] `U1` repo summary with file-grounded answer
+- [x] `U1` repo summary with file-grounded answer
   - prompt shape: identify the main entrypoint and summarize the runtime flow
   - success: cites the correct files/symbols and does not use write tools
   - UX focus: file targeting, evidence use, concise code-grounded answer
@@ -45,7 +94,7 @@ Goal:
 - measure whether the agent can make a small, correct edit in the right file
 
 Candidate tasks:
-- [ ] `U3` straightforward single-file logic fix
+- [x] `U3` straightforward single-file logic fix
   - prompt shape: fix a small bug in one file and return a simple exact answer
   - success: correct edit, no unnecessary file churn
   - UX focus: fast correct targeting, minimal edit path
@@ -60,11 +109,11 @@ Goal:
 - measure whether the agent can complete a code change and then perform the required verification cleanly
 
 Candidate tasks:
-- [ ] `U5` parser fix plus required test command
+- [x] `U5` parser fix plus required test command
   - prompt shape: fix bug, run verifier, produce exact success string only if verification passes
   - success: correct edit, correct validation command, proper closeout
   - UX focus: verification discipline after a successful edit
-- [ ] `U6` nested-file recovery bug fix plus required test command
+- [x] `U6` nested-file recovery bug fix plus required test command
   - prompt shape: recover from wrong-path guesses, find the real file, fix, validate
   - success: reaches semantic fix boundary and completes required validation
   - UX focus: recovery behavior, validation-only follow-on discipline
@@ -109,8 +158,8 @@ Candidate tasks:
   - prompt shape: task layout encourages one plausible wrong turn
   - success: agent recovers and finishes instead of looping or bailing
   - UX focus: resilience after an early mistake
-- [ ] `U12` explicit closeout-quality task
-  - prompt shape: after a successful edit/verification, summarize changed files, validation result, and remaining risk
+- [x] `U12` explicit closeout-quality task
+  - prompt shape: after a successful edit/verification, mention the changed file and the validation result using task-authored wording
   - success: final answer contains the requested closeout details
   - UX focus: user-facing completion quality without forcing a repo-wide runtime rule
 
@@ -119,10 +168,10 @@ Candidate tasks:
 Do not try to land all twelve tasks at once.
 
 Recommended first implementation set:
-- [ ] `U1` repo summary with file-grounded answer
-- [ ] `U3` straightforward single-file logic fix
-- [ ] `U5` parser fix plus required test command
-- [ ] `U6` nested-file recovery bug fix plus required test command
+- [x] `U1` repo summary with file-grounded answer
+- [x] `U3` straightforward single-file logic fix
+- [x] `U5` parser fix plus required test command
+- [x] `U6` nested-file recovery bug fix plus required test command
 
 Why this slice:
 - covers read-only analysis, simple editing, validation-required editing, and recovery behavior
@@ -133,6 +182,7 @@ Why this slice:
 
 Initial frozen baseline:
 - [ ] baseline model: `qwen2.5-coder-7b-instruct@q8_0`
+  - current benchmark readout exists, but PR1 closeout should still pin one explicit frozen result path/artifact
 
 Primary comparison models for early PR1 readouts:
 - [ ] `omnicoder-9b@q8_0`
@@ -145,12 +195,14 @@ Notes:
 ## Metrics To Record
 
 Per run:
-- [ ] task pass/fail
+- [x] task pass/fail
 - [ ] correct file targeting
 - [ ] unnecessary file edits
-- [ ] validation command attempted
-- [ ] validation command satisfied
-- [ ] closeout quality satisfied when required by the task
+- [x] validation command attempted
+- [x] validation command satisfied
+- [x] closeout quality satisfied when required by the task
+- [x] changed-file closeout satisfied when required by the task
+- [x] validation-result closeout satisfied when required by the task
 - [ ] recovery after wrong-path or wrong-tool first attempt
 - [ ] tool churn / repeated failed edit attempts
 
@@ -159,11 +211,14 @@ Do not add weighted composite scoring in PR1.
 ## Open Design Notes
 
 - [ ] decide whether the new pack should live as a new `EvalPack` variant or as additional coding tasks behind a narrower selector
+- resolved: `common_coding_ux` now exists as its own `EvalPack`
 - [ ] decide whether fixtures should extend `src/eval/fixtures_repo.rs` or move into a dedicated `tests/fixtures/common_coding_ux/` tree
+- current state: the first landing slice extends `src/eval/fixtures_repo.rs`
 - [ ] decide the minimum artifact/report extension needed for raw per-run UX metrics
-- [ ] decide whether `U12` belongs in the first landing slice or should wait until PR3
+- resolved for PR1 first slice: nested `ux`, flattened `ux_metric_rows`, and aggregate summary metric rows
+- resolved for first PR3 slice: `U12` is implemented as the first authored closeout-quality task
 
 ## Immediate Next Step
 
 Recommended next action:
-- implement the first landing slice (`U1`, `U3`, `U5`, `U6`) and keep the remaining tasks as draft backlog for later expansion
+- use `U12` plus closeout-oriented task profiles as the first formal PR3 shaping surface, then compare shaped vs unshaped runs without changing shared runtime semantics

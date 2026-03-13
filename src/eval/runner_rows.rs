@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use crate::eval::tasks::EvalTask;
 use crate::eval::types::{
-    EvalConfig, EvalRunMetrics, EvalRunRow, EvalRunStats, EvalVerifierResult,
+    flatten_ux_metric_rows, EvalConfig, EvalFailureStage, EvalRunMetrics, EvalRunRow, EvalRunStats,
+    EvalUxRunMetrics, EvalVerifierResult,
 };
 
 struct EvalFailureRowInput<'a> {
@@ -60,6 +61,27 @@ fn build_failed_eval_row(
     exit_reason: &str,
     failures: Vec<String>,
 ) -> EvalRunRow {
+    let ux = EvalUxRunMetrics {
+        task_family: input.task.task_family.clone(),
+        failure_stage: Some(EvalFailureStage::Runtime),
+        validation_required: Some(input.task.verifier.is_some()),
+        validation_attempted: Some(false),
+        validation_passed: Some(false),
+        exact_closeout_required: Some(input.task.exact_final_answer.is_some()),
+        exact_closeout_passed: Some(false),
+        closeout_changed_files_required: input
+            .task
+            .closeout_requirements
+            .as_ref()
+            .map(|reqs| !reqs.changed_files.is_empty()),
+        closeout_changed_files_satisfied: Some(false),
+        closeout_validation_result_required: input
+            .task
+            .closeout_requirements
+            .as_ref()
+            .map(|reqs| !reqs.validation_result_substrings.is_empty()),
+        closeout_validation_result_satisfied: Some(false),
+    };
     EvalRunRow {
         model: input.model.to_string(),
         task_id: input.task.id.clone(),
@@ -84,6 +106,8 @@ fn build_failed_eval_row(
         tokens: None,
         estimated_cost_usd: None,
         verifier: None,
+        ux: Some(ux.clone()),
+        ux_metric_rows: flatten_ux_metric_rows(&ux),
     }
 }
 
@@ -135,6 +159,25 @@ pub(crate) fn skipped_row(
     run_index: usize,
     reason: &str,
 ) -> EvalRunRow {
+    let ux = EvalUxRunMetrics {
+        task_family: task.task_family.clone(),
+        failure_stage: Some(EvalFailureStage::Runtime),
+        validation_required: Some(task.verifier.is_some()),
+        validation_attempted: Some(false),
+        validation_passed: Some(false),
+        exact_closeout_required: Some(task.exact_final_answer.is_some()),
+        exact_closeout_passed: Some(false),
+        closeout_changed_files_required: task
+            .closeout_requirements
+            .as_ref()
+            .map(|reqs| !reqs.changed_files.is_empty()),
+        closeout_changed_files_satisfied: Some(false),
+        closeout_validation_result_required: task
+            .closeout_requirements
+            .as_ref()
+            .map(|reqs| !reqs.validation_result_substrings.is_empty()),
+        closeout_validation_result_satisfied: Some(false),
+    };
     EvalRunRow {
         model: model.to_string(),
         task_id: task.id.clone(),
@@ -161,5 +204,7 @@ pub(crate) fn skipped_row(
             stdout_truncated: false,
             stderr_truncated: false,
         }),
+        ux: Some(ux.clone()),
+        ux_metric_rows: flatten_ux_metric_rows(&ux),
     }
 }

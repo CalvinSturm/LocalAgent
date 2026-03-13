@@ -17,6 +17,11 @@ pub struct EvalConfig {
     pub provider: ProviderKind,
     pub base_url: String,
     pub api_key: Option<String>,
+    pub instructions_config: Option<PathBuf>,
+    pub instruction_model_profile: Option<String>,
+    pub instruction_task_profile: Option<String>,
+    pub resolved_instruction_task_profile_task_kind: Option<String>,
+    pub task_kind: Option<String>,
     pub models: Vec<String>,
     pub pack: EvalPack,
     pub out: Option<PathBuf>,
@@ -84,6 +89,12 @@ pub struct EvalResults {
     pub summary: EvalSummary,
     pub by_model: BTreeMap<String, ModelSummary>,
     pub runs: Vec<EvalRunRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ux_summary_metric_rows: Vec<EvalMetricRow>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ux_summary_metric_rows_by_model: BTreeMap<String, Vec<EvalMetricRow>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ux_summary_metric_rows_by_task_family: BTreeMap<String, Vec<EvalMetricRow>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics: Option<EvalMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,10 +103,52 @@ pub struct EvalResults {
     pub regression: Option<crate::eval::baseline::RegressionResult>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalTaskFamily {
+    ReadOnlyAnalysis,
+    SingleFileFix,
+    EditWithValidation,
+    MultiFileChange,
+    TestWork,
+    Recovery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalFailureStage {
+    Investigation,
+    Edit,
+    Validation,
+    Closeout,
+    ToolProtocol,
+    Runtime,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalMetricDirection {
+    HigherIsBetter,
+    LowerIsBetter,
+    Target,
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalResultsConfig {
     pub provider: String,
     pub base_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions_config_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_model_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_task_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_task_profile_task_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_kind: Option<String>,
     pub models: Vec<String>,
     pub pack: String,
     pub runs_per_task: usize,
@@ -166,6 +219,11 @@ impl EvalResultsConfig {
         Self {
             provider: "ollama".to_string(),
             base_url: "http://localhost:11434".to_string(),
+            instructions_config_path: None,
+            instruction_model_profile: None,
+            instruction_task_profile: None,
+            instruction_task_profile_task_kind: None,
+            task_kind: None,
             models: vec!["m".to_string()],
             pack: "all".to_string(),
             runs_per_task: 1,
@@ -291,6 +349,10 @@ pub struct EvalRunRow {
     pub estimated_cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verifier: Option<EvalVerifierResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ux: Option<EvalUxRunMetrics>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ux_metric_rows: Vec<EvalMetricRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,6 +378,173 @@ pub struct EvalRunMetrics {
     pub tool_failures_by_class: BTreeMap<String, u32>,
     #[serde(default)]
     pub step_invariant_violations: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvalUxRunMetrics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_family: Option<EvalTaskFamily>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_stage: Option<EvalFailureStage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_attempted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_passed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_closeout_required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_closeout_passed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closeout_changed_files_required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closeout_changed_files_satisfied: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closeout_validation_result_required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closeout_validation_result_satisfied: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalMetricRow {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_num: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    pub direction: EvalMetricDirection,
+    #[serde(default)]
+    pub is_primary: bool,
+}
+
+pub fn flatten_ux_metric_rows(ux: &EvalUxRunMetrics) -> Vec<EvalMetricRow> {
+    let mut rows = Vec::new();
+
+    if let Some(task_family) = &ux.task_family {
+        rows.push(EvalMetricRow {
+            key: "ux.task_family".to_string(),
+            group_name: "ux".to_string(),
+            value_num: None,
+            value_text: Some(
+                match task_family {
+                    EvalTaskFamily::ReadOnlyAnalysis => "read_only_analysis",
+                    EvalTaskFamily::SingleFileFix => "single_file_fix",
+                    EvalTaskFamily::EditWithValidation => "edit_with_validation",
+                    EvalTaskFamily::MultiFileChange => "multi_file_change",
+                    EvalTaskFamily::TestWork => "test_work",
+                    EvalTaskFamily::Recovery => "recovery",
+                }
+                .to_string(),
+            ),
+            unit: None,
+            direction: EvalMetricDirection::None,
+            is_primary: false,
+        });
+    }
+
+    if let Some(failure_stage) = &ux.failure_stage {
+        rows.push(EvalMetricRow {
+            key: "ux.failure_stage".to_string(),
+            group_name: "ux".to_string(),
+            value_num: None,
+            value_text: Some(
+                match failure_stage {
+                    EvalFailureStage::Investigation => "investigation",
+                    EvalFailureStage::Edit => "edit",
+                    EvalFailureStage::Validation => "validation",
+                    EvalFailureStage::Closeout => "closeout",
+                    EvalFailureStage::ToolProtocol => "tool_protocol",
+                    EvalFailureStage::Runtime => "runtime",
+                    EvalFailureStage::Unknown => "unknown",
+                }
+                .to_string(),
+            ),
+            unit: None,
+            direction: EvalMetricDirection::None,
+            is_primary: false,
+        });
+    }
+
+    fn push_bool_row(
+        rows: &mut Vec<EvalMetricRow>,
+        key: &str,
+        value: Option<bool>,
+        direction: EvalMetricDirection,
+    ) {
+        if let Some(value) = value {
+            rows.push(EvalMetricRow {
+                key: key.to_string(),
+                group_name: "ux".to_string(),
+                value_num: Some(if value { 1.0 } else { 0.0 }),
+                value_text: None,
+                unit: None,
+                direction,
+                is_primary: false,
+            });
+        }
+    }
+
+    push_bool_row(
+        &mut rows,
+        "ux.validation_required",
+        ux.validation_required,
+        EvalMetricDirection::None,
+    );
+    push_bool_row(
+        &mut rows,
+        "ux.validation_attempted",
+        ux.validation_attempted,
+        EvalMetricDirection::HigherIsBetter,
+    );
+    push_bool_row(
+        &mut rows,
+        "ux.validation_passed",
+        ux.validation_passed,
+        EvalMetricDirection::HigherIsBetter,
+    );
+    push_bool_row(
+        &mut rows,
+        "ux.exact_closeout_required",
+        ux.exact_closeout_required,
+        EvalMetricDirection::None,
+    );
+    push_bool_row(
+        &mut rows,
+        "ux.exact_closeout_passed",
+        ux.exact_closeout_passed,
+        EvalMetricDirection::HigherIsBetter,
+    );
+    push_bool_row(
+        &mut rows,
+        "ux.closeout_changed_files_required",
+        ux.closeout_changed_files_required,
+        EvalMetricDirection::None,
+    );
+    push_bool_row(
+        &mut rows,
+        "ux.closeout_changed_files_satisfied",
+        ux.closeout_changed_files_satisfied,
+        EvalMetricDirection::HigherIsBetter,
+    );
+    push_bool_row(
+        &mut rows,
+        "ux.closeout_validation_result_required",
+        ux.closeout_validation_result_required,
+        EvalMetricDirection::None,
+    );
+    push_bool_row(
+        &mut rows,
+        "ux.closeout_validation_result_satisfied",
+        ux.closeout_validation_result_satisfied,
+        EvalMetricDirection::HigherIsBetter,
+    );
+
+    rows
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

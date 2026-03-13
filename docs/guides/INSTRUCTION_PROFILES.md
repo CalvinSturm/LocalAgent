@@ -2,7 +2,7 @@
 
 Status: Active  
 Owner: LocalAgent maintainers  
-Last reviewed: 2026-02-27
+Last reviewed: 2026-03-13
 
 LocalAgent supports per-model and per-task prompt tuning through an `instructions.yaml` file.
 
@@ -55,10 +55,19 @@ model_profiles:
 task_profiles:
   - name: coding
     selector: "coding"
+    task_kind: "coding"
     messages:
       - role: developer
         content: "Coding-specific output and verification rules."
 ```
+
+Optional task-profile metadata:
+
+- `task_kind`: explicit canonical runtime task kind to use when this task profile is selected
+
+Use `task_kind` when the profile name is descriptive or versioned, but runtime semantics should still resolve to a canonical kind such as `coding`, `analysis`, `planning`, or `validation`.
+
+As of the 2026-03 PR2 slice, LocalAgent records both the selected task-profile name and the resolved canonical task kind separately in run and eval artifacts. This keeps operator-facing naming and runtime semantics explicit instead of coupling them implicitly.
 
 ## Selectors (How Matching Works)
 
@@ -115,11 +124,15 @@ model_profiles:
 
 Task profiles help when one model is fine in general but weak on a specific workflow.
 
+If you use descriptive or versioned task-profile names such as `coding_orchestrator_v1`, add an explicit `task_kind` mapping so runtime semantics do not depend on the human-facing profile name.
+
 Examples:
 
 - `coding`: require minimal diffs and verification
 - `summarize`: enforce evidence-first summaries
 - `browser`: require browser MCP usage and unsafe-page prompt resistance
+- `coding_closeout_quality_v1`: keep the final answer concise while explicitly mentioning the changed file and validation result when the task requires those closeout details
+- `coding_validation_and_closeout_v1`: combine validation-phase discipline with concise closeout requirements for authored coding tasks
 
 ## How To Use Profiles at Runtime
 

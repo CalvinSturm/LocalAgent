@@ -101,6 +101,16 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
         config: EvalResultsConfig {
             provider: provider_to_string(config.provider),
             base_url: config.base_url.clone(),
+            instructions_config_path: config
+                .instructions_config
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            instruction_model_profile: config.instruction_model_profile.clone(),
+            instruction_task_profile: config.instruction_task_profile.clone(),
+            instruction_task_profile_task_kind: config
+                .resolved_instruction_task_profile_task_kind
+                .clone(),
+            task_kind: config.task_kind.clone(),
             models: config.models.clone(),
             pack: format!("{:?}", config.pack).to_lowercase(),
             runs_per_task: config.runs_per_task,
@@ -169,6 +179,9 @@ pub async fn run_eval(config: EvalConfig, cwd: &Path) -> anyhow::Result<PathBuf>
         summary: EvalSummary::default(),
         by_model: BTreeMap::new(),
         runs: Vec::new(),
+        ux_summary_metric_rows: Vec::new(),
+        ux_summary_metric_rows_by_model: BTreeMap::new(),
+        ux_summary_metric_rows_by_task_family: BTreeMap::new(),
         metrics: None,
         baseline: None,
         regression: None,
@@ -407,6 +420,8 @@ mod tests {
                         stdout_truncated: false,
                         stderr_truncated: false,
                     }),
+                    ux: None,
+                    ux_metric_rows: vec![],
                 },
                 EvalRunRow {
                     model: "m".to_string(),
@@ -434,8 +449,13 @@ mod tests {
                         stdout_truncated: false,
                         stderr_truncated: false,
                     }),
+                    ux: None,
+                    ux_metric_rows: vec![],
                 },
             ],
+            ux_summary_metric_rows: vec![],
+            ux_summary_metric_rows_by_model: BTreeMap::new(),
+            ux_summary_metric_rows_by_task_family: BTreeMap::new(),
             metrics: None,
             baseline: None,
             regression: None,
@@ -505,7 +525,12 @@ mod tests {
                 tokens: None,
                 estimated_cost_usd: None,
                 verifier: None,
+                ux: None,
+                ux_metric_rows: vec![],
             }],
+            ux_summary_metric_rows: vec![],
+            ux_summary_metric_rows_by_model: BTreeMap::new(),
+            ux_summary_metric_rows_by_task_family: BTreeMap::new(),
             metrics: None,
             baseline: None,
             regression: None,
@@ -520,6 +545,7 @@ mod tests {
     fn skip_logic_requires_write_and_shell_flags() {
         let task = EvalTask {
             id: "T".to_string(),
+            task_family: None,
             prompt: String::new(),
             required_tools: vec![],
             assertions: vec![],
@@ -536,11 +562,17 @@ mod tests {
             },
             verifier: None,
             exact_final_answer: None,
+            closeout_requirements: None,
         };
         let cfg = EvalConfig {
             provider: ProviderKind::Ollama,
             base_url: "http://localhost:11434".to_string(),
             api_key: None,
+            instructions_config: None,
+            instruction_model_profile: None,
+            instruction_task_profile: None,
+            resolved_instruction_task_profile_task_kind: None,
+            task_kind: None,
             models: vec!["m".to_string()],
             pack: crate::eval::tasks::EvalPack::Coding,
             out: None,
@@ -607,6 +639,7 @@ mod tests {
     fn skip_logic_requires_mcp_playwright() {
         let task = EvalTask {
             id: "B".to_string(),
+            task_family: None,
             prompt: String::new(),
             required_tools: vec![],
             assertions: vec![],
@@ -621,11 +654,17 @@ mod tests {
             },
             verifier: None,
             exact_final_answer: None,
+            closeout_requirements: None,
         };
         let cfg = EvalConfig {
             provider: ProviderKind::Ollama,
             base_url: "http://localhost:11434".to_string(),
             api_key: None,
+            instructions_config: None,
+            instruction_model_profile: None,
+            instruction_task_profile: None,
+            resolved_instruction_task_profile_task_kind: None,
+            task_kind: None,
             models: vec!["m".to_string()],
             pack: crate::eval::tasks::EvalPack::Browser,
             out: None,

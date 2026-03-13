@@ -15,8 +15,8 @@ use crate::eval::metrics::{
 };
 use crate::eval::tasks::{EvalTask, VerifierSpec};
 use crate::eval::types::{
-    EvalConfig, EvalProviderMetrics, EvalRunMetrics, EvalRunRow, EvalRunStats, EvalTokenMetrics,
-    EvalVerifierResult,
+    flatten_ux_metric_rows, EvalConfig, EvalFailureStage, EvalProviderMetrics, EvalRunMetrics,
+    EvalRunRow, EvalRunStats, EvalTokenMetrics, EvalUxRunMetrics, EvalVerifierResult,
 };
 use crate::events::{Event, EventSink};
 use crate::gate::{
@@ -24,6 +24,7 @@ use crate::gate::{
 };
 use crate::hooks::config::HooksMode;
 use crate::hooks::runner::{HookManager, HookRuntimeConfig};
+use crate::instructions::InstructionResolution;
 use crate::mcp::registry::McpRegistry;
 use crate::providers::http::HttpConfig;
 use crate::providers::mock::MockProvider;
@@ -110,6 +111,48 @@ fn verifier_command_string(spec: &VerifierSpec) -> String {
     let mut parts = vec![spec.command.clone()];
     parts.extend(spec.args.clone());
     parts.join(" ")
+}
+
+fn derive_failure_stage(
+    task: &EvalTask,
+    passed: bool,
+    verifier: &EvalVerifierResult,
+    failures: &[String],
+) -> Option<EvalFailureStage> {
+    if passed {
+        return None;
+    }
+    if verifier.ran && !verifier.ok {
+        return Some(EvalFailureStage::Validation);
+    }
+    if task
+        .exact_final_answer
+        .as_ref()
+        .is_some_and(|required| failures.iter().any(|f| f.contains(required)))
+    {
+        return Some(EvalFailureStage::Closeout);
+    }
+    if task.closeout_requirements.is_some()
+        && failures.iter().any(|f| f.contains("output_contains"))
+    {
+        return Some(EvalFailureStage::Closeout);
+    }
+    if failures.iter().any(|f| f.contains("tool_")) {
+        return Some(EvalFailureStage::ToolProtocol);
+    }
+    if failures
+        .iter()
+        .any(|f| f.contains("file_contains") || f.contains("file_exists"))
+    {
+        return Some(EvalFailureStage::Edit);
+    }
+    Some(EvalFailureStage::Unknown)
+}
+
+fn closeout_mentions_all(final_output: &str, required_substrings: &[String]) -> bool {
+    required_substrings
+        .iter()
+        .all(|required| final_output.contains(required))
 }
 
 struct GateBuild {
@@ -244,6 +287,37 @@ fn make_provider(
     }
 }
 
+fn resolve_eval_instruction_messages(
+    config: &EvalConfig,
+    state_paths: &StatePaths,
+    model: &str,
+) -> anyhow::Result<InstructionResolution> {
+    let cfg_path = config
+        .instructions_config
+        .clone()
+        .unwrap_or_else(|| crate::instructions::default_config_path(&state_paths.state_dir));
+    if !cfg_path.exists() {
+        return Ok(InstructionResolution::empty());
+    }
+    let (cfg, hash_hex) = crate::instructions::load_config(&cfg_path)?;
+    let (messages, selected_model, selected_task, selected_task_kind) =
+        crate::instructions::resolve_messages(
+            &cfg,
+            model,
+            config.task_kind.as_deref(),
+            config.instruction_model_profile.as_deref(),
+            config.instruction_task_profile.as_deref(),
+        )?;
+    Ok(InstructionResolution {
+        config_path: Some(cfg_path),
+        config_hash_hex: Some(hash_hex),
+        selected_model_profile: selected_model,
+        selected_task_profile: selected_task,
+        selected_task_kind,
+        messages,
+    })
+}
+
 pub(crate) async fn run_single(
     config: &EvalConfig,
     state_paths: &StatePaths,
@@ -373,6 +447,7 @@ pub(crate) async fn run_single(
         config.api_key.clone(),
         task_http,
     )?;
+    let instruction_resolution = resolve_eval_instruction_messages(config, state_paths, model)?;
     let captured_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Event>::new()));
     let mut agent = Agent {
         provider,
@@ -457,13 +532,14 @@ pub(crate) async fn run_single(
         operator_queue_rx: None,
     };
     let session_messages = Vec::new();
-    let injected_messages = vec![Message {
+    let mut injected_messages = instruction_resolution.messages.clone();
+    injected_messages.push(Message {
         role: Role::System,
         content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
         tool_call_id: None,
         tool_name: None,
         tool_calls: None,
-    }];
+    });
     let outcome = agent
         .run(&prompt, session_messages, injected_messages)
         .await;
@@ -476,6 +552,39 @@ pub(crate) async fn run_single(
         failures.push(format!("verifier failed: {}", verifier.summary));
     }
     let passed = failures.is_empty() && matches!(outcome.exit_reason, AgentExitReason::Ok);
+    let exact_closeout_required = task.exact_final_answer.is_some();
+    let exact_closeout_passed = task
+        .exact_final_answer
+        .as_ref()
+        .is_none_or(|required| outcome.final_output == *required);
+    let closeout_changed_files_required = task
+        .closeout_requirements
+        .as_ref()
+        .map(|reqs| !reqs.changed_files.is_empty());
+    let closeout_changed_files_satisfied = task
+        .closeout_requirements
+        .as_ref()
+        .map(|reqs| closeout_mentions_all(&outcome.final_output, &reqs.changed_files));
+    let closeout_validation_result_required = task
+        .closeout_requirements
+        .as_ref()
+        .map(|reqs| !reqs.validation_result_substrings.is_empty());
+    let closeout_validation_result_satisfied = task.closeout_requirements.as_ref().map(|reqs| {
+        closeout_mentions_all(&outcome.final_output, &reqs.validation_result_substrings)
+    });
+    let ux = EvalUxRunMetrics {
+        task_family: task.task_family.clone(),
+        failure_stage: derive_failure_stage(task, passed, &verifier, &failures),
+        validation_required: Some(task.verifier.is_some()),
+        validation_attempted: Some(verifier.ran),
+        validation_passed: Some(verifier.ran && verifier.ok),
+        exact_closeout_required: Some(exact_closeout_required),
+        exact_closeout_passed: Some(exact_closeout_passed),
+        closeout_changed_files_required,
+        closeout_changed_files_satisfied,
+        closeout_validation_result_required,
+        closeout_validation_result_satisfied,
+    };
     let steps = outcome
         .messages
         .iter()
@@ -537,9 +646,12 @@ pub(crate) async fn run_single(
             includes_resolved,
             mcp_allowlist,
         },
+        &instruction_resolution,
         tool_schema_hash_hex_map,
         hooks_config_hash_hex,
     )?;
+
+    let ux_metric_rows = flatten_ux_metric_rows(&ux);
 
     Ok(EvalRunRow {
         model: model.to_string(),
@@ -562,5 +674,7 @@ pub(crate) async fn run_single(
         tokens,
         estimated_cost_usd,
         verifier: Some(verifier),
+        ux: Some(ux),
+        ux_metric_rows,
     })
 }
