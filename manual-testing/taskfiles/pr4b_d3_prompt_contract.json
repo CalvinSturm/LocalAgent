@@ -1,0 +1,27 @@
+{
+  "schema_version": "openagent.taskfile.v1",
+  "name": "pr4b-d3-prompt-contract",
+  "defaults": {
+    "mode": "single",
+    "task_kind": "coding",
+    "flags": {
+      "enable_write_tools": true,
+      "allow_write": true,
+      "allow_shell": true,
+      "stream": false
+    }
+  },
+  "workdir": {
+    "mode": "shared",
+    "path": "manual-testing/D-tests/D3",
+    "per_node_dirname": "{id}"
+  },
+  "nodes": [
+    {
+      "id": "D3",
+      "depends_on": [],
+      "prompt": "Fix the parser so that both of these cases succeed:\n\n- parse_count(\"7\") returns 7\n- parse_count(\" 7 \\n\") returns 7\n\nDo not make unrelated edits.\nBefore finishing, run `cargo test` successfully.\n\nYour final answer must be exactly:\n\nverified=yes\ncommand=cargo test\nresult=passed\n",
+      "settings": {}
+    }
+  ]
+}

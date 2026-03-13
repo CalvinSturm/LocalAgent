@@ -197,6 +197,16 @@ Post-vNext guidance says not to reopen shared runtime semantics without a proven
 * do not stack more `coding_closeout_quality_v*` variants right now
 * the next defensible workstream is qwen/basic write-reliability, not more closeout phrasing
 
+**Next workstream decision**
+
+* the next formal workstream is `PR4b`, not `PR4a`
+* reason:
+  * the current benchmark evidence does not primarily show file-targeting or repo-navigation weakness
+  * the strongest remaining UX issues are still around explicit coding-task contracts, validation expectations, and closeout/verification authoring
+  * `PR4b` is the next lower-risk, more explicit surface for improving those outcomes
+* `PR4a` remains gated:
+  * do not start bounded structural grounding until the benchmark shows file-targeting or repo-context weakness as the repeated LocalAgent-side blocker after `PR4b`
+
 ---
 
 ## PR4a — Small context-shaping PR: bounded structural grounding
@@ -271,6 +281,28 @@ The heuristic reconciliation closeout explicitly calls out manual-pack/task meta
 
 * prefer explicit authored metadata over new prompt heuristics
 * do not broaden shared runtime semantics unless the authored-surface landing proves a real gap
+
+**Current landed slice**
+
+* taskfiles now support authored `task_kind`, `validation_command`, and `exact_final_answer`
+* those fields can be set in both taskfile `defaults` and per-node `settings`
+* task-graph runs now apply those values onto the same explicit runtime contract surfaces used by equivalent CLI overrides
+* task-graph artifacts now expose authored node settings so operators can inspect the effective contract inputs
+* scaffolded taskfile examples and CLI docs now describe the authored contract surface
+* targeted task-graph/runtime tests now verify:
+  * node-authored values beat prompt inference
+  * taskfile defaults apply when a node does not override them
+
+**Closeout read**
+
+* the first PR4b slice is landed and verified through the task-graph path
+* PR4b has now also been exercised in one real coding-task workflow on the `D3` parser fixture using both:
+  * a prompt-inference taskfile
+  * an authored-contract taskfile
+* observed read from that workflow:
+  * qwen improved from an immediate no-tool-call failure to later task progression under the authored contract
+  * omnicoder did not improve because both variants failed earlier on the same denied `grep` choice
+* do not switch to PR4a or planner/routing work until the next workstream decision explicitly accounts for that mixed but real PR4b result
 
 ---
 

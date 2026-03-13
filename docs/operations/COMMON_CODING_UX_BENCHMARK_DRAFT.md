@@ -70,6 +70,7 @@ Interpretation:
 - `common_coding_ux` now accepts `edit` as a valid existing-file edit path alongside `apply_patch` and `str_replace`; earlier task assertions were too narrow for the repo's own preferred edit workflow
 - current omnicoder instruction-profile tuning should be interpreted as PR1 benchmark evidence work, not as the formal start of PR3
 - current `validation_passed` UX reporting is verifier-oriented; it does not always distinguish "the verifier command would pass" from "the model itself correctly emitted the required validation tool call"
+- taskfile-authored contract metadata is now landed for `task_kind`, `validation_command`, and `exact_final_answer`, but it has only been verified through targeted task-graph/runtime tests so far, not yet through a benchmarked coding-task comparison
 
 ## Task Families
 
@@ -84,6 +85,7 @@ Candidate tasks:
   - success: cites the correct files/symbols and does not use write tools
   - UX focus: file targeting, evidence use, concise code-grounded answer
 - [ ] `U2` bug-location analysis without editing
+- [x] `U2` bug-location analysis without editing
   - prompt shape: inspect failing area and identify the likely bug location only
   - success: points to the correct file/function and avoids speculative edits
   - UX focus: investigation quality, read-only discipline
@@ -99,6 +101,7 @@ Candidate tasks:
   - success: correct edit, no unnecessary file churn
   - UX focus: fast correct targeting, minimal edit path
 - [ ] `U4` inspect-before-edit typo/string fix
+- [x] `U4` inspect-before-edit typo/string fix
   - prompt shape: locate the source of a visible defect before editing
   - success: read-before-write, correct file only, exact closeout
   - UX focus: disciplined inspection, avoiding blind edits
@@ -221,7 +224,43 @@ Do not add weighted composite scoring in PR1.
 ## Immediate Next Step
 
 Recommended next action:
-- keep `U12` and the new closeout metrics as measurement infrastructure, then move to the next focused experiment loop on qwen/basic write reliability
+- use the landed PR4b authored-contract surface in one real coding-task run or benchmark case so the benchmark can measure whether explicit taskfile contracts improve reliability beyond prompt inference alone
+
+## PR4b Status Note
+
+Completed PR4b slice:
+- taskfiles now support authored `task_kind`, `validation_command`, and `exact_final_answer`
+- those fields now flow through the explicit runtime contract path used by `tasks run`
+- task-graph artifacts now expose authored node settings for operator inspection
+
+Verification status:
+- targeted task-graph/runtime tests now prove that:
+  - node-authored contract values beat prompt inference
+  - taskfile defaults apply when a node does not override them
+
+Current read:
+- PR4b is landed at the schema + apply + verification layer
+- the next benchmark-facing step is to exercise authored task contracts in one real coding-task workflow before expanding the authored metadata surface further
+
+Benchmark workflow status:
+- completed: `manual-testing/taskfiles/pr4b_d3_prompt_contract.json`
+- completed: `manual-testing/taskfiles/pr4b_d3_authored_contract.json`
+- fixture: `manual-testing/D-tests/D3`
+
+Observed result from the first real PR4b taskfile workflow:
+- `qwen2.5-coder-7b-instruct@q8_0`
+  - prompt-contract baseline: failed at the earliest boundary with no tool calls and `implementation guard: file-edit task finalized without any tool calls`
+  - authored-contract variant: progressed farther, made real repo reads, and then failed later with `implementation guard: file-edit task finalized without an effective write`
+  - read: explicit authored contracts improved task progression but did not yet produce a successful repair
+- `omnicoder-9b@q8_0`
+  - prompt-contract baseline: denied on an initial `grep` tool call
+  - authored-contract variant: denied on the same initial `grep` tool call
+  - read: explicit authored contracts did not improve this workflow because the model failed earlier on the same disallowed tool choice
+
+Decision:
+- PR4b is now exercised in one real coding-task workflow, not only unit tests
+- explicit authored contracts can improve practical task progression for at least one local model even when the task still fails overall
+- the next workstream choice should use this result rather than assuming authored metadata is only a paper improvement
 
 ## PR3 Result Note
 
