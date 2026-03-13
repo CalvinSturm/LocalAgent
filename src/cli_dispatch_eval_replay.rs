@@ -785,6 +785,84 @@ mod tests {
         }));
     }
 
+    #[tokio::test]
+    async fn replay_resume_operator_checkpoint_runs_to_completion() {
+        let tmp = tempdir().expect("tempdir");
+        let workdir = tmp.path().join("workdir");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let paths = crate::store::resolve_state_paths(&workdir, None, None, None, None);
+        let checkpoint = interrupted_checkpoint_record();
+        let mut run_args = load_resume_run_args(&checkpoint).expect("resume args");
+        run_args.workdir = workdir.clone();
+        run_args.approval_mode = crate::gate::ApprovalMode::Auto;
+        run_args.unsafe_mode = true;
+        let provider = ResumeScriptedProvider::default();
+
+        let result = resume_from_runtime_checkpoint_with_provider(
+            &checkpoint,
+            &paths,
+            provider.clone(),
+            ProviderKind::Mock,
+            "mock://resume",
+            "resume-model",
+            run_args,
+        )
+        .await
+        .expect("resume succeeds");
+
+        assert!(matches!(result.outcome.exit_reason, AgentExitReason::Ok));
+        assert_eq!(result.outcome.final_output, "resumed ok");
+        assert!(result.runtime_checkpoint_path.is_none());
+
+        let seen = provider.seen.lock().expect("seen lock");
+        assert!(seen.iter().any(|messages| {
+            messages.iter().any(|message| {
+                message.role == Role::Developer
+                    && message
+                        .content
+                        .as_deref()
+                        .is_some_and(|content| content.contains("RUNTIME CHECKPOINT RESUME HANDOFF"))
+            })
+        }));
+
+        let resumed_checkpoint =
+            crate::store::load_runtime_checkpoint_record(&paths, "checkpoint-run-2")
+                .expect("resumed checkpoint persisted");
+        assert_eq!(
+            resumed_checkpoint.runtime_state_checkpoint.phase,
+            crate::agent_runtime::state::RunPhase::Executing
+        );
+        assert!(resumed_checkpoint.checkpoint.is_none());
+        assert!(resumed_checkpoint.pending_tool_call.is_none());
+        assert!(resumed_checkpoint.interrupt_history.iter().all(|entry| entry
+            .resolved_at
+            .as_deref()
+            .is_some()));
+        assert!(resumed_checkpoint.phase_summary.iter().any(|entry| {
+            entry.phase == crate::agent_runtime::state::RunPhase::Executing
+                && entry.exited_at.is_none()
+        }));
+        assert!(resumed_checkpoint.completion_decisions.iter().any(|decision| {
+            decision.kind == "resume" && decision.allowed
+        }));
+
+        let run_record =
+            crate::store::load_run_record(&paths.state_dir, &result.outcome.run_id).expect("run record");
+        assert!(run_record.phase_summary.iter().any(|entry| {
+            entry.phase == crate::agent_runtime::state::RunPhase::WaitingForOperatorInput
+        }));
+        assert!(run_record.phase_summary.iter().any(|entry| {
+            entry.phase == crate::agent_runtime::state::RunPhase::Done
+        }));
+        assert!(run_record.interrupt_history.iter().any(|entry| {
+            entry.kind == crate::agent_runtime::state::InterruptKindV1::OperatorInterrupt
+                && entry.resolved_at.is_some()
+        }));
+        assert!(run_record.completion_decisions.iter().any(|decision| {
+            decision.kind == "resume" && decision.allowed
+        }));
+    }
+
     #[test]
     fn interrupted_checkpoint_resume_metadata_is_supported() {
         let checkpoint = interrupted_checkpoint_record();

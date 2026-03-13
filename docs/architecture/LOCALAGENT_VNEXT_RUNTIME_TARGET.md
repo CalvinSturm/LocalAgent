@@ -2,7 +2,7 @@
 
 ## Progress Status
 
-Status as of current worktree after the behavior-repair and checkpoint-authoritative runtime slices:
+Status as of the current worktree after the behavior-repair, checkpoint-authoritative runtime, runtime artifact/checkpoint hardening, and runtime clippy follow-up slices:
 
 - `TaskContractV1` exists and is resolved at launch time
 - contract provenance is persisted in run artifacts
@@ -10,17 +10,26 @@ Status as of current worktree after the behavior-repair and checkpoint-authorita
 - approval and operator-interrupt boundaries have explicit runtime-owned transition events
 - validation and final-answer collection now have explicit runtime transition helpers
 - `RunCheckpointV1`, execution tier, interrupt history, phase summary, and completion decisions are persisted
-- `cargo test --quiet` is green again after repairing validation / exact-final-answer / post-write regressions
+- `cargo test --quiet` is green
 - validation / exact-final-answer / post-write behavior now runs on top of checkpoint-backed phase and retry state instead of parallel loop-local booleans
 - tool-protocol loop state is now carried in `RunCheckpointV1` instead of parallel loop-local counters/flags
 - resume restores richer checkpoint-backed runtime state and can resume back into validating / verifying-changes / collecting-final-answer paths
+- final runtime artifacts are validated for terminal consistency across approval, cancellation, and resume-to-terminal boundaries
+- cancelled runs do not emit resumable runtime checkpoints
+- replay coverage exists for both approval-boundary and operator-boundary resume-to-completion artifact preservation
 - `cargo clippy -- -D warnings` passes
 
-Still incomplete:
+V1 migration assessment:
 
-- the main loop is not yet fully decomposed into explicit per-phase handlers
-- some completion/transition logic still lives inline in `src/agent.rs` rather than entirely in checkpoint-driven phase helpers and `completion_policy.rs`
-- interrupt/checkpoint coverage is stronger, but the explicit phase loop is still only partially consolidated
+- the v1 runtime target is effectively achieved
+- some coordinator/orchestration logic still lives inline in `src/agent.rs`, but that is no longer treated as an active migration blocker
+- future runtime work should be driven by concrete regressions or clearly scoped new capabilities, not by continuing the migration by default
+
+Post-migration mode:
+
+- treat Phase 5 as closed unless a concrete regression appears
+- treat checkpoint/artifact consistency hardening as landed for the current known boundary set
+- prefer narrow evidence-backed runtime changes over more coordinator refactoring for its own sake
 
 ## Goal
 
@@ -116,7 +125,7 @@ Owns:
 - recent tool facts
 - completion gating state
 
-This is the main missing explicit state layer today.
+This was the main missing explicit state layer during the migration. For v1, it is now materially present through `RunCheckpointV1`, runtime phase state, retry state, interrupt history, and completion decisions.
 
 ### 3. Artifact / Evidence State
 
@@ -1390,11 +1399,12 @@ Current state:
 - approval resume is implemented
 - operator-interrupt live transition events now mirror approval more closely
 - resume is no longer boundary-only; checkpoint-backed validation / verification / final-answer state can be restored into the live loop
-- checkpoint state now owns materially more of the live control surface, even though the main loop is not yet fully phase-dispatched
+- checkpoint state now owns materially more of the live control surface
+- approval-boundary and operator-boundary replay coverage now both assert final artifact preservation after resume-to-completion
 
 ### Phase 4: Central Completion Policy
 
-Status: substantially complete, with some inline transition logic still remaining
+Status: effectively complete for v1, with some inline transition logic still remaining
 
 Goal:
 
@@ -1428,7 +1438,7 @@ Current state:
 
 ### Phase 5: Explicit Phase Loop
 
-Status: effectively complete for v1
+Status: complete enough to be treated as closed for v1
 
 Goal:
 
@@ -1449,7 +1459,7 @@ Current state:
 - `RunPhase` exists
 - approval, operator-interrupt, validation, and final-answer boundaries emit explicit phase transitions
 - artifacts/checkpoints persist phase-oriented state
-- the live loop now uses checkpoint-backed phase/retry/protocol state for more runtime decisions
+- the live loop now uses checkpoint-backed phase/retry/protocol state for runtime decisions
 - assistant tool-call normalization and planner-response evaluation now route through dedicated helper modules
 - the active runtime loop now explicitly dispatches `Executing`, `Validating`, `VerifyingChanges`, and `CollectingFinalAnswer`
 - the shared active-turn path is starting to split into smaller helpers for normalized-response handling and verified-write follow-on handling
@@ -1466,7 +1476,7 @@ Current state:
 - required-validation phase and post-response guard checkpoint mutation policy now route through a dedicated `response_guards` helper module
 - the remaining guard/post-tool decision-to-effects translation now routes through a dedicated `runtime_effects` helper module
 - the outer per-step runtime loop now routes through a dedicated coordinator helper, leaving `run_with_checkpoint` closer to setup -> iterate -> finalize
-- the Phase 5 coordinator/phase-loop target is now effectively satisfied for v1; remaining cleanup can defer to later phases unless a concrete regression appears
+- the Phase 5 coordinator/phase-loop target is satisfied for v1; remaining cleanup should defer unless a concrete regression appears
 
 ### Phase 6: Execution Tier Integration
 
@@ -1516,17 +1526,34 @@ The vNext runtime target is achieved when:
 - artifacts show contract, tier, interrupts, and completion decisions
 - `src/agent.rs` becomes materially smaller and more coordinator-like
 
+Current assessment:
+
+- these v1 success criteria are effectively met in the current codebase
+- the target doc should now be read as the architectural baseline and guardrail for future runtime work, not as an instruction to keep refactoring by default
+
+## Post-Migration Guidance
+
+The runtime target should now be treated as the achieved v1 baseline plus future guardrails.
+
+That means:
+
+- do not continue structural runtime migration work by default
+- use this document to evaluate future runtime changes against the achieved architecture
+- prefer new work only when backed by a failing regression, a reproduced artifact, or a clearly requested new capability
+- keep follow-on runtime slices narrow, reviewable, and evidence-backed
+- preserve `cargo test --quiet` and `cargo clippy -- -D warnings` green status after each future runtime change
+
 ## Immediate Next Work
 
-Phase 5 should not be extended by default.
+The migration itself should not be treated as open-ended work anymore.
 
 Recommended next work:
 
-1. Treat explicit phase-loop consolidation as effectively closed unless a concrete runtime regression or clarity issue appears.
-2. Move to the next runtime priorities that build on the checkpoint-backed phase model instead of reopening coordinator-shape cleanup.
-3. Keep `cargo test --quiet` green and use targeted regressions if a future change touches the runtime loop again.
+1. Treat explicit phase-loop consolidation as closed unless a concrete runtime regression or clarity issue appears.
+2. Use future runtime work only for targeted bug repair, targeted invariant hardening, or clearly scoped new capabilities.
+3. Keep `cargo test --quiet` and `cargo clippy -- -D warnings` green and use targeted regressions if a future change touches the runtime loop again.
 
-## Recommended First PR Sequence
+## Historical Initial PR Sequence
 
 1. Add `TaskContractV1` and persist it in artifacts.
 2. Add `ToolFactV1` and generate facts alongside current logic.
@@ -1534,4 +1561,4 @@ Recommended next work:
 4. Add `completion_policy.rs` and switch one guard family at a time.
 5. Introduce explicit `RunPhase` after parity is established.
 
-This sequence minimizes semantic risk while steadily moving the runtime toward the target architecture.
+This sequence was the migration path that minimized semantic risk while moving the runtime toward the target architecture. It is retained here as historical context, not as the current work queue.
