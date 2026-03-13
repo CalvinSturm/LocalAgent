@@ -50,7 +50,7 @@ pub(crate) fn interrupt_history_for_outcome(outcome: &AgentOutcome) -> Vec<Inter
         crate::agent::AgentExitReason::Cancelled => vec![InterruptHistoryEntryV1 {
             kind: InterruptKindV1::OperatorInterrupt,
             created_at: outcome.finished_at.clone(),
-            resolved_at: None,
+            resolved_at: Some(outcome.finished_at.clone()),
             approval_id: None,
             tool_call_id: None,
             reason: outcome.error.clone(),
@@ -95,6 +95,8 @@ pub(crate) fn transition_runtime_checkpoint_to_executing(
 
     updated.runtime_state_checkpoint.phase = resumed_phase.clone();
     updated.runtime_state_checkpoint.terminal_boundary = false;
+    updated.runtime_state_checkpoint.approval_state.approval_id = None;
+    updated.runtime_state_checkpoint.approval_state.tool_call_id = None;
     updated.runtime_state_checkpoint.approval_state.awaiting_approval = false;
     updated.runtime_state_checkpoint.step_index = updated
         .runtime_state_checkpoint

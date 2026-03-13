@@ -14,16 +14,22 @@ This handoff is a status snapshot of what has already landed in code, what remai
 
 Current verified baseline:
 
-- `cargo clippy -- -D warnings` passes
 - `cargo test --quiet` passes
 - behavior-repair work for validation / exact-final-answer / post-write paths is complete
 - runtime phase/checkpoint work was preserved and repaired on top of, not reverted
+- a narrow runtime artifact/checkpoint consistency hardening slice is currently in progress in the worktree
+
+Current non-baseline note:
+
+- `cargo clippy -- -D warnings` is not currently green; present failures are preexisting lint findings in runtime coordinator files outside the current hardening slice
 
 Recent runtime-target commits relevant to this line of work:
 
 - `c5a4f87` `Update runtime target progress status`
 - `29a5797` `Advance checkpoint-backed runtime phases`
 - `293ffa1` `Advance checkpoint-backed phase loop and resume state`
+- `376e31b` `Close out phase 5 runtime coordination`
+- `c59dbc2` `Validate terminal runtime checkpoints`
 
 ## Plan Summary
 
@@ -187,6 +193,8 @@ What is true now:
 - resume is checkpoint-backed rather than boundary-only
 - the main runtime loop is materially cleaner than before and now explicitly dispatches active runtime phases, but it is still not fully phase-dispatched end to end
 - terminal runtime checkpoints are now validated before final artifact writing so `Done` cannot be serialized with unsatisfied required validation evidence
+- the current in-progress slice extends that hardening to final artifact consistency across approval, cancellation, and resume-to-terminal boundaries
+- the relevant runtime artifact-writing paths now route through the same final-artifact consistency validator
 
 Most relevant files for the next person picking this up:
 
@@ -206,8 +214,19 @@ Recommended order:
 
 1. Treat Phase 5 as effectively closed unless a concrete runtime-loop regression appears.
 2. If future runtime work touches the loop again, use targeted regressions plus `cargo test --quiet` and avoid reopening broad coordinator refactors without evidence.
-3. Shift attention to later runtime priorities that build on the checkpoint-backed phase model rather than more structural cleanup for its own sake.
-4. Prefer narrow invariant hardening like terminal-checkpoint/runtime-artifact consistency checks over more coordinator reshaping.
+3. Finish the current narrow invariant hardening slice for runtime artifact/checkpoint consistency, then stop unless a concrete regression remains.
+4. After that, shift attention to later runtime priorities that build on the checkpoint-backed phase model rather than more structural cleanup for its own sake.
+5. Prefer narrow invariant hardening like terminal-checkpoint/runtime-artifact consistency checks over more coordinator reshaping.
+
+Current hardening-slice checklist:
+
+- terminal runtime checkpoint validation is already landed
+- final artifact consistency validation across finalize/planner artifact writers is now wired
+- prior interrupt history / phase summary / completion-decision history is preserved across resume-to-terminal finalization
+- cancelled runs no longer keep resumable runtime checkpoints
+- cancelled resume attempts are explicitly rejected by replay/resume tests
+- `cargo test --quiet` is green after reconciliation
+- the slice is ready to commit unless a new concrete regression appears
 
 ## Suggested Handoff Rules
 

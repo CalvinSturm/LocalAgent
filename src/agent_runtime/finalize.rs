@@ -408,6 +408,8 @@ pub(super) fn finalize_run_artifacts(
         },
     )?;
     *input.event_sink = None;
+    let prior_runtime_checkpoint =
+        store::load_runtime_checkpoint_record(input.paths, &input.outcome.run_id).ok();
     let run_checkpoint = super::checkpoint::checkpoint_for_outcome(input.outcome);
     let tool_facts =
         crate::agent::tool_facts_from_transcript(input.prompt, &input.outcome.tool_calls, &input.outcome.messages);
@@ -426,10 +428,28 @@ pub(super) fn finalize_run_artifacts(
         &tool_fact_envelopes,
     );
     super::checkpoint::validate_terminal_runtime_state_checkpoint(input.outcome, &final_checkpoint)?;
-    let interrupt_history = crate::agent::interrupts::interrupt_history_for_outcome(input.outcome);
-    let phase_summary = super::checkpoint::phase_summary_for_outcome(input.outcome);
-    let completion_decisions =
-        super::checkpoint::completion_decisions_for_outcome(input.outcome, &final_checkpoint);
+    let interrupt_history =
+        super::checkpoint::interrupt_history_for_outcome_with_prior(
+            input.outcome,
+            prior_runtime_checkpoint.as_ref(),
+        );
+    let phase_summary = super::checkpoint::phase_summary_for_outcome_with_prior(
+        input.outcome,
+        prior_runtime_checkpoint.as_ref(),
+    );
+    let completion_decisions = super::checkpoint::completion_decisions_for_outcome_with_prior(
+        input.outcome,
+        &final_checkpoint,
+        prior_runtime_checkpoint.as_ref(),
+    );
+    super::checkpoint::validate_final_run_artifact_consistency(
+        input.outcome,
+        run_checkpoint.as_ref(),
+        &final_checkpoint,
+        &interrupt_history,
+        &phase_summary,
+        &completion_decisions,
+    )?;
     let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
         paths: input.paths.clone(),
         cli_config,
@@ -470,6 +490,7 @@ pub(super) fn finalize_run_artifacts(
             input.execution_tier,
             &tool_facts,
             &final_checkpoint.last_tool_fact_envelopes,
+            prior_runtime_checkpoint.as_ref(),
         )
     {
         match store::write_runtime_checkpoint_record(input.paths, &record) {

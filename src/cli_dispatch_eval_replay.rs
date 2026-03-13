@@ -471,8 +471,21 @@ mod tests {
                 tool_name: None,
                 tool_calls: None,
             }],
-            interrupt_history: Vec::new(),
-            phase_summary: Vec::new(),
+            interrupt_history: vec![crate::agent_runtime::state::InterruptHistoryEntryV1 {
+                kind: crate::agent_runtime::state::InterruptKindV1::ApprovalRequired,
+                created_at: "2026-01-01T00:00:01Z".to_string(),
+                resolved_at: None,
+                approval_id: Some(approval_id.to_string()),
+                tool_call_id: Some("resume_tc_1".to_string()),
+                reason: Some("shell approval required".to_string()),
+            }],
+            phase_summary: vec![
+                crate::agent_runtime::state::PhaseSummaryEntryV1 {
+                    phase: crate::agent_runtime::state::RunPhase::WaitingForApproval,
+                    entered_at: "2026-01-01T00:00:01Z".to_string(),
+                    exited_at: None,
+                },
+            ],
             completion_decisions: Vec::new(),
             tool_facts: Vec::new(),
             tool_fact_envelopes: Vec::new(),
@@ -534,8 +547,19 @@ mod tests {
                 tool_name: None,
                 tool_calls: None,
             }],
-            interrupt_history: Vec::new(),
-            phase_summary: Vec::new(),
+            interrupt_history: vec![crate::agent_runtime::state::InterruptHistoryEntryV1 {
+                kind: crate::agent_runtime::state::InterruptKindV1::OperatorInterrupt,
+                created_at: "2026-01-01T00:00:01Z".to_string(),
+                resolved_at: None,
+                approval_id: None,
+                tool_call_id: None,
+                reason: Some("operator paused run".to_string()),
+            }],
+            phase_summary: vec![crate::agent_runtime::state::PhaseSummaryEntryV1 {
+                phase: crate::agent_runtime::state::RunPhase::WaitingForOperatorInput,
+                entered_at: "2026-01-01T00:00:01Z".to_string(),
+                exited_at: None,
+            }],
             completion_decisions: Vec::new(),
             tool_facts: Vec::new(),
             tool_fact_envelopes: Vec::new(),
@@ -572,6 +596,73 @@ mod tests {
             };
         checkpoint.boundary_output = Some("operator paused during validation".to_string());
         checkpoint
+    }
+
+    fn cancelled_checkpoint_record() -> RuntimeRunCheckpointRecordV1 {
+        RuntimeRunCheckpointRecordV1 {
+            schema_version: "openagent.runtime_checkpoint.v1".to_string(),
+            runtime_run_id: "checkpoint-run-cancelled".to_string(),
+            prompt: "continue the cancelled task".to_string(),
+            resume_argv: vec![
+                "localagent".to_string(),
+                "--provider".to_string(),
+                "mock".to_string(),
+                "--model".to_string(),
+                "resume-model".to_string(),
+                "--prompt".to_string(),
+                "continue the cancelled task".to_string(),
+                "--allow-shell".to_string(),
+                "--trust".to_string(),
+                "on".to_string(),
+            ],
+            checkpoint: None,
+            runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1 {
+                schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+                phase: crate::agent_runtime::state::RunPhase::Cancelled,
+                step_index: 1,
+                execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+                terminal_boundary: true,
+                retry_state: crate::agent_runtime::state::RetryState::default(),
+                tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
+                validation_state: crate::agent_runtime::state::ValidationState::default(),
+                approval_state: crate::agent_runtime::state::ApprovalState::default(),
+                active_plan_step_id: None,
+                last_tool_fact_envelopes: Vec::new(),
+            },
+            execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+            resume_session_messages: vec![Message {
+                role: Role::User,
+                content: Some("continue".to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+            interrupt_history: vec![crate::agent_runtime::state::InterruptHistoryEntryV1 {
+                kind: crate::agent_runtime::state::InterruptKindV1::OperatorInterrupt,
+                created_at: "2026-01-01T00:00:01Z".to_string(),
+                resolved_at: Some("2026-01-01T00:00:02Z".to_string()),
+                approval_id: None,
+                tool_call_id: None,
+                reason: Some("operator cancelled run".to_string()),
+            }],
+            phase_summary: vec![crate::agent_runtime::state::PhaseSummaryEntryV1 {
+                phase: crate::agent_runtime::state::RunPhase::Cancelled,
+                entered_at: "2026-01-01T00:00:02Z".to_string(),
+                exited_at: None,
+            }],
+            completion_decisions: vec![crate::agent_runtime::state::CompletionDecisionRecordV1 {
+                kind: "finalize".to_string(),
+                allowed: false,
+                retryable: false,
+                next_phase: Some(crate::agent_runtime::state::RunPhase::Cancelled),
+                reason: "run cancelled before completion".to_string(),
+                unmet_requirements: vec!["operator_interrupt".to_string()],
+            }],
+            tool_facts: Vec::new(),
+            tool_fact_envelopes: Vec::new(),
+            pending_tool_call: None,
+            boundary_output: Some("cancelled".to_string()),
+        }
     }
 
     #[tokio::test]
@@ -656,6 +747,16 @@ mod tests {
             crate::agent_runtime::state::RunPhase::Executing
         );
         assert!(!resumed_checkpoint.runtime_state_checkpoint.approval_state.awaiting_approval);
+        assert!(resumed_checkpoint
+            .runtime_state_checkpoint
+            .approval_state
+            .approval_id
+            .is_none());
+        assert!(resumed_checkpoint
+            .runtime_state_checkpoint
+            .approval_state
+            .tool_call_id
+            .is_none());
         assert!(resumed_checkpoint.checkpoint.is_none());
         assert!(resumed_checkpoint.pending_tool_call.is_none());
         assert!(resumed_checkpoint.interrupt_history.iter().all(|entry| entry
@@ -665,6 +766,22 @@ mod tests {
         assert!(resumed_checkpoint.phase_summary.iter().any(|entry| {
             entry.phase == crate::agent_runtime::state::RunPhase::Executing
                 && entry.exited_at.is_none()
+        }));
+
+        let run_record =
+            crate::store::load_run_record(&paths.state_dir, &result.outcome.run_id).expect("run record");
+        assert!(run_record.phase_summary.iter().any(|entry| {
+            entry.phase == crate::agent_runtime::state::RunPhase::WaitingForApproval
+        }));
+        assert!(run_record.phase_summary.iter().any(|entry| {
+            entry.phase == crate::agent_runtime::state::RunPhase::Done
+        }));
+        assert!(run_record.interrupt_history.iter().any(|entry| {
+            entry.kind == crate::agent_runtime::state::InterruptKindV1::ApprovalRequired
+                && entry.resolved_at.is_some()
+        }));
+        assert!(run_record.completion_decisions.iter().any(|decision| {
+            decision.kind == "resume" && decision.allowed
         }));
     }
 
@@ -725,6 +842,15 @@ mod tests {
             entry.phase == crate::agent_runtime::state::RunPhase::Validating
                 && entry.exited_at.is_none()
         }));
+    }
+
+    #[test]
+    fn cancelled_checkpoint_is_rejected_as_non_resumable() {
+        let checkpoint = cancelled_checkpoint_record();
+        let err = load_resume_run_args(&checkpoint).expect_err("cancelled checkpoint must not resume");
+        assert!(err
+            .to_string()
+            .contains("is not resumable: runtime phase is Cancelled"));
     }
 
     #[test]

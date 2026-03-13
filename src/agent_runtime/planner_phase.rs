@@ -295,6 +295,18 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     &outcome,
                     &final_checkpoint,
                 );
+                let run_checkpoint = super::checkpoint::checkpoint_for_outcome(&outcome);
+                let interrupt_history =
+                    crate::agent::interrupts::interrupt_history_for_outcome(&outcome);
+                let phase_summary = super::checkpoint::phase_summary_for_outcome(&outcome);
+                super::checkpoint::validate_final_run_artifact_consistency(
+                    &outcome,
+                    run_checkpoint.as_ref(),
+                    &final_checkpoint,
+                    &interrupt_history,
+                    &phase_summary,
+                    &completion_decisions,
+                )?;
                 let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
                     paths: input.paths.clone(),
                     cli_config,
@@ -316,11 +328,11 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     task_contract_provenance: input.task_contract_provenance.clone(),
                     tool_facts: Vec::new(),
                     tool_fact_envelopes: Vec::new(),
-                    run_checkpoint: super::checkpoint::checkpoint_for_outcome(&outcome),
+                    run_checkpoint,
                     final_checkpoint: Some(final_checkpoint.clone()),
                     execution_tier: input.execution_tier.clone(),
-                    interrupt_history: crate::agent::interrupts::interrupt_history_for_outcome(&outcome),
-                    phase_summary: super::checkpoint::phase_summary_for_outcome(&outcome),
+                    interrupt_history,
+                    phase_summary,
                     completion_decisions,
                     config_fingerprint: Some(config_fingerprint.clone()),
                     repro_record: None,
@@ -470,6 +482,17 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                 &outcome,
                 &final_checkpoint,
             );
+            let run_checkpoint = super::checkpoint::checkpoint_for_outcome(&outcome);
+            let interrupt_history = crate::agent::interrupts::interrupt_history_for_outcome(&outcome);
+            let phase_summary = super::checkpoint::phase_summary_for_outcome(&outcome);
+            super::checkpoint::validate_final_run_artifact_consistency(
+                &outcome,
+                run_checkpoint.as_ref(),
+                &final_checkpoint,
+                &interrupt_history,
+                &phase_summary,
+                &completion_decisions,
+            )?;
             let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
                 paths: input.paths.clone(),
                 cli_config,
@@ -491,11 +514,11 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                 task_contract_provenance: input.task_contract_provenance.clone(),
                 tool_facts: Vec::new(),
                 tool_fact_envelopes: Vec::new(),
-                run_checkpoint: super::checkpoint::checkpoint_for_outcome(&outcome),
+                run_checkpoint,
                 final_checkpoint: Some(final_checkpoint.clone()),
                 execution_tier: input.execution_tier.clone(),
-                interrupt_history: crate::agent::interrupts::interrupt_history_for_outcome(&outcome),
-                phase_summary: super::checkpoint::phase_summary_for_outcome(&outcome),
+                interrupt_history,
+                phase_summary,
                 completion_decisions,
                 config_fingerprint: Some(config_fingerprint.clone()),
                 repro_record: None,

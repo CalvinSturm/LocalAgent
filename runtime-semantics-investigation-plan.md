@@ -1,176 +1,117 @@
-# Runtime Semantics Investigation Plan
+# Runtime Artifact/Checkpoint Consistency Hardening Plan
 
-## Request Summary
+## Status Summary
 
-This plan scopes a short, evidence-first investigation into LocalAgent runtime semantics, especially around continuation, guard failures, ineffective writes, and final-output shaping. The immediate goal is to turn recent eval and manual-run artifacts into explicit runtime rules before changing shared loop behavior.
+The earlier runtime-semantics investigation and contract-test phases are complete enough for this branch. Phase 5 runtime-loop consolidation is also effectively closed for v1.
 
-## Relevant Codebase Findings
+This plan replaces the earlier broad investigation plan with the narrow follow-on slice now in progress: hardening runtime artifact and runtime checkpoint consistency around terminal boundaries, approval boundaries, cancellation, and resume-to-terminal finalization.
 
-The governing policy is explicit: extra turns require a classified, bounded reason, and a verified successful write is terminal by default unless a validator, guard, phase transition, or explicit user-directed next step says otherwise in `docs/policy/AGENT_RUNTIME_PRINCIPLES_2026.md`.
+## Reconciled Current State
 
-The main runtime path is `main -> run_cli -> run_agent -> run_agent_with_ui -> Agent::run`, documented in `docs/architecture/RUNTIME_ARCHITECTURE.md` and implemented in `src/agent_runtime.rs`, `src/cli_dispatch.rs`, and `src/agent.rs`.
+Verified during reconciliation:
 
-Recent proving artifacts already exist:
+- `cargo test --quiet` passes
+- targeted checkpoint/replay tests for the current slice pass
+- relevant runtime artifact-writing paths route through `validate_final_run_artifact_consistency`
 
-- Built-in eval results: `.tmp/eval-glm-4_6v-flash-coding-20260307-195639.json`
-- Exact manual run records: `.tmp/manual-exact-eval-glm-4_6v-flash-20260307-202500/state/runs/*.json`
+Important scope guard:
 
-## Proposed Implementation Approach
+- this is not a new open-ended runtime semantics investigation
+- this is not a reason to reopen Phase 5 coordinator refactoring
+- this is a small invariant-hardening slice on top of the checkpoint-backed phase model
 
-First, define the semantic questions using real failures rather than code-first speculation. Then trace those questions through the governed runtime surfaces and write down the current effective state transitions. Finally, convert each confirmed rule into contract tests and only then decide whether code changes are needed.
+Primary policy anchor:
 
-Investigation order:
-
-1. Terminality after write and ineffective write handling.
-   Use:
-   - `.tmp/manual-exact-eval-glm-4_6v-flash-20260307-202500/state/runs/10a2c817-cd55-425f-949b-112d566d9363.json`
-   - `.tmp/manual-exact-eval-glm-4_6v-flash-20260307-202500/state/runs/c73e1f09-4fd8-4b08-9a52-1d70b3917af6.json`
-   - `.tmp/manual-exact-eval-glm-4_6v-flash-20260307-202500/state/runs/aabc6b83-595c-4036-b441-6499cf0b6cc1.json`
-   - `.tmp/manual-exact-eval-glm-4_6v-flash-20260307-202500/state/runs/db767054-b223-461b-975a-d870c85f4e62.json`
-
-   Questions:
-   - What counts as verified success?
-   - What counts as ineffective write?
-   - Why do some cases end as `ok` while others end as `planner_error`?
-
-2. Final-output shaping versus protocol-artifact leakage.
-   Use:
-   - `.tmp/manual-exact-eval-glm-4_6v-flash-20260307-202500/state/runs/f0233fd2-bf88-4aa0-9f7e-3d2422486f3d.json`
-   - `.tmp/eval-glm-4_6v-flash-coding-20260307-195639.json`
-
-   Question:
-   - When is malformed wrapper text being accepted as terminal output instead of being normalized or rejected?
-
-3. Guard-triggered retry versus terminal failure.
-   Trace where implementation-guard decisions are injected and finalized in:
-   - `src/agent_runtime.rs`
-   - `src/agent.rs`
-   - governed finalize/guard helpers under `src/agent_runtime/*`
-
-   Question:
-   - Are guard failures machine-classified distinctly enough to satisfy repo policy?
-
-4. Validator-driven continuation.
-   Use `C3` and `C5` artifacts to answer:
-   - Is failed or skipped validation explicitly represented as validator failure?
-   - Or is the runtime relying on model narration and generic planner errors?
-
-## Ordered PR Breakdown
-
-1. `runtime-semantics-investigation-notes`
-   Primary goal: document the current runtime state transitions from evidence and identify mismatches against repo policy.
-
-2. `runtime-contract-tests-for-confirmed-semantics`
-   Primary goal: encode the confirmed rules as positive and negative contract tests before any behavior change.
-
-3. `runtime-semantics-fixups`
-   Primary goal: only if needed, narrow runtime behavior to match the documented semantics and tests.
-
-## Per-PR Scope Details
-
-### PR 1: `runtime-semantics-investigation-notes`
-
-In scope:
-- Trace current behavior
-- Map artifact to code path
-- Classify each observed transition
-
-Out of scope:
-- Behavior changes
-
-Key files:
 - `docs/policy/AGENT_RUNTIME_PRINCIPLES_2026.md`
-- `docs/architecture/RUNTIME_ARCHITECTURE.md`
-- `src/agent_runtime.rs`
-- `src/agent.rs`
-- recent run JSON artifacts
 
-Acceptance criteria:
-- A short design note answers four questions:
-  - terminal after write
-  - ineffective write semantics
-  - final-output shaping
-  - guard or validator authorization for another turn
-- A state-transition table exists with the following columns:
-  - event or condition
-  - runtime classification
-  - allowed continuation
-  - terminal outcome
-  - governing policy source
-  - source artifact or code path
-- An artifact classification table exists for each investigated run ID with the following columns:
-  - run ID
-  - observed outcome
-  - runtime-caused / model-caused / mixed / unresolved
-  - justification
+## Goal
 
-Test or verification expectations:
-- Artifact-to-code trace is reproducible from cited files and run IDs
+Ensure the persisted runtime artifacts remain internally coherent with the actual terminal outcome and resumability state.
 
-Notes on why this PR boundary is correct:
-- It prevents speculative code changes and raises the semantic bar first
-- It gives PR 2 an explicit contract surface instead of forcing tests to infer semantics from prose
+Concrete target outcomes:
 
-### PR 2: `runtime-contract-tests-for-confirmed-semantics`
+- cancelled runs do not serialize resumable runtime checkpoints
+- cancelled runs do not leave unresolved interrupts behind
+- approval-required artifacts keep the unresolved approval boundary they need for resume
+- resume-to-terminal finalization preserves prior interrupt/phase/completion history instead of flattening it
+- runtime artifact writers share one final consistency validation path
 
-In scope:
-- Add contract tests for confirmed positive and negative cases
+## Touched Surfaces
 
-Out of scope:
-- Broad refactors
-- Heuristic additions
+- `src/agent_runtime/checkpoint.rs`
+- `src/agent_runtime/finalize.rs`
+- `src/agent_runtime/planner_phase.rs`
+- `src/cli_dispatch_eval_replay.rs`
+- `src/agent/interrupts.rs`
 
-Key files or subsystems likely to change:
-- Runtime tests near `src/agent_runtime.rs`
-- Runtime tests near `src/agent.rs`
-- Governed finalize and guard test surfaces
+## Implementation Breakdown
 
-Acceptance criteria:
-- Tests prove at least:
-  - successful verified write does not itself authorize another turn
-  - ineffective write is not treated as terminal success
-  - protocol-artifact wrapper text does not become valid final output
-  - guard or validator continuation, if allowed, is explicitly classified
+### Slice A: Final Artifact Consistency Validation
 
-Test or verification expectations:
-- `cargo test` targeted to touched runtime tests
+Goal:
 
-Notes on why this PR boundary is correct:
-- It locks the contract before behavior edits
+- validate final artifact phase, completion decision, phase summary, interrupt state, and resumable-checkpoint presence against the outcome before artifact persistence
 
-### PR 3: `runtime-semantics-fixups`
+Acceptance:
 
-In scope:
-- Only the narrow code changes needed to align runtime behavior with policy and new tests
+- all main runtime artifact writers call the same validator before persistence
 
-Out of scope:
-- Unrelated eval harness changes
-- Broad architecture rewrites
+### Slice B: Resume-to-Terminal History Preservation
 
-Key files or subsystems likely to change:
-- Governed runtime files implicated by PR 1 findings
-- Likely `src/agent_runtime/*`
-- Likely `src/agent.rs`
+Goal:
 
-Acceptance criteria:
-- Runtime behavior matches the documented state transitions
-- All contract tests pass
+- preserve prior interrupt history, phase summary, and completion-decision history when a resumed run later finalizes
 
-Test or verification expectations:
-- Targeted runtime tests
-- Replay against the exact failing artifacts where possible
+Acceptance:
 
-Notes on why this PR boundary is correct:
-- It isolates actual semantic fixes from investigation and test-definition work
+- a resumed approval boundary that later completes still retains the prior waiting-for-approval / resume history in the final artifact
 
-## Risks / Open Questions
+### Slice C: Cancel / Approval Boundary Semantics
 
-The biggest risk is mistaking model failure for runtime failure. The recent artifacts already show both kinds, so PR 1 needs to separate them carefully.
+Goal:
 
-The second risk is blessing incidental loop shape in tests. The policy explicitly forbids that, so every test should be phrased as a contract assertion, not as a specific step-count expectation.
+- cancelled outcomes become terminal-only artifacts
+- approval-required outcomes remain resumable artifacts with the required unresolved approval interrupt
 
-The third risk is letting validator-driven continuation and guard-triggered retry remain semantically fuzzy. PR 1 should explicitly define:
+Acceptance:
 
-- who authorizes another turn
-- what machine-readable reason is required
-- whether the case is classified as guard retry, validator continuation, declared phase transition, or terminal result
+- cancelled runs emit no resumable checkpoint record
+- cancelled interrupt history is resolved
+- approval-required artifacts preserve unresolved approval boundary state
+
+## Verification Plan
+
+Required:
+
+- `cargo test --quiet`
+
+Focused:
+
+- `cargo test agent_runtime::checkpoint::tests:: --quiet`
+- `cargo test replay_resume_approval_checkpoint_runs_to_completion --quiet`
+
+Audit:
+
+- confirm the runtime artifact writers in `src/agent_runtime/finalize.rs` and `src/agent_runtime/planner_phase.rs` both route through the final-artifact consistency validator
+
+Optional before commit:
+
+- none
+
+## Out Of Scope
+
+- broad Phase 5 refactoring
+- unrelated runtime-loop cleanup
+- repo-wide clippy cleanup
+- speculative new resume surfaces without evidence
+
+## Exit Criteria
+
+- `cargo test --quiet` remains green
+- the checkpoint/artifact hardening slice is internally consistent and documented
+- no remaining artifact-writing path bypasses the consistency validator
+- any further runtime work can move on to a new, narrower plan instead of pretending this is still the earlier investigation phase
+
+## Completion Note
+
+The additional cancelled-boundary replay regression has been added. This hardening slice is now at commit-ready scope.

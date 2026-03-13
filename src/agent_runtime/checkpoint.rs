@@ -24,15 +24,6 @@ pub(super) fn checkpoint_for_outcome(
                 reason: Some(outcome.final_output.clone()),
             }),
         }),
-        AgentExitReason::Cancelled => Some(RunCheckpointV1 {
-            schema_version: "openagent.run_checkpoint.v1".to_string(),
-            phase: RunCheckpointPhase::Interrupted,
-            terminal_boundary: true,
-            pending_interrupt: Some(RunCheckpointInterruptV1 {
-                kind: RunCheckpointInterruptKind::OperatorInterrupt,
-                reason: outcome.error.clone(),
-            }),
-        }),
         _ => None,
     }
 }
@@ -121,6 +112,117 @@ pub(super) fn validate_terminal_runtime_state_checkpoint(
     Ok(())
 }
 
+pub(super) fn validate_final_run_artifact_consistency(
+    outcome: &crate::agent::AgentOutcome,
+    run_checkpoint: Option<&crate::store::RunCheckpointV1>,
+    final_checkpoint: &RuntimeStateCheckpointV1,
+    interrupt_history: &[crate::agent_runtime::state::InterruptHistoryEntryV1],
+    phase_summary: &[PhaseSummaryEntryV1],
+    completion_decisions: &[CompletionDecisionRecordV1],
+) -> anyhow::Result<()> {
+    use anyhow::ensure;
+
+    let expected_phase = terminal_phase_for_outcome(outcome);
+    ensure!(
+        final_checkpoint.phase == expected_phase,
+        "final run artifact phase {:?} does not match outcome phase {:?}",
+        final_checkpoint.phase,
+        expected_phase
+    );
+
+    let final_decision = completion_decisions
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("final run artifact is missing completion decisions"))?;
+    ensure!(
+        final_decision.next_phase.as_ref() == Some(&expected_phase),
+        "final completion decision next_phase {:?} does not match outcome phase {:?}",
+        final_decision.next_phase,
+        expected_phase
+    );
+
+    let final_phase_entry = phase_summary
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("final run artifact is missing phase summary"))?;
+    ensure!(
+        final_phase_entry.phase == expected_phase,
+        "final phase summary entry {:?} does not match outcome phase {:?}",
+        final_phase_entry.phase,
+        expected_phase
+    );
+    ensure!(
+        final_phase_entry.exited_at.is_none(),
+        "final phase summary entry must remain open for the terminal/boundary phase"
+    );
+
+    let unresolved_interrupts = interrupt_history
+        .iter()
+        .filter(|entry| entry.resolved_at.is_none())
+        .collect::<Vec<_>>();
+
+    match outcome.exit_reason {
+        AgentExitReason::ApprovalRequired => {
+            let checkpoint = run_checkpoint
+                .ok_or_else(|| anyhow::anyhow!("approval-required run artifact must keep a run checkpoint"))?;
+            ensure!(
+                checkpoint.phase == crate::store::RunCheckpointPhase::WaitingForApproval,
+                "approval-required run checkpoint must stay in waiting_for_approval"
+            );
+            ensure!(
+                matches!(
+                    checkpoint.pending_interrupt.as_ref().map(|it| &it.kind),
+                    Some(crate::store::RunCheckpointInterruptKind::ApprovalRequired)
+                ),
+                "approval-required run checkpoint must carry an approval-required interrupt"
+            );
+            ensure!(
+                final_checkpoint.approval_state.awaiting_approval,
+                "approval-required final checkpoint must leave approval_state.awaiting_approval active"
+            );
+            ensure!(
+                unresolved_interrupts.len() == 1
+                    && unresolved_interrupts[0].kind
+                        == crate::agent_runtime::state::InterruptKindV1::ApprovalRequired,
+                "approval-required run artifact must have exactly one unresolved approval interrupt"
+            );
+        }
+        AgentExitReason::Cancelled => {
+            ensure!(
+                run_checkpoint.is_none(),
+                "cancelled run artifact cannot keep a resumable run checkpoint"
+            );
+            ensure!(
+                unresolved_interrupts.is_empty(),
+                "cancelled run artifact cannot keep unresolved interrupts"
+            );
+            ensure!(
+                interrupt_history.iter().any(|entry| {
+                    entry.kind == crate::agent_runtime::state::InterruptKindV1::OperatorInterrupt
+                        && entry.resolved_at.is_some()
+                }),
+                "cancelled run artifact must record a resolved operator interrupt"
+            );
+        }
+        AgentExitReason::Ok
+        | AgentExitReason::ProviderError
+        | AgentExitReason::PlannerError
+        | AgentExitReason::Denied
+        | AgentExitReason::HookAborted
+        | AgentExitReason::MaxSteps
+        | AgentExitReason::BudgetExceeded => {
+            ensure!(
+                run_checkpoint.is_none(),
+                "terminal run artifact cannot keep a resumable run checkpoint"
+            );
+            ensure!(
+                unresolved_interrupts.is_empty(),
+                "terminal run artifact cannot keep unresolved interrupts"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) fn runtime_state_checkpoint_for_outcome(
     outcome: &crate::agent::AgentOutcome,
     prompt: &str,
@@ -175,15 +277,19 @@ pub(super) fn runtime_state_checkpoint_for_outcome(
     }
 }
 
-pub(super) fn phase_summary_for_outcome(
-    outcome: &crate::agent::AgentOutcome,
-) -> Vec<PhaseSummaryEntryV1> {
-    let final_phase = match outcome.exit_reason {
+pub(super) fn terminal_phase_for_outcome(outcome: &crate::agent::AgentOutcome) -> RunPhase {
+    match outcome.exit_reason {
         AgentExitReason::ApprovalRequired => RunPhase::WaitingForApproval,
         AgentExitReason::Cancelled => RunPhase::Cancelled,
         AgentExitReason::Ok => RunPhase::Done,
         _ => RunPhase::Failed,
-    };
+    }
+}
+
+pub(super) fn phase_summary_for_outcome(
+    outcome: &crate::agent::AgentOutcome,
+) -> Vec<PhaseSummaryEntryV1> {
+    let final_phase = terminal_phase_for_outcome(outcome);
     vec![
         PhaseSummaryEntryV1 {
             phase: RunPhase::Setup,
@@ -203,14 +309,49 @@ pub(super) fn phase_summary_for_outcome(
     ]
 }
 
+pub(super) fn phase_summary_for_outcome_with_prior(
+    outcome: &crate::agent::AgentOutcome,
+    prior: Option<&RuntimeRunCheckpointRecordV1>,
+) -> Vec<PhaseSummaryEntryV1> {
+    let Some(prior) = prior.filter(|record| !record.phase_summary.is_empty()) else {
+        return phase_summary_for_outcome(outcome);
+    };
+
+    let final_phase = terminal_phase_for_outcome(outcome);
+    let mut summary = prior.phase_summary.clone();
+    if let Some(last_open_phase) = summary.iter_mut().rev().find(|entry| entry.exited_at.is_none()) {
+        if last_open_phase.phase == final_phase {
+            return summary;
+        }
+        last_open_phase.exited_at = Some(outcome.finished_at.clone());
+    }
+    summary.push(PhaseSummaryEntryV1 {
+        phase: final_phase,
+        entered_at: outcome.finished_at.clone(),
+        exited_at: None,
+    });
+    summary
+}
+
 pub(super) fn completion_decisions_for_outcome(
     outcome: &crate::agent::AgentOutcome,
     runtime_checkpoint: &RuntimeStateCheckpointV1,
+) -> Vec<CompletionDecisionRecordV1> {
+    completion_decisions_for_outcome_with_prior(outcome, runtime_checkpoint, None)
+}
+
+pub(super) fn completion_decisions_for_outcome_with_prior(
+    outcome: &crate::agent::AgentOutcome,
+    runtime_checkpoint: &RuntimeStateCheckpointV1,
+    prior: Option<&RuntimeRunCheckpointRecordV1>,
 ) -> Vec<CompletionDecisionRecordV1> {
     let validation_facts = crate::agent::completion_policy::collect_validation_facts_from_checkpoint(
         runtime_checkpoint,
         &runtime_checkpoint.last_tool_fact_envelopes,
     );
+    let mut decisions = prior
+        .map(|record| record.completion_decisions.clone())
+        .unwrap_or_default();
     let (allowed, retryable, reason, next_phase, unmet_requirements) = match outcome.exit_reason {
         AgentExitReason::Ok => (
             validation_facts.satisfied,
@@ -236,9 +377,9 @@ pub(super) fn completion_decisions_for_outcome(
         ),
         AgentExitReason::Cancelled => (
             false,
-            true,
-            "run interrupted before completion".to_string(),
-            Some(RunPhase::WaitingForOperatorInput),
+            false,
+            "run cancelled before completion".to_string(),
+            Some(RunPhase::Cancelled),
             vec!["operator_interrupt".to_string()],
         ),
         _ => (
@@ -252,14 +393,26 @@ pub(super) fn completion_decisions_for_outcome(
             vec!["runtime_failure".to_string()],
         ),
     };
-    vec![CompletionDecisionRecordV1 {
+    decisions.push(CompletionDecisionRecordV1 {
         kind: "finalize".to_string(),
         allowed,
         retryable,
         next_phase,
         reason,
         unmet_requirements,
-    }]
+    });
+    decisions
+}
+
+pub(super) fn interrupt_history_for_outcome_with_prior(
+    outcome: &crate::agent::AgentOutcome,
+    prior: Option<&RuntimeRunCheckpointRecordV1>,
+) -> Vec<crate::agent_runtime::state::InterruptHistoryEntryV1> {
+    let mut history = prior
+        .map(|record| record.interrupt_history.clone())
+        .unwrap_or_default();
+    history.extend(crate::agent::interrupts::interrupt_history_for_outcome(outcome));
+    history
 }
 
 pub(super) fn runtime_checkpoint_record_for_outcome(
@@ -269,17 +422,19 @@ pub(super) fn runtime_checkpoint_record_for_outcome(
     execution_tier: ExecutionTier,
     tool_facts: &[crate::agent::tool_facts::ToolFactV1],
     tool_fact_envelopes: &[crate::agent::tool_facts::ToolFactEnvelopeV1],
+    prior: Option<&RuntimeRunCheckpointRecordV1>,
 ) -> Option<RuntimeRunCheckpointRecordV1> {
     let checkpoint = checkpoint_for_outcome(outcome)?;
     let checkpoint_phase_name = match checkpoint.phase {
         RunCheckpointPhase::WaitingForApproval => "waiting_for_approval",
         RunCheckpointPhase::Interrupted => "interrupted",
     };
-    let interrupt_history = crate::agent::interrupts::interrupt_history_for_outcome(outcome);
-    let phase_summary = phase_summary_for_outcome(outcome);
+    let interrupt_history = interrupt_history_for_outcome_with_prior(outcome, prior);
+    let phase_summary = phase_summary_for_outcome_with_prior(outcome, prior);
     let runtime_state_checkpoint =
         runtime_state_checkpoint_for_outcome(outcome, prompt, execution_tier.clone(), tool_fact_envelopes);
-    let completion_decisions = completion_decisions_for_outcome(outcome, &runtime_state_checkpoint);
+    let completion_decisions =
+        completion_decisions_for_outcome_with_prior(outcome, &runtime_state_checkpoint, prior);
     Some(RuntimeRunCheckpointRecordV1 {
         schema_version: "openagent.runtime_checkpoint.v1".to_string(),
         runtime_run_id: outcome.run_id.clone(),
@@ -625,15 +780,20 @@ pub(crate) fn parse_resume_args(argv: &[String]) -> anyhow::Result<RunArgs> {
 #[cfg(test)]
 mod tests {
     use super::{
-        checkpoint_for_outcome, parse_resume_args, runtime_checkpoint_record_for_outcome,
+        checkpoint_for_outcome, completion_decisions_for_outcome,
+        validate_final_run_artifact_consistency, parse_resume_args,
+        phase_summary_for_outcome, phase_summary_for_outcome_with_prior,
+        runtime_checkpoint_record_for_outcome, runtime_state_checkpoint_for_outcome,
         validate_terminal_runtime_state_checkpoint,
     };
     use crate::agent::{AgentExitReason, AgentOutcome, ToolDecisionRecord};
     use crate::agent_runtime::state::{
-        ApprovalState, ExecutionTier, RetryState, RunCheckpointV1 as RuntimeStateCheckpointV1,
-        RunPhase, ToolProtocolState, ValidationState,
+        ApprovalState, CompletionDecisionRecordV1, ExecutionTier, InterruptHistoryEntryV1,
+        InterruptKindV1, PhaseSummaryEntryV1, RetryState,
+        RunCheckpointV1 as RuntimeStateCheckpointV1, RunPhase, ToolProtocolState, ValidationState,
     };
     use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
+    use crate::store::RuntimeRunCheckpointRecordV1;
     use crate::store::{RunCheckpointInterruptKind, RunCheckpointPhase};
     use crate::types::{Message, Role, ToolCall};
     use clap::Parser;
@@ -714,12 +874,8 @@ mod tests {
     fn checkpoint_created_for_cancelled_interrupt_boundary() {
         let checkpoint =
             checkpoint_for_outcome(&outcome(AgentExitReason::Cancelled, Some("cancelled")))
-                .expect("checkpoint");
-        assert_eq!(checkpoint.phase, RunCheckpointPhase::Interrupted);
-        assert_eq!(
-            checkpoint.pending_interrupt.as_ref().map(|it| &it.kind),
-            Some(&RunCheckpointInterruptKind::OperatorInterrupt)
-        );
+                .is_none();
+        assert!(checkpoint);
     }
 
     #[test]
@@ -741,6 +897,7 @@ mod tests {
             crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
             &[],
             &[],
+            None,
         )
         .expect("checkpoint record");
         assert_eq!(record.prompt, "real prompt");
@@ -813,5 +970,176 @@ mod tests {
         assert!(err
             .to_string()
             .contains("must satisfy required validation"));
+    }
+
+    #[test]
+    fn cancelled_completion_decision_points_to_cancelled_terminal_phase() {
+        let outcome = outcome(AgentExitReason::Cancelled, Some("cancelled"));
+        let checkpoint = RuntimeStateCheckpointV1 {
+            schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+            phase: RunPhase::Cancelled,
+            step_index: 1,
+            execution_tier: ExecutionTier::ScopedHostShell,
+            terminal_boundary: true,
+            retry_state: RetryState::default(),
+            tool_protocol_state: ToolProtocolState::default(),
+            validation_state: ValidationState::default(),
+            approval_state: ApprovalState::default(),
+            active_plan_step_id: None,
+            last_tool_fact_envelopes: Vec::new(),
+        };
+
+        let decisions = completion_decisions_for_outcome(&outcome, &checkpoint);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].next_phase, Some(RunPhase::Cancelled));
+        assert!(!decisions[0].retryable);
+    }
+
+    #[test]
+    fn cancelled_outcome_does_not_emit_resumable_runtime_checkpoint_record() {
+        let args = crate::RunArgs::parse_from([
+            "localagent",
+            "--provider",
+            "mock",
+            "--prompt",
+            "placeholder",
+        ]);
+        let record = runtime_checkpoint_record_for_outcome(
+            &outcome(AgentExitReason::Cancelled, Some("cancelled")),
+            "real prompt",
+            &args,
+            ExecutionTier::ScopedHostShell,
+            &[],
+            &[],
+            None,
+        );
+        assert!(record.is_none());
+    }
+
+    #[test]
+    fn cancelled_interrupt_history_is_marked_resolved() {
+        let history = crate::agent::interrupts::interrupt_history_for_outcome(&outcome(
+            AgentExitReason::Cancelled,
+            Some("cancelled"),
+        ));
+        assert_eq!(history.len(), 1);
+        assert!(history[0].resolved_at.is_some());
+    }
+
+    #[test]
+    fn prior_phase_summary_is_preserved_when_appending_terminal_phase() {
+        let outcome = outcome(AgentExitReason::Ok, None);
+        let prior = RuntimeRunCheckpointRecordV1 {
+            schema_version: "openagent.runtime_checkpoint.v1".to_string(),
+            runtime_run_id: "r1".to_string(),
+            prompt: "fix it".to_string(),
+            resume_argv: Vec::new(),
+            checkpoint: None,
+            runtime_state_checkpoint: RuntimeStateCheckpointV1 {
+                schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+                phase: RunPhase::Executing,
+                step_index: 1,
+                execution_tier: ExecutionTier::ScopedHostShell,
+                terminal_boundary: false,
+                retry_state: RetryState::default(),
+                tool_protocol_state: ToolProtocolState::default(),
+                validation_state: ValidationState::default(),
+                approval_state: ApprovalState::default(),
+                active_plan_step_id: None,
+                last_tool_fact_envelopes: Vec::new(),
+            },
+            execution_tier: ExecutionTier::ScopedHostShell,
+            resume_session_messages: Vec::new(),
+            interrupt_history: vec![InterruptHistoryEntryV1 {
+                kind: InterruptKindV1::ApprovalRequired,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                resolved_at: Some("2026-01-01T00:00:01Z".to_string()),
+                approval_id: Some("approval-1".to_string()),
+                tool_call_id: Some("tc1".to_string()),
+                reason: Some("approval".to_string()),
+            }],
+            phase_summary: vec![
+                PhaseSummaryEntryV1 {
+                    phase: RunPhase::WaitingForApproval,
+                    entered_at: "2026-01-01T00:00:00Z".to_string(),
+                    exited_at: Some("2026-01-01T00:00:01Z".to_string()),
+                },
+                PhaseSummaryEntryV1 {
+                    phase: RunPhase::Executing,
+                    entered_at: "2026-01-01T00:00:01Z".to_string(),
+                    exited_at: None,
+                },
+            ],
+            completion_decisions: vec![CompletionDecisionRecordV1 {
+                kind: "resume".to_string(),
+                allowed: true,
+                retryable: false,
+                next_phase: Some(RunPhase::Executing),
+                reason: "resume".to_string(),
+                unmet_requirements: Vec::new(),
+            }],
+            tool_facts: Vec::new(),
+            tool_fact_envelopes: Vec::new(),
+            pending_tool_call: None,
+            boundary_output: None,
+        };
+
+        let summary = phase_summary_for_outcome_with_prior(&outcome, Some(&prior));
+        assert_eq!(summary.len(), 3);
+        assert_eq!(summary[0].phase, RunPhase::WaitingForApproval);
+        assert_eq!(summary[1].phase, RunPhase::Executing);
+        assert_eq!(summary[1].exited_at.as_deref(), Some("2026-01-01T00:00:01Z"));
+        assert_eq!(summary[2].phase, RunPhase::Done);
+    }
+
+    #[test]
+    fn approval_required_artifact_requires_unresolved_approval_interrupt() {
+        let outcome = outcome(AgentExitReason::ApprovalRequired, None);
+        let final_checkpoint = runtime_state_checkpoint_for_outcome(
+            &outcome,
+            "fix it",
+            ExecutionTier::ScopedHostShell,
+            &[],
+        );
+        let run_checkpoint = checkpoint_for_outcome(&outcome);
+
+        let err = validate_final_run_artifact_consistency(
+            &outcome,
+            run_checkpoint.as_ref(),
+            &final_checkpoint,
+            &[],
+            &phase_summary_for_outcome(&outcome),
+            &completion_decisions_for_outcome(&outcome, &final_checkpoint),
+        )
+        .expect_err("approval artifact should require unresolved interrupt");
+        assert!(err.to_string().contains("unresolved approval interrupt"));
+    }
+
+    #[test]
+    fn done_artifact_rejects_unresolved_interrupts() {
+        let outcome = outcome(AgentExitReason::Ok, None);
+        let final_checkpoint = runtime_state_checkpoint_for_outcome(
+            &outcome,
+            "fix it",
+            ExecutionTier::ScopedHostShell,
+            &[],
+        );
+        let err = validate_final_run_artifact_consistency(
+            &outcome,
+            None,
+            &final_checkpoint,
+            &[InterruptHistoryEntryV1 {
+                kind: InterruptKindV1::OperatorInterrupt,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                resolved_at: None,
+                approval_id: None,
+                tool_call_id: None,
+                reason: Some("paused".to_string()),
+            }],
+            &phase_summary_for_outcome(&outcome),
+            &completion_decisions_for_outcome(&outcome, &final_checkpoint),
+        )
+        .expect_err("done artifact should reject unresolved interrupts");
+        assert!(err.to_string().contains("cannot keep unresolved interrupts"));
     }
 }
