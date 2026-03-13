@@ -1200,6 +1200,9 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) task_kind: Option<String>,
 
+    #[arg(skip)]
+    pub(crate) validation_command_override: Option<String>,
+
     #[arg(
         long,
         default_value_t = false,

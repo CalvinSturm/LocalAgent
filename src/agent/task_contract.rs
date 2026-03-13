@@ -138,7 +138,16 @@ pub(crate) fn resolve_task_contract(
     };
 
     let (validation_requirement, validation_requirement_source) =
-        if let Some(command) = crate::agent_impl_guard::prompt_required_validation_command(prompt) {
+        if let Some(command) = args.validation_command_override.as_deref() {
+            (
+                ValidationRequirement::Command {
+                    command: command.to_string(),
+                },
+                ContractValueSource::Explicit,
+            )
+        } else if let Some(command) =
+            crate::agent_impl_guard::prompt_required_validation_command(prompt)
+        {
             (
                 ValidationRequirement::Command {
                     command: command.to_string(),
@@ -274,6 +283,29 @@ mod tests {
             FinalAnswerMode::Exact {
                 required_text: "verified fix".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn explicit_validation_override_beats_prompt_inference() {
+        let mut args = RunArgs::parse_from(["localagent"]);
+        args.validation_command_override = Some("cargo test --workspace".to_string());
+        let resolution = resolve_task_contract(
+            &args,
+            "Before finishing, run node --test successfully.",
+            None,
+            false,
+            &tool_defs(&["read_file", "shell"]),
+        );
+        assert_eq!(
+            resolution.contract.validation_requirement,
+            ValidationRequirement::Command {
+                command: "cargo test --workspace".to_string()
+            }
+        );
+        assert_eq!(
+            resolution.provenance.validation_requirement,
+            ContractValueSource::Explicit
         );
     }
 }

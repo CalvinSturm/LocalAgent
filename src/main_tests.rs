@@ -1862,6 +1862,8 @@ fn default_run_args() -> super::RunArgs {
 
         task_kind: None,
 
+        validation_command_override: None,
+
         disable_implementation_guard: false,
 
         taint: crate::taint::TaintToggle::Off,

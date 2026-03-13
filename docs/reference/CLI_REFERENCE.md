@@ -273,6 +273,7 @@ Notes:
 - `check run` is fail-closed/non-interactive by default (`approval_mode=fail`, sessions disabled).
 - `write`/`shell` checks run in isolated scratch workdirs when enabled via allow flags.
 - `allowed_tools` is enforced against tools actually used during the check run.
+- Checks may declare `validation_command` in frontmatter to set an explicit runtime validation requirement instead of relying only on prompt wording.
 - Exit codes are deterministic:
   - `0` pass
   - `2` invalid checks / schema / loader config

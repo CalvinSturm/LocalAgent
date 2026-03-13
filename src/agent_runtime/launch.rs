@@ -507,6 +507,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn launch_prefers_explicit_validation_override() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
+        let mut args = crate::RunArgs::parse_from(["localagent", "--agent-mode", "plan"]);
+        args.workdir = tmp.path().to_path_buf();
+        args.validation_command_override = Some("cargo test --workspace".to_string());
+        let launch = prepare_runtime_launch(
+            &MockProvider::new(),
+            ProviderKind::Mock,
+            "mock://local",
+            "mock-model",
+            "Before finishing, run node --test successfully.",
+            &args,
+            &paths,
+            None,
+            None,
+            None,
+            true,
+        )
+        .await
+        .expect("launch");
+        assert_eq!(
+            launch.task_contract.validation_requirement,
+            ValidationRequirement::Command {
+                command: "cargo test --workspace".to_string(),
+            }
+        );
+        assert_eq!(
+            launch.task_contract_provenance.validation_requirement,
+            ContractValueSource::Explicit
+        );
+    }
+
+    #[tokio::test]
     async fn launch_infers_exact_final_answer_from_prompt() {
         let launch = launch_for_args(
             &["localagent", "--agent-mode", "plan"],

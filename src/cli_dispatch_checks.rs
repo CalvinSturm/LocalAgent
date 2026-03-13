@@ -105,6 +105,7 @@ pub(crate) async fn run_check_command(
         run_args.no_session = true;
         run_args.reset_session = false;
         run_args.approval_mode = crate::gate::ApprovalMode::Fail;
+        run_args.validation_command_override = check.frontmatter.validation_command.clone();
         if let Some(b) = &check.frontmatter.budget {
             if let Some(ms) = b.max_steps {
                 run_args.max_steps = ms as usize;
@@ -548,6 +549,7 @@ mod tests {
                 required: true,
                 allowed_tools: allowed_tools
                     .map(|v| v.into_iter().map(|s| s.to_string()).collect()),
+                validation_command: None,
                 required_flags: Vec::new(),
                 pass_criteria: PassCriteria {
                     kind: PassCriteriaType::Equals,

@@ -707,6 +707,29 @@ The contract should be resolved once during setup from:
 
 Prompt parsing should remain a compatibility layer, not the long-term policy source.
 
+### Post-Migration Explicit Contract Targets
+
+For the remaining heuristic-reconciliation work, LocalAgent should prefer these explicit authoring surfaces first:
+
+- validator requirement:
+  - first-class source: check metadata, eval task metadata, and manual-pack/task metadata
+  - follow-on source: instruction/task profile metadata
+  - later operator override surface when needed: explicit CLI/config
+- exact final answer / output contract:
+  - first-class source: check metadata, eval task metadata, and manual-pack/task metadata
+  - follow-on source: instruction/task profile metadata
+  - later operator override surface when needed: explicit CLI/config
+- task kind:
+  - first-class sources for v1 follow-on work: explicit `--task-kind` and explicit instruction task profile
+  - fallback inference from implementation-guard or prompt wording should remain compatibility behavior only
+
+Why this ordering is correct:
+
+- checks, eval tasks, and manual packs already act like structured task specifications, so they are the lowest-risk place to stop encoding validator/output requirements purely in prompt text
+- instruction/task profiles are the next-best explicit source for reusable task-shaping metadata
+- CLI/config should remain available for operator-authored overrides, but should not be the only path to structured task contracts
+- prompt heuristics may remain as fallback where no explicit metadata exists, but they should no longer be the preferred runtime-semantic source
+
 ### Planner Authority Boundaries
 
 The planner is allowed to propose structure, not redefine runtime law.

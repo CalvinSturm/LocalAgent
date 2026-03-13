@@ -12,6 +12,8 @@ pub struct CheckFrontmatter {
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
     #[serde(default)]
+    pub validation_command: Option<String>,
+    #[serde(default)]
     pub required_flags: Vec<String>,
     pub pass_criteria: PassCriteria,
     #[serde(default)]
@@ -62,6 +64,11 @@ pub fn validate_frontmatter(fm: &CheckFrontmatter) -> anyhow::Result<()> {
             if t.trim().is_empty() {
                 anyhow::bail!("allowed_tools contains empty entry");
             }
+        }
+    }
+    if let Some(command) = &fm.validation_command {
+        if command.trim().is_empty() {
+            anyhow::bail!("validation_command must not be empty when set");
         }
     }
     if let Some(b) = &fm.budget {

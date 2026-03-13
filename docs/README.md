@@ -45,6 +45,7 @@ Root-level redirect stubs in `docs/` are compatibility shims only. They should n
 ## Operations
 
 - [Operational Runbook](operations/OPERATIONAL_RUNBOOK.md)
+- [Runtime Heuristic Reconciliation Plan](operations/RUNTIME_HEURISTIC_RECONCILIATION_PLAN_2026-03.md)
 
 ## Guides
 
