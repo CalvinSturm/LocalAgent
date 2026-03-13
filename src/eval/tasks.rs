@@ -605,7 +605,7 @@ fn common_coding_ux_tasks() -> Vec<EvalTask> {
                     pattern: "read_file".to_string(),
                 },
                 Assertion::ToolUsedGlob {
-                    pattern: "{apply_patch,str_replace}".to_string(),
+                    pattern: "{edit,apply_patch,str_replace}".to_string(),
                 },
                 Assertion::FileContains {
                     path: "src/math.rs".to_string(),

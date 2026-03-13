@@ -221,4 +221,78 @@ Do not add weighted composite scoring in PR1.
 ## Immediate Next Step
 
 Recommended next action:
-- use `U12` plus closeout-oriented task profiles as the first formal PR3 shaping surface, then compare shaped vs unshaped runs without changing shared runtime semantics
+- keep `U12` and the new closeout metrics as measurement infrastructure, then move to the next focused experiment loop on qwen/basic write reliability
+
+## PR3 Result Note
+
+Completed PR3 measurement slice:
+- `U12` was added as the first authored closeout-quality task
+- closeout-specific UX metrics were added for:
+  - changed-file mention when required by the task
+  - validation-result mention when required by the task
+- `coding_closeout_quality_v1` was tested as the first closeout-focused task profile
+
+Observed result from fresh model comparisons:
+- `qwen2.5-coder-7b-instruct@q8_0` baseline vs `coding_closeout_quality_v1`
+- `omnicoder-9b@q8_0` baseline vs `coding_closeout_quality_v1`
+- `omnicoder-9b` baseline vs `coding_closeout_quality_v1`
+
+Conclusion:
+- the profile reduced some tool churn in several runs
+- it did not improve `ux.closeout_changed_files_rate`
+- it did not improve `ux.closeout_validation_result_rate`
+- both qwen and omnicoder still failed before the authored closeout contract was meaningfully reachable
+
+Decision:
+- stop PR3 closeout-profile tuning here
+- keep `U12` plus the new closeout metrics as benchmark infrastructure
+- do not add another `coding_closeout_quality_v*` iteration right now
+
+## Next Experiment Plan: Qwen Write Reliability
+
+Objective:
+- improve qwen on the earlier coding-task boundary where it is currently failing before successful validation or authored closeout becomes reachable
+
+Primary target model:
+- `qwen2.5-coder-7b-instruct@q8_0`
+
+Scope:
+- focus on basic write reliability, not closeout phrasing
+- stay on the eval/instruction surface before considering broader planner or runtime changes
+
+Task focus:
+- `U3`
+- `U5`
+- `U6`
+
+Primary questions:
+- does qwen reliably produce an effective file change on simple and validation-required edit tasks
+- when it fails, is the blocker:
+  - wrong file targeting
+  - ineffective edit application
+  - edit applied but validation never reached
+  - validation reached but tool protocol failed
+
+Minimal experiment loop:
+1. run baseline qwen on `common-coding-ux`
+2. inspect `U3`, `U5`, and `U6` artifacts only
+3. classify each failure at the earliest real boundary:
+   - targeting
+   - write
+   - validation
+   - tool protocol
+4. add one narrow qwen-specific profile aimed at write reliability rather than closeout
+5. rerun once and compare:
+   - `ux.task_success_rate`
+   - `U3`, `U5`, `U6` artifact outcomes
+   - step/tool-call churn
+
+Profile guidance for the first qwen experiment:
+- prefer inspect -> single minimal edit -> verify
+- explicitly discourage repeated edit retries without rereading file state
+- prefer one concrete edit path over switching among multiple edit tools
+- do not add closeout wording instructions in this loop
+
+Stop conditions:
+- if qwen still fails before an effective write after one narrow profile pass, do not keep stacking prompt variants
+- if the failures suggest a LocalAgent-side authored-contract or edit-surface issue instead of a model-side issue, document that before considering broader PR3 or PR4 work

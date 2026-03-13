@@ -1,5 +1,59 @@
 # LOCALAGENT_CODING_UX_PR_STACK.md
 
+## Current Execution Status
+
+**Formal active phase**
+
+* `PR1` is the only formal in-flight implementation phase until its benchmark, artifact shape, and dashboard path are considered stable enough to use as the decision surface for later PRs.
+
+**Sequencing discipline**
+
+* treat model-specific instruction experiments during `PR1` as benchmark interpretation support, not as the formal start of `PR3`
+* do not describe the repo as "on PR3" until `PR2` is intentionally started or explicitly skipped with a written rationale
+* do not start `PR4a`, `PR5`, `PR6`, or `PR7` while `PR1` closeout and `PR2` sequencing are still unresolved
+
+**Current interpretation**
+
+* completed and in-progress benchmark plumbing on the eval path counts as `PR1`
+* current omnicoder instruction-profile tuning counts as a `PR1` evidence slice used to interpret benchmark failures, not as broader coding-UX shaping rollout
+* the next formal implementation phase after `PR1` closeout remains `PR2`
+
+---
+
+## External Reference Discipline
+
+**Goal**
+
+* use strong ideas from other coding agents and products without turning LocalAgent into a pattern-copying project or bypassing its benchmark-first discipline
+
+**Rule**
+
+* treat products such as OpenCode, Claude Code, Codex, and similar tools as idea sources, not as architectural authority
+* only adopt an external pattern when it improves LocalAgent on the `common_coding_ux` benchmark or resolves a clearly documented LocalAgent-side blocker
+
+**Required intake for any external-inspired implementation**
+
+* name the external product or pattern being referenced
+* state the concrete user problem it solves
+* identify the exact LocalAgent seam it maps to
+* state which benchmark metric or task family it is expected to improve
+* explain why it belongs in `PR2`, `PR3`, `PR4a`, `PR4b`, `PR5`, `PR6`, or `PR7`
+* explain why the same problem should not be solved by a smaller existing LocalAgent surface first
+
+**Adoption filter**
+
+* prefer explicit contracts, authored metadata, and measurable eval improvements over imported heuristics
+* reject external patterns that require reopening shared runtime semantics without benchmark evidence
+* reject external patterns that add broad complexity before the benchmark proves the LocalAgent bottleneck
+* prefer selective adaptation of proven ideas over imitating another product's full workflow or UX model
+
+**Decision standard**
+
+* the best implementation path for LocalAgent is the one that produces the strongest measured coding-task outcomes with the smallest justified increase in complexity
+* if an external pattern is elegant but does not improve LocalAgent benchmark results, do not prioritize it
+
+---
+
 ## PR1 — Measurement first: common coding UX benchmark + frozen baseline
 
 **Objective**
@@ -80,6 +134,20 @@ The current runtime intentionally allows explicit task-profile selection to act 
 * persist extra fields only if planner/eval/artifacts must observe them
 * do not reopen the vNext decision that explicit task-profile metadata can drive canonical task-kind resolution
 
+**Current landed slice**
+
+* task profiles can now carry an explicit canonical `task_kind` mapping while keeping a separate human-facing profile name
+* runtime semantics now resolve from the mapped canonical task kind rather than implicitly depending on the profile display name
+* run artifacts, eval artifacts, and human-readable replay output now record both:
+  * selected task-profile name
+  * resolved canonical task kind from that profile mapping
+
+**Closeout read**
+
+* PR2 is complete enough to move on
+* further work in this area should only continue if a new ambiguity is discovered in authored metadata, artifact visibility, or operator-facing reporting
+* do not broaden PR2 into taxonomy expansion or planner/routing work
+
 ---
 
 ## PR3 — Coding UX shaping via instruction profiles and evaluation criteria
@@ -110,6 +178,24 @@ Post-vNext guidance says not to reopen shared runtime semantics without a proven
 * `src/project_guidance.rs`
 * `src/eval/runner_artifacts.rs`
 * `docs/guides/INSTRUCTION_PROFILES.md`
+
+**Current result**
+
+* first PR3 slice landed:
+  * `U12` explicit closeout-quality task
+  * task-authored closeout UX metrics for changed-file mention and validation-result mention
+  * `coding_closeout_quality_v1` task profile
+* result from qwen and omnicoder comparison runs:
+  * the profile reduced some tool churn
+  * it did not improve the authored closeout metrics
+  * both models still failed before the closeout contract was meaningfully reachable
+
+**Execution read**
+
+* stop PR3 closeout-profile tuning here
+* keep `U12` and the new closeout metrics as measurement infrastructure
+* do not stack more `coding_closeout_quality_v*` variants right now
+* the next defensible workstream is qwen/basic write-reliability, not more closeout phrasing
 
 ---
 
