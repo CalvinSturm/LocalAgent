@@ -73,6 +73,8 @@ pub struct ValidationState {
     #[serde(default)]
     pub repair_mode: bool,
     #[serde(default)]
+    pub exact_final_answer_required: bool,
+    #[serde(default)]
     pub collecting_final_answer: bool,
 }
 

@@ -535,6 +535,7 @@ mod tests {
                 needs_mcp: false,
             },
             verifier: None,
+            exact_final_answer: None,
         };
         let cfg = EvalConfig {
             provider: ProviderKind::Ollama,
@@ -619,6 +620,7 @@ mod tests {
                 needs_mcp: true,
             },
             verifier: None,
+            exact_final_answer: None,
         };
         let cfg = EvalConfig {
             provider: ProviderKind::Ollama,

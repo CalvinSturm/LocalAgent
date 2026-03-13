@@ -35,8 +35,8 @@ mod run_control;
 mod run_events;
 mod run_finalize;
 mod run_setup;
-mod runtime_effects;
 mod runtime_completion;
+mod runtime_effects;
 pub mod task_contract;
 mod timeouts;
 pub mod tool_facts;
@@ -46,24 +46,24 @@ pub use agent_types::{
     PlanStepConstraint, PlanToolEnforcementMode, PolicyLoadedInfo, ToolCallBudget,
     ToolDecisionRecord,
 };
-pub use tool_facts::{ToolFactEnvelopeV1, ToolFactV1};
-#[allow(unused_imports)]
-pub use task_contract::{
-    AllowedToolsSemantics, CompletionPolicyV1, ContractValueSource, FinalAnswerMode,
-    RetryPolicyV1,
-    TaskContractProvenanceV1, TaskContractV1, ValidationRequirement, WriteRequirement,
-};
-#[allow(unused_imports)]
-pub(crate) use tool_facts::{
-    implementation_integrity_violation_from_facts, pending_post_write_verification_paths_from_facts,
-    read_before_edit_violation_from_facts, required_validation_command_satisfied_from_facts,
-    required_validation_failure_needs_repair_from_facts, tool_fact_envelopes_from_facts,
-    tool_facts_from_calls_and_executions, tool_facts_from_transcript,
-};
 pub(crate) use completion_policy::{
     approval_boundary_transition_decision, exact_final_answer_boundary_transition_decision,
     operator_boundary_transition_decision, required_validation_boundary_transition_decision,
 };
+#[allow(unused_imports)]
+pub use task_contract::{
+    AllowedToolsSemantics, CompletionPolicyV1, ContractValueSource, FinalAnswerMode, RetryPolicyV1,
+    TaskContractProvenanceV1, TaskContractV1, ValidationRequirement, WriteRequirement,
+};
+#[allow(unused_imports)]
+pub(crate) use tool_facts::{
+    implementation_integrity_violation_from_facts,
+    pending_post_write_verification_paths_from_facts, read_before_edit_violation_from_facts,
+    required_validation_command_satisfied_from_facts,
+    required_validation_failure_needs_repair_from_facts, tool_fact_envelopes_from_facts,
+    tool_facts_from_calls_and_executions, tool_facts_from_transcript,
+};
+pub use tool_facts::{ToolFactEnvelopeV1, ToolFactV1};
 
 pub(crate) use agent_types::WorkerStepStatus;
 use gate_paths::{AllowToolCallDecision, GateNonAllowDecision, PlanConstraintDecision};
@@ -73,18 +73,18 @@ use phase_transitions::{
     refresh_phase_state_from_tool_facts,
 };
 use planner_phase::{evaluate_planner_response, PlannerResponseDecision};
-use response_guards::{decide_post_response_phase_guard, decide_required_validation_phase_response};
+use response_guards::{
+    decide_post_response_phase_guard, decide_required_validation_phase_response,
+};
 use response_normalization::{normalize_assistant_response, AssistantResponseNormalization};
+use run_events::apply_usage_totals;
+#[cfg(test)]
+pub(crate) use runtime_completion::RuntimeCompletionDecision;
+use runtime_completion::{runtime_completion_decision, RuntimeCompletionInputs};
 use runtime_effects::{
     apply_post_response_guard_decision, apply_required_validation_guard_decision,
     apply_verified_write_follow_on_update, completion_blocked_effect_from_post_tool_refresh,
     GuardEffect,
-};
-use run_events::apply_usage_totals;
-#[cfg(test)]
-pub(crate) use runtime_completion::RuntimeCompletionDecision;
-use runtime_completion::{
-    runtime_completion_decision, RuntimeCompletionInputs,
 };
 use tool_helpers::injected_messages_enforce_implementation_integrity_guard;
 use tool_helpers::{FailedRepeatGuardDecision, MalformedToolCallDecision};
@@ -115,6 +115,8 @@ pub struct Agent<P: ModelProvider> {
     pub tool_rt: ToolRuntime,
     pub gate: Box<dyn ToolGate>,
     pub gate_ctx: GateContext,
+    pub validation_requirement: Option<ValidationRequirement>,
+    pub final_answer_mode: Option<FinalAnswerMode>,
     pub mcp_registry: Option<std::sync::Arc<McpRegistry>>,
     pub stream: bool,
     pub event_sink: Option<Box<dyn EventSink>>,
@@ -173,7 +175,95 @@ struct GeneratedTurnResponse {
 }
 
 impl<P: ModelProvider> Agent<P> {
-    fn initial_runtime_checkpoint(&self, user_prompt: &str) -> crate::agent_runtime::state::RunCheckpointV1 {
+    fn required_validation_command<'a>(&'a self, user_prompt: &'a str) -> Option<&'a str> {
+        match self.validation_requirement.as_ref() {
+            Some(ValidationRequirement::Command { command }) => Some(command.as_str()),
+            Some(ValidationRequirement::None) => None,
+            None => crate::agent_impl_guard::prompt_required_validation_command(user_prompt),
+        }
+    }
+
+    fn exact_final_answer_required_text(&self, user_prompt: &str) -> Option<String> {
+        match self.final_answer_mode.as_ref() {
+            Some(FinalAnswerMode::Exact { required_text }) => Some(required_text.clone()),
+            Some(FinalAnswerMode::Freeform) => None,
+            None => crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt),
+        }
+    }
+
+    fn exact_final_answer_required(&self, user_prompt: &str) -> bool {
+        self.exact_final_answer_required_text(user_prompt).is_some()
+    }
+
+    fn final_output_matches_required_exact_answer(&self, user_prompt: &str, raw: &str) -> bool {
+        match self.exact_final_answer_required_text(user_prompt) {
+            Some(required) => raw.trim() == required,
+            None => true,
+        }
+    }
+
+    fn recover_required_exact_final_answer(&self, user_prompt: &str, raw: &str) -> Option<String> {
+        let required = self.exact_final_answer_required_text(user_prompt)?;
+        let required_trimmed = required.trim();
+        let output_trimmed = raw.trim();
+        if output_trimmed == required_trimmed {
+            return Some(required);
+        }
+
+        let fenced_matches = {
+            let mut blocks = Vec::new();
+            let mut rest = output_trimmed;
+            while let Some(start) = rest.find("```") {
+                let after_ticks = &rest[start + 3..];
+                let after_lang = match after_ticks.find('\n') {
+                    Some(idx) => &after_ticks[idx + 1..],
+                    None => break,
+                };
+                let Some(end) = after_lang.find("```") else {
+                    break;
+                };
+                blocks.push(&after_lang[..end]);
+                rest = &after_lang[end + 3..];
+            }
+            blocks
+                .into_iter()
+                .filter(|block| block.trim() == required_trimmed)
+                .count()
+        };
+        if fenced_matches == 1 {
+            return Some(required);
+        }
+
+        let mut substring_matches = 0usize;
+        let mut search_start = 0usize;
+        while let Some(rel_idx) = output_trimmed[search_start..].find(required_trimmed) {
+            let idx = search_start + rel_idx;
+            let before_ok = idx == 0
+                || output_trimmed[..idx]
+                    .chars()
+                    .last()
+                    .is_some_and(|c| c == '\n' || c == '\r');
+            let after_idx = idx + required_trimmed.len();
+            let after_ok = after_idx == output_trimmed.len()
+                || output_trimmed[after_idx..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c == '\n' || c == '\r');
+            if before_ok && after_ok {
+                substring_matches += 1;
+                if substring_matches > 1 {
+                    return None;
+                }
+            }
+            search_start = idx + required_trimmed.len();
+        }
+        (substring_matches == 1).then_some(required)
+    }
+
+    fn initial_runtime_checkpoint(
+        &self,
+        user_prompt: &str,
+    ) -> crate::agent_runtime::state::RunCheckpointV1 {
         let execution_tier = match self.tool_rt.exec_target_kind {
             crate::target::ExecTargetKind::Docker => {
                 crate::agent_runtime::state::ExecutionTier::DockerIsolated
@@ -200,10 +290,12 @@ impl<P: ModelProvider> Agent<P> {
                 ..Default::default()
             },
             validation_state: crate::agent_runtime::state::ValidationState {
-                required_command: crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
+                required_command: self
+                    .required_validation_command(user_prompt)
                     .map(ToOwned::to_owned),
                 satisfied: false,
                 repair_mode: false,
+                exact_final_answer_required: self.exact_final_answer_required(user_prompt),
                 collecting_final_answer: false,
             },
             approval_state: crate::agent_runtime::state::ApprovalState::default(),
@@ -219,14 +311,11 @@ impl<P: ModelProvider> Agent<P> {
     fn synthesize_required_validation_shell_call(
         &self,
         user_prompt: &str,
+        required_command: &str,
         assistant: &Message,
     ) -> Option<ToolCall> {
-        let required_command =
-            crate::agent_impl_guard::prompt_required_validation_command(user_prompt)?;
         let raw = assistant.content.as_deref().unwrap_or_default().trim();
-        if raw.is_empty()
-            || crate::agent_impl_guard::final_output_matches_required_exact_answer(user_prompt, raw)
-        {
+        if raw.is_empty() || self.final_output_matches_required_exact_answer(user_prompt, raw) {
             return Some(ToolCall {
                 id: format!("tc_validation_shell_{}", Uuid::new_v4().simple()),
                 name: "shell".to_string(),
@@ -296,24 +385,34 @@ impl<P: ModelProvider> Agent<P> {
         }
         if !self.validation_shell_available() {
             runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Executing;
-            runtime_checkpoint.retry_state.blocked_required_validation_phase_count = 0;
+            runtime_checkpoint
+                .retry_state
+                .blocked_required_validation_phase_count = 0;
             return Ok(PhaseLoopControl::Proceed);
         }
         if resp.tool_calls.is_empty() {
-            if let Some(shell_call) =
-                self.synthesize_required_validation_shell_call(user_prompt, &resp.assistant)
+            if let Some(required_command) = runtime_checkpoint
+                .validation_state
+                .required_command
+                .as_deref()
             {
-                self.emit_event(
-                    run_id,
-                    step,
-                    EventKind::StepBlocked,
-                    serde_json::json!({
-                        "reason": "required_validation_phase_shell_shape_repaired",
-                        "tool_name": "shell"
-                    }),
-                );
-                resp.tool_calls.push(shell_call);
-                resp.assistant.content = Some(String::new());
+                if let Some(shell_call) = self.synthesize_required_validation_shell_call(
+                    user_prompt,
+                    required_command,
+                    &resp.assistant,
+                ) {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": "required_validation_phase_shell_shape_repaired",
+                            "tool_name": "shell"
+                        }),
+                    );
+                    resp.tool_calls.push(shell_call);
+                    resp.assistant.content = Some(String::new());
+                }
             }
         }
         let decision = decide_required_validation_phase_response(
@@ -325,73 +424,73 @@ impl<P: ModelProvider> Agent<P> {
             self.required_validation_phase_message(user_prompt),
         );
         match apply_required_validation_guard_decision(decision, &resp.assistant, messages) {
-                GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
-                GuardEffect::EmitPhaseTransition(transition) => {
-                    self.emit_phase_transition(run_id, step, &transition);
-                    Ok(PhaseLoopControl::Proceed)
-                }
-                GuardEffect::ContinueStep(step_block) => {
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "reason": step_block.reason,
-                            "blocked_count": step_block.blocked_count
-                        }),
-                    );
-                    Ok(PhaseLoopControl::ContinueStep)
-                }
-                GuardEffect::ContinueAgentStep(step_block) => {
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "reason": step_block.reason,
-                            "blocked_count": step_block.blocked_count
-                        }),
-                    );
-                    Ok(PhaseLoopControl::ContinueAgentStep)
-                }
-                GuardEffect::PlannerError(error) => {
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "reason": error.step_block.reason,
-                            "blocked_count": error.step_block.blocked_count
-                        }),
-                    );
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::Error,
-                        serde_json::json!({
-                            "error": error.reason,
-                            "source": error.error_source,
-                            "failure_class": error.failure_class
-                        }),
-                    );
-                    Err(self.finalize_planner_error_with_output_with_end(
-                        step,
-                        run_id.to_string(),
-                        started_at.to_string(),
-                        error.reason,
-                        messages.clone(),
-                        observed_tool_calls.to_vec(),
-                        observed_tool_decisions.to_vec(),
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.to_vec(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
-                    ))
-                }
+            GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
+            GuardEffect::EmitPhaseTransition(transition) => {
+                self.emit_phase_transition(run_id, step, &transition);
+                Ok(PhaseLoopControl::Proceed)
+            }
+            GuardEffect::ContinueStep(step_block) => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": step_block.reason,
+                        "blocked_count": step_block.blocked_count
+                    }),
+                );
+                Ok(PhaseLoopControl::ContinueStep)
+            }
+            GuardEffect::ContinueAgentStep(step_block) => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": step_block.reason,
+                        "blocked_count": step_block.blocked_count
+                    }),
+                );
+                Ok(PhaseLoopControl::ContinueAgentStep)
+            }
+            GuardEffect::PlannerError(error) => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": error.step_block.reason,
+                        "blocked_count": error.step_block.blocked_count
+                    }),
+                );
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::Error,
+                    serde_json::json!({
+                        "error": error.reason,
+                        "source": error.error_source,
+                        "failure_class": error.failure_class
+                    }),
+                );
+                Err(self.finalize_planner_error_with_output_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    error.reason,
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ))
+            }
         }
     }
 
@@ -430,73 +529,73 @@ impl<P: ModelProvider> Agent<P> {
             self.tool_only_reminder_message(),
         );
         match apply_post_response_guard_decision(decision, assistant, messages) {
-                GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
-                GuardEffect::EmitPhaseTransition(transition) => {
-                    self.emit_phase_transition(run_id, step, &transition);
-                    Ok(PhaseLoopControl::Proceed)
-                }
-                GuardEffect::ContinueStep(step_block) => {
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "reason": step_block.reason,
-                            "blocked_count": step_block.blocked_count
-                        }),
-                    );
-                    Ok(PhaseLoopControl::ContinueStep)
-                }
-                GuardEffect::ContinueAgentStep(step_block) => {
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "reason": step_block.reason,
-                            "blocked_count": step_block.blocked_count
-                        }),
-                    );
-                    Ok(PhaseLoopControl::ContinueAgentStep)
-                }
-                GuardEffect::PlannerError(error) => {
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "reason": error.step_block.reason,
-                            "blocked_count": error.step_block.blocked_count
-                        }),
-                    );
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::Error,
-                        serde_json::json!({
-                            "error": error.reason,
-                            "source": error.error_source,
-                            "failure_class": error.failure_class
-                        }),
-                    );
-                    Err(self.finalize_planner_error_with_output_with_end(
-                        step,
-                        run_id.to_string(),
-                        started_at.to_string(),
-                        error.reason,
-                        messages.clone(),
-                        observed_tool_calls.to_vec(),
-                        observed_tool_decisions.to_vec(),
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.to_vec(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
-                    ))
-                }
+            GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
+            GuardEffect::EmitPhaseTransition(transition) => {
+                self.emit_phase_transition(run_id, step, &transition);
+                Ok(PhaseLoopControl::Proceed)
+            }
+            GuardEffect::ContinueStep(step_block) => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": step_block.reason,
+                        "blocked_count": step_block.blocked_count
+                    }),
+                );
+                Ok(PhaseLoopControl::ContinueStep)
+            }
+            GuardEffect::ContinueAgentStep(step_block) => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": step_block.reason,
+                        "blocked_count": step_block.blocked_count
+                    }),
+                );
+                Ok(PhaseLoopControl::ContinueAgentStep)
+            }
+            GuardEffect::PlannerError(error) => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": error.step_block.reason,
+                        "blocked_count": error.step_block.blocked_count
+                    }),
+                );
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::Error,
+                    serde_json::json!({
+                        "error": error.reason,
+                        "source": error.error_source,
+                        "failure_class": error.failure_class
+                    }),
+                );
+                Err(self.finalize_planner_error_with_output_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    error.reason,
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ))
+            }
         }
     }
 
@@ -541,8 +640,9 @@ impl<P: ModelProvider> Agent<P> {
         }) {
             PlannerResponseDecision::Proceed => {}
             PlannerResponseDecision::RemindControlEnvelope { blocked_count } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count =
-                    blocked_count;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = blocked_count;
                 self.emit_event(
                     run_id,
                     step,
@@ -563,8 +663,9 @@ impl<P: ModelProvider> Agent<P> {
                 return Ok(PlannerEnvelopeControl::ContinueStep);
             }
             PlannerResponseDecision::MissingControlEnvelopeFatal { blocked_count } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count =
-                    blocked_count;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = blocked_count;
                 self.emit_event(
                     run_id,
                     step,
@@ -600,8 +701,12 @@ impl<P: ModelProvider> Agent<P> {
                 next_active_plan_step_idx,
                 user_output,
             } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = 0;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = 0;
+                runtime_checkpoint
+                    .retry_state
+                    .blocked_runtime_completion_count = 0;
                 if let Some(user_output) = user_output {
                     *last_user_output = Some(user_output);
                 }
@@ -622,7 +727,9 @@ impl<P: ModelProvider> Agent<P> {
                 step_id,
                 expected_step_id,
             } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = 0;
                 self.emit_event(
                     run_id,
                     step,
@@ -658,7 +765,9 @@ impl<P: ModelProvider> Agent<P> {
                 step_id,
                 next_step_id,
             } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = 0;
                 self.emit_event(
                     run_id,
                     step,
@@ -692,7 +801,9 @@ impl<P: ModelProvider> Agent<P> {
                 retry_count,
                 user_output,
             } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = 0;
                 if let Some(user_output) = user_output {
                     *last_user_output = Some(user_output);
                 }
@@ -702,7 +813,9 @@ impl<P: ModelProvider> Agent<P> {
                 step_id,
                 retry_count,
             } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = 0;
                 self.emit_event(
                     run_id,
                     step,
@@ -735,7 +848,9 @@ impl<P: ModelProvider> Agent<P> {
                 step_id,
                 expected_step_id,
             } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = 0;
                 self.emit_event(
                     run_id,
                     step,
@@ -768,7 +883,9 @@ impl<P: ModelProvider> Agent<P> {
                 ));
             }
             PlannerResponseDecision::ReplanRequested { step_id, status } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = 0;
                 self.emit_event(
                     run_id,
                     step,
@@ -782,7 +899,10 @@ impl<P: ModelProvider> Agent<P> {
                     step,
                     run_id.to_string(),
                     started_at.to_string(),
-                    format!("worker requested {} transition for step {}", status, step_id),
+                    format!(
+                        "worker requested {} transition for step {}",
+                        status, step_id
+                    ),
                     messages.clone(),
                     observed_tool_calls.to_vec(),
                     observed_tool_decisions.to_vec(),
@@ -797,7 +917,9 @@ impl<P: ModelProvider> Agent<P> {
                 ));
             }
             PlannerResponseDecision::FailRequested { step_id, status } => {
-                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .blocked_control_envelope_count = 0;
                 self.emit_event(
                     run_id,
                     step,
@@ -811,7 +933,10 @@ impl<P: ModelProvider> Agent<P> {
                     step,
                     run_id.to_string(),
                     started_at.to_string(),
-                    format!("worker requested {} transition for step {}", status, step_id),
+                    format!(
+                        "worker requested {} transition for step {}",
+                        status, step_id
+                    ),
                     messages.clone(),
                     observed_tool_calls.to_vec(),
                     observed_tool_decisions.to_vec(),
@@ -885,8 +1010,11 @@ impl<P: ModelProvider> Agent<P> {
                 McpDriftDecision::Continue => {}
                 McpDriftDecision::Finalize(outcome) => return Err(*outcome),
             }
-            let planning_ctx =
-                self.build_tool_call_planning_context(active_plan_step_idx, tc, failed_repeat_counts);
+            let planning_ctx = self.build_tool_call_planning_context(
+                active_plan_step_idx,
+                tc,
+                failed_repeat_counts,
+            );
             match self.handle_failed_repeat_guard(
                 run_id.to_string(),
                 step,
@@ -1256,8 +1384,8 @@ impl<P: ModelProvider> Agent<P> {
                 )
                 .await
             }
-            RunPhase::WaitingForApproval | RunPhase::WaitingForOperatorInput => {
-                self.run_interrupt_phase_step(
+            RunPhase::WaitingForApproval | RunPhase::WaitingForOperatorInput => self
+                .run_interrupt_phase_step(
                     run_id,
                     step,
                     started_at,
@@ -1272,8 +1400,7 @@ impl<P: ModelProvider> Agent<P> {
                     total_token_usage,
                     taint_state,
                     &runtime_checkpoint.phase,
-                )
-            }
+                ),
             RunPhase::Setup => self.run_setup_phase_step(
                 run_id,
                 step,
@@ -1319,22 +1446,23 @@ impl<P: ModelProvider> Agent<P> {
                 total_token_usage,
                 taint_state,
             ),
-            RunPhase::Done | RunPhase::Failed | RunPhase::Cancelled => self.run_terminal_phase_step(
-                run_id,
-                step,
-                started_at,
-                messages,
-                observed_tool_calls,
-                observed_tool_decisions,
-                last_compaction_report,
-                hook_invocations,
-                provider_retry_count,
-                provider_error_count,
-                saw_token_usage,
-                total_token_usage,
-                taint_state,
-                &runtime_checkpoint.phase,
-            ),
+            RunPhase::Done | RunPhase::Failed | RunPhase::Cancelled => self
+                .run_terminal_phase_step(
+                    run_id,
+                    step,
+                    started_at,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_decisions,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                    &runtime_checkpoint.phase,
+                ),
         }
     }
 
@@ -2249,8 +2377,12 @@ impl<P: ModelProvider> Agent<P> {
             Err(outcome) => return Err(outcome),
         }
         if has_actionable_tool_calls {
-            runtime_checkpoint.tool_protocol_state.tool_only_phase_active = false;
-            runtime_checkpoint.tool_protocol_state.blocked_tool_only_count = 0;
+            runtime_checkpoint
+                .tool_protocol_state
+                .tool_only_phase_active = false;
+            runtime_checkpoint
+                .tool_protocol_state
+                .blocked_tool_only_count = 0;
         }
         let mut assistant = resp.assistant.clone();
         if let Some(c) = assistant.content.as_deref() {
@@ -2344,14 +2476,17 @@ impl<P: ModelProvider> Agent<P> {
                 taint_state,
                 enforce_implementation_integrity_guard,
                 runtime_checkpoint.retry_state.post_write_guard_retry_count,
-                runtime_checkpoint.retry_state.post_write_follow_on_turn_count,
+                runtime_checkpoint
+                    .retry_state
+                    .post_write_follow_on_turn_count,
             )
             .await;
         match verified_write_result {
             runtime_completion::VerifiedWriteResult::Done(outcome) => Err(*outcome),
             other => {
-                let control = apply_verified_write_follow_on(user_prompt, runtime_checkpoint, &other)
-                    .map(|update| apply_verified_write_follow_on_update(update, messages));
+                let control =
+                    apply_verified_write_follow_on(user_prompt, runtime_checkpoint, &other)
+                        .map(|update| apply_verified_write_follow_on_update(update, messages));
                 Ok(control)
             }
         }
@@ -2508,7 +2643,9 @@ impl<P: ModelProvider> Agent<P> {
             plan_tool_enforcement: self.plan_tool_enforcement,
             active_plan_step_idx: *active_plan_step_idx,
             plan_step_constraints_len: self.plan_step_constraints.len(),
-            tool_only_phase_active: runtime_checkpoint.tool_protocol_state.tool_only_phase_active,
+            tool_only_phase_active: runtime_checkpoint
+                .tool_protocol_state
+                .tool_only_phase_active,
             exact_final_answer_only_phase_active: runtime_checkpoint.phase
                 == crate::agent_runtime::state::RunPhase::CollectingFinalAnswer,
             enforce_implementation_integrity_guard,
@@ -2528,7 +2665,9 @@ impl<P: ModelProvider> Agent<P> {
                 *active_plan_step_idx,
                 enforce_implementation_integrity_guard,
                 blocked_attempt_count_next,
-                runtime_checkpoint.tool_protocol_state.operator_delivery_count,
+                runtime_checkpoint
+                    .tool_protocol_state
+                    .operator_delivery_count,
                 messages,
                 observed_tool_calls.to_vec(),
                 observed_tool_executions,
@@ -2541,8 +2680,12 @@ impl<P: ModelProvider> Agent<P> {
                 *saw_token_usage,
                 total_token_usage,
                 taint_state,
-                runtime_checkpoint.retry_state.exact_final_answer_retry_count,
-                runtime_checkpoint.retry_state.required_validation_retry_count,
+                runtime_checkpoint
+                    .retry_state
+                    .exact_final_answer_retry_count,
+                runtime_checkpoint
+                    .retry_state
+                    .required_validation_retry_count,
             )
             .await;
         match apply_runtime_completion_action_to_checkpoint(
@@ -2626,15 +2769,15 @@ impl<P: ModelProvider> Agent<P> {
             Err(outcome) => return Err(outcome),
         }
 
-        if let Some(effect) = completion_blocked_effect_from_post_tool_refresh(
-            refresh_phase_state_from_tool_facts(
+        if let Some(effect) =
+            completion_blocked_effect_from_post_tool_refresh(refresh_phase_state_from_tool_facts(
                 user_prompt,
                 runtime_checkpoint,
                 observed_tool_calls,
                 observed_tool_executions,
                 successful_write_tool_ok_this_step,
-            ),
-        ) {
+            ))
+        {
             self.emit_phase_transition(run_id, step, &effect.transition);
             self.emit_event(
                 run_id,
@@ -2898,8 +3041,9 @@ impl<P: ModelProvider> Agent<P> {
                     if !result.append_messages.is_empty() {
                         messages.extend(result.append_messages);
                         if self.compaction_settings.max_context_chars > 0 {
-                            let compacted_again = maybe_compact(messages, &self.compaction_settings)
-                                .map_err(|e| format!("compaction failed after hooks: {e}"));
+                            let compacted_again =
+                                maybe_compact(messages, &self.compaction_settings)
+                                    .map_err(|e| format!("compaction failed after hooks: {e}"));
                             match compacted_again {
                                 Ok(out) => {
                                     if let Some(report) = out.report.clone() {
@@ -3070,8 +3214,8 @@ impl<P: ModelProvider> Agent<P> {
         let mut total_token_usage = TokenUsage::default();
         let mut saw_token_usage = false;
         let mut taint_state = TaintState::new();
-        let mut runtime_checkpoint =
-            initial_runtime_checkpoint.unwrap_or_else(|| self.initial_runtime_checkpoint(user_prompt));
+        let mut runtime_checkpoint = initial_runtime_checkpoint
+            .unwrap_or_else(|| self.initial_runtime_checkpoint(user_prompt));
         let mut active_plan_step_idx: usize = 0;
         let mut last_user_output: Option<String> = None;
         let mut step_retry_counts: std::collections::BTreeMap<String, u32> =

@@ -286,6 +286,7 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     input.prompt,
                     input.execution_tier.clone(),
                     &[],
+                    Some(input.task_contract),
                 );
                 super::checkpoint::validate_terminal_runtime_state_checkpoint(
                     &outcome,
@@ -345,7 +346,7 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     run_artifact_path,
                     None,
                 )
-                    .map(Some);
+                .map(Some);
             }
             emit_planner_end_event(
                 input.event_sink,
@@ -473,17 +474,17 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                 input.prompt,
                 input.execution_tier.clone(),
                 &[],
+                Some(input.task_contract),
             );
             super::checkpoint::validate_terminal_runtime_state_checkpoint(
                 &outcome,
                 &final_checkpoint,
             )?;
-            let completion_decisions = super::checkpoint::completion_decisions_for_outcome(
-                &outcome,
-                &final_checkpoint,
-            );
+            let completion_decisions =
+                super::checkpoint::completion_decisions_for_outcome(&outcome, &final_checkpoint);
             let run_checkpoint = super::checkpoint::checkpoint_for_outcome(&outcome);
-            let interrupt_history = crate::agent::interrupts::interrupt_history_for_outcome(&outcome);
+            let interrupt_history =
+                crate::agent::interrupts::interrupt_history_for_outcome(&outcome);
             let phase_summary = super::checkpoint::phase_summary_for_outcome(&outcome);
             super::checkpoint::validate_final_run_artifact_consistency(
                 &outcome,

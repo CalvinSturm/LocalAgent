@@ -141,6 +141,7 @@ impl<P: ModelProvider> Agent<P> {
             self.has_user_facing_assistant_closeout_after_last_tool(&messages);
         match crate::agent::completion_policy::decide_verified_write_completion(
             user_prompt,
+            self.required_validation_command(user_prompt),
             &verified_paths,
             has_post_tool_assistant_closeout,
             post_write_follow_on_turn_count,

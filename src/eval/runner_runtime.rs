@@ -106,6 +106,12 @@ fn truncate_bytes_lossy(bytes: &[u8], max: usize) -> (String, bool) {
     (String::from_utf8_lossy(&bytes[..max]).into_owned(), true)
 }
 
+fn verifier_command_string(spec: &VerifierSpec) -> String {
+    let mut parts = vec![spec.command.clone()];
+    parts.extend(spec.args.clone());
+    parts.join(" ")
+}
+
 struct GateBuild {
     gate: Box<dyn ToolGate>,
     policy_hash_hex: Option<String>,
@@ -395,6 +401,16 @@ pub(crate) async fn run_single(
             hooks_config_hash_hex: hooks_config_hash_hex.clone(),
             ..gate_ctx
         },
+        validation_requirement: task.verifier.as_ref().map(|spec| {
+            crate::agent::ValidationRequirement::Command {
+                command: verifier_command_string(spec),
+            }
+        }),
+        final_answer_mode: task.exact_final_answer.as_ref().map(|required_text| {
+            crate::agent::FinalAnswerMode::Exact {
+                required_text: required_text.clone(),
+            }
+        }),
         mcp_registry,
         stream: false,
         event_sink: Some(Box::new(EvalEventCaptureSink {

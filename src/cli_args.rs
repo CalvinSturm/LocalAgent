@@ -1203,6 +1203,9 @@ pub(crate) struct RunArgs {
     #[arg(skip)]
     pub(crate) validation_command_override: Option<String>,
 
+    #[arg(skip)]
+    pub(crate) exact_final_answer_override: Option<String>,
+
     #[arg(
         long,
         default_value_t = false,

@@ -206,6 +206,7 @@ fn build_generated_check_from_learning(
         required: false,
         allowed_tools: Some(vec![]),
         validation_command: None,
+        exact_final_answer: None,
         required_flags: Vec::new(),
         pass_criteria: crate::checks::schema::PassCriteria {
             kind: crate::checks::schema::PassCriteriaType::Contains,

@@ -307,7 +307,9 @@ fn resolve_execution_tier(
                     | SideEffects::Browser
             )
         })
-        && all_tools.iter().any(|tool| matches!(tool.side_effects, SideEffects::Network));
+        && all_tools
+            .iter()
+            .any(|tool| matches!(tool.side_effects, SideEffects::Network));
     if has_only_mcp_tools {
         return crate::agent_runtime::state::ExecutionTier::McpOnly;
     }
@@ -424,10 +426,7 @@ mod tests {
     use crate::gate::ProviderKind;
     use crate::providers::mock::MockProvider;
 
-    async fn launch_for_args(
-        argv: &[&str],
-        prompt: &str,
-    ) -> anyhow::Result<super::RuntimeLaunch> {
+    async fn launch_for_args(argv: &[&str], prompt: &str) -> anyhow::Result<super::RuntimeLaunch> {
         let tmp = tempdir().expect("tempdir");
         let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
         let mut args = crate::RunArgs::parse_from(argv);
@@ -451,7 +450,13 @@ mod tests {
     #[tokio::test]
     async fn launch_resolves_explicit_task_kind_contract() {
         let launch = launch_for_args(
-            &["localagent", "--agent-mode", "plan", "--task-kind", "code fix"],
+            &[
+                "localagent",
+                "--agent-mode",
+                "plan",
+                "--task-kind",
+                "code fix",
+            ],
             "Inspect and fix the project.",
         )
         .await
@@ -480,10 +485,28 @@ mod tests {
         )
         .await
         .expect("launch");
-        assert_eq!(launch.task_contract.write_requirement, WriteRequirement::Optional);
-        assert!(!launch.task_contract.completion_policy.require_pre_write_read);
-        assert!(!launch.task_contract.completion_policy.require_post_write_readback);
-        assert!(!launch.task_contract.completion_policy.require_effective_write);
+        assert_eq!(
+            launch.task_contract.write_requirement,
+            WriteRequirement::Optional
+        );
+        assert!(
+            !launch
+                .task_contract
+                .completion_policy
+                .require_pre_write_read
+        );
+        assert!(
+            !launch
+                .task_contract
+                .completion_policy
+                .require_post_write_readback
+        );
+        assert!(
+            !launch
+                .task_contract
+                .completion_policy
+                .require_effective_write
+        );
     }
 
     #[tokio::test]
@@ -557,6 +580,40 @@ mod tests {
         assert_eq!(
             launch.task_contract_provenance.final_answer_mode,
             ContractValueSource::Inferred
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_prefers_explicit_exact_final_answer_override() {
+        let tmp = tempdir().expect("tempdir");
+        let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
+        let mut args = crate::RunArgs::parse_from(["localagent", "--agent-mode", "plan"]);
+        args.workdir = tmp.path().to_path_buf();
+        args.exact_final_answer_override = Some("tests passed".to_string());
+        let launch = prepare_runtime_launch(
+            &MockProvider::new(),
+            ProviderKind::Mock,
+            "mock://local",
+            "mock-model",
+            "Reply with exactly:\n\nverified fix\n",
+            &args,
+            &paths,
+            None,
+            None,
+            None,
+            true,
+        )
+        .await
+        .expect("launch");
+        assert_eq!(
+            launch.task_contract.final_answer_mode,
+            FinalAnswerMode::Exact {
+                required_text: "tests passed".to_string(),
+            }
+        );
+        assert_eq!(
+            launch.task_contract_provenance.final_answer_mode,
+            ContractValueSource::Explicit
         );
     }
 

@@ -215,24 +215,21 @@ pub(crate) fn exact_final_answer_boundary_transition_decision() -> RuntimePhaseT
 }
 
 pub(crate) fn collect_validation_facts(
-    user_prompt: &str,
+    required_command: Option<&str>,
+    exact_final_answer_required: bool,
     tool_facts: &[crate::agent::ToolFactV1],
 ) -> ValidationFacts {
-    let required_command = crate::agent_impl_guard::prompt_required_validation_command(user_prompt);
     ValidationFacts {
         required_command: required_command.map(ToOwned::to_owned),
         satisfied: crate::agent::required_validation_command_satisfied_from_facts(
-            user_prompt,
+            required_command,
             tool_facts,
         ),
         repair_needed: crate::agent::required_validation_failure_needs_repair_from_facts(
-            user_prompt,
+            required_command,
             tool_facts,
         ),
-        exact_final_answer_required: crate::agent_impl_guard::prompt_required_exact_final_answer(
-            user_prompt,
-        )
-        .is_some(),
+        exact_final_answer_required,
     }
 }
 
@@ -271,7 +268,7 @@ pub(crate) fn collect_validation_facts_from_checkpoint(
                 )
             })
         }),
-        exact_final_answer_required: checkpoint.validation_state.collecting_final_answer,
+        exact_final_answer_required: checkpoint.validation_state.exact_final_answer_required,
     }
 }
 
@@ -313,12 +310,11 @@ pub(crate) fn decide_validation_phase_transition(
 
 pub(crate) fn decide_verified_write_completion(
     user_prompt: &str,
+    required_validation_command: Option<&str>,
     verified_paths: &[String],
     has_post_tool_assistant_closeout: bool,
     post_write_follow_on_turn_count: u32,
 ) -> VerifiedWriteCompletionDecision {
-    let required_validation_command =
-        crate::agent_impl_guard::prompt_required_validation_command(user_prompt);
     if required_validation_command.is_some() && !has_post_tool_assistant_closeout {
         return VerifiedWriteCompletionDecision::StartRequiredValidationPhase(
             required_validation_phase_message(
@@ -347,8 +343,7 @@ mod tests {
         decide_validation_phase_transition, decide_verified_write_completion,
         exact_final_answer_boundary_transition_decision, operator_boundary_transition_decision,
         post_validation_final_answer_transition_decision,
-        resume_phase_from_checkpoint_state,
-        required_validation_boundary_transition_decision,
+        required_validation_boundary_transition_decision, resume_phase_from_checkpoint_state,
         validation_resume_execution_transition_decision, RequiredValidationCompletionDecision,
         RuntimeCheckpointResumeKind, ValidationFacts, ValidationPhaseTransitionDecision,
         VerifiedWriteCompletionDecision,
@@ -359,6 +354,7 @@ mod tests {
     fn verified_write_policy_starts_validation_when_prompt_requires_it() {
         let decision = decide_verified_write_completion(
             "Before finishing, run cargo test successfully.",
+            Some("cargo test"),
             &[],
             false,
             0,
@@ -375,6 +371,7 @@ mod tests {
     fn verified_write_policy_requests_follow_on_when_closeout_missing() {
         let decision = decide_verified_write_completion(
             "Summarize what changed after the fix.",
+            None,
             &["src/main.rs".to_string()],
             false,
             0,
@@ -428,7 +425,8 @@ mod tests {
     #[test]
     fn collect_validation_facts_marks_successful_matching_shell_as_satisfied() {
         let facts = collect_validation_facts(
-            "Before finishing, run cargo test successfully.",
+            Some("cargo test"),
+            false,
             &[ToolFactV1::Validation {
                 sequence: 1,
                 tool_call_id: "tc1".to_string(),
@@ -496,7 +494,8 @@ mod tests {
     #[test]
     fn collect_validation_facts_marks_failed_matching_validation_as_repair_needed() {
         let facts = collect_validation_facts(
-            "Before finishing, run cargo test successfully.",
+            Some("cargo test"),
+            false,
             &[ToolFactV1::Validation {
                 sequence: 0,
                 tool_call_id: "tc1".to_string(),
@@ -516,6 +515,8 @@ mod tests {
             runtime_run_id: "run-1".to_string(),
             prompt: "continue".to_string(),
             resume_argv: Vec::new(),
+            validation_command_override: None,
+            exact_final_answer_override: None,
             checkpoint: Some(crate::store::RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: crate::store::RunCheckpointPhase::WaitingForApproval,
@@ -565,6 +566,8 @@ mod tests {
             runtime_run_id: "run-1".to_string(),
             prompt: "continue".to_string(),
             resume_argv: Vec::new(),
+            validation_command_override: None,
+            exact_final_answer_override: None,
             checkpoint: Some(crate::store::RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: crate::store::RunCheckpointPhase::Interrupted,
@@ -586,6 +589,7 @@ mod tests {
                     required_command: Some("cargo test".to_string()),
                     satisfied: false,
                     repair_mode: false,
+                    exact_final_answer_required: false,
                     collecting_final_answer: false,
                 },
                 approval_state: crate::agent_runtime::state::ApprovalState::default(),
@@ -616,6 +620,8 @@ mod tests {
             runtime_run_id: "run-1".to_string(),
             prompt: "continue".to_string(),
             resume_argv: Vec::new(),
+            validation_command_override: None,
+            exact_final_answer_override: None,
             checkpoint: Some(crate::store::RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: crate::store::RunCheckpointPhase::Interrupted,
@@ -637,6 +643,7 @@ mod tests {
                     required_command: Some("cargo test".to_string()),
                     satisfied: true,
                     repair_mode: false,
+                    exact_final_answer_required: true,
                     collecting_final_answer: true,
                 },
                 approval_state: crate::agent_runtime::state::ApprovalState::default(),

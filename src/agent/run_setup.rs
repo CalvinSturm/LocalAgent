@@ -229,16 +229,16 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     pub(super) fn required_validation_phase_message(&self, user_prompt: &str) -> String {
-        let required_command =
-            crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
-                .unwrap_or("the required validation command");
+        let required_command = self
+            .required_validation_command(user_prompt)
+            .unwrap_or("the required validation command");
         format!(
             "Required validation phase active. Return exactly one shell tool call and no prose. Run `{required_command}`. Example arguments: {{\"command\":\"{required_command}\"}}."
         )
     }
 
     pub(super) fn post_validation_final_answer_only_message(&self, user_prompt: &str) -> String {
-        if crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt).is_some() {
+        if self.exact_final_answer_required(user_prompt) {
             "Validation already succeeded. Do not call more tools. Reply with the required final answer only.".to_string()
         } else {
             "Validation already succeeded. Do not call more tools. Reply with the final answer only.".to_string()

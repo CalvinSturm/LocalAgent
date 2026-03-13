@@ -11,8 +11,7 @@ use crate::planner::RunMode;
 use super::{
     ConfigFingerprintV1, McpPinSnapshotRecord, PlannerRunRecord, PolicyRecordInfo, RunCliConfig,
     RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths, RuntimeRunCheckpointRecordV1,
-    StatePaths,
-    ToolReliabilityRecord, WorkerRunRecord,
+    StatePaths, ToolReliabilityRecord, WorkerRunRecord,
 };
 
 fn summarize_tool_reliability(outcome: &AgentOutcome) -> ToolReliabilityRecord {

@@ -725,7 +725,7 @@ For the remaining heuristic-reconciliation work, LocalAgent should prefer these 
 
 Why this ordering is correct:
 
-- checks, eval tasks, and manual packs already act like structured task specifications, so they are the lowest-risk place to stop encoding validator/output requirements purely in prompt text
+- checks and eval tasks now feed explicit validator/output contract data into the runtime; manual packs remain the next follow-on surface if they need the same structured task metadata
 - instruction/task profiles are the next-best explicit source for reusable task-shaping metadata
 - CLI/config should remain available for operator-authored overrides, but should not be the only path to structured task contracts
 - prompt heuristics may remain as fallback where no explicit metadata exists, but they should no longer be the preferred runtime-semantic source

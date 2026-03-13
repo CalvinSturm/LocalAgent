@@ -43,24 +43,37 @@ pub(crate) fn decide_required_validation_phase_response(
     }
     if !validation_shell_available {
         runtime_checkpoint.phase = RunPhase::Executing;
-        runtime_checkpoint.retry_state.blocked_required_validation_phase_count = 0;
+        runtime_checkpoint
+            .retry_state
+            .blocked_required_validation_phase_count = 0;
         return RequiredValidationPhaseDecision::Proceed;
     }
 
-    let assistant_has_prose = !assistant.content.as_deref().unwrap_or_default().trim().is_empty();
+    let assistant_has_prose = !assistant
+        .content
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty();
     let valid_required_validation_turn =
         tool_calls.len() == 1 && tool_calls[0].name == "shell" && !assistant_has_prose;
     if valid_required_validation_turn {
         runtime_checkpoint.phase = RunPhase::Executing;
-        runtime_checkpoint.retry_state.blocked_required_validation_phase_count = 0;
+        runtime_checkpoint
+            .retry_state
+            .blocked_required_validation_phase_count = 0;
         return RequiredValidationPhaseDecision::TransitionToExecuting;
     }
 
-    runtime_checkpoint.retry_state.blocked_required_validation_phase_count = runtime_checkpoint
+    runtime_checkpoint
+        .retry_state
+        .blocked_required_validation_phase_count = runtime_checkpoint
         .retry_state
         .blocked_required_validation_phase_count
         .saturating_add(1);
-    let blocked_count = runtime_checkpoint.retry_state.blocked_required_validation_phase_count;
+    let blocked_count = runtime_checkpoint
+        .retry_state
+        .blocked_required_validation_phase_count;
     if blocked_count >= 2 {
         return RequiredValidationPhaseDecision::PlannerError {
             reason: "MODEL_TOOL_PROTOCOL_VIOLATION: required validation phase requires exactly one shell tool call and no prose".to_string(),
@@ -88,11 +101,15 @@ pub(crate) fn decide_post_response_phase_guard(
         && has_actionable_tool_calls
         && tool_calls.iter().all(|tc| tc.name == "shell")
     {
-        runtime_checkpoint.retry_state.blocked_validation_failure_repair_count = runtime_checkpoint
+        runtime_checkpoint
+            .retry_state
+            .blocked_validation_failure_repair_count = runtime_checkpoint
             .retry_state
             .blocked_validation_failure_repair_count
             .saturating_add(1);
-        let blocked_count = runtime_checkpoint.retry_state.blocked_validation_failure_repair_count;
+        let blocked_count = runtime_checkpoint
+            .retry_state
+            .blocked_validation_failure_repair_count;
         if blocked_count >= 2 {
             return PostResponseGuardDecision::PlannerError {
                 reason: "MODEL_TOOL_PROTOCOL_VIOLATION: validation is still failing; inspect and change code before retrying shell".to_string(),
@@ -113,7 +130,9 @@ pub(crate) fn decide_post_response_phase_guard(
         && runtime_checkpoint.validation_state.satisfied
         && has_actionable_tool_calls
     {
-        runtime_checkpoint.retry_state.blocked_post_validation_final_answer_count = runtime_checkpoint
+        runtime_checkpoint
+            .retry_state
+            .blocked_post_validation_final_answer_count = runtime_checkpoint
             .retry_state
             .blocked_post_validation_final_answer_count
             .saturating_add(1);
@@ -136,19 +155,31 @@ pub(crate) fn decide_post_response_phase_guard(
         };
     }
 
-    if runtime_checkpoint.tool_protocol_state.tool_only_phase_active
+    if runtime_checkpoint
+        .tool_protocol_state
+        .tool_only_phase_active
         && model_signaled_finalize
-        && !assistant.content.as_deref().unwrap_or_default().trim().is_empty()
+        && !assistant
+            .content
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
     {
-        runtime_checkpoint.tool_protocol_state.blocked_tool_only_count = runtime_checkpoint
+        runtime_checkpoint
+            .tool_protocol_state
+            .blocked_tool_only_count = runtime_checkpoint
             .tool_protocol_state
             .blocked_tool_only_count
             .saturating_add(1);
-        let blocked_count = runtime_checkpoint.tool_protocol_state.blocked_tool_only_count;
+        let blocked_count = runtime_checkpoint
+            .tool_protocol_state
+            .blocked_tool_only_count;
         if blocked_count >= 2 {
             return PostResponseGuardDecision::PlannerError {
-                reason: "MODEL_TOOL_PROTOCOL_VIOLATION: repeated prose output during tool-only phase"
-                    .to_string(),
+                reason:
+                    "MODEL_TOOL_PROTOCOL_VIOLATION: repeated prose output during tool-only phase"
+                        .to_string(),
                 blocked_count,
                 step_block_reason: "tool_only_violation",
                 failure_class: "E_PROTOCOL_TOOL_ONLY",

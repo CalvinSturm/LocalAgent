@@ -14,6 +14,8 @@ pub struct CheckFrontmatter {
     #[serde(default)]
     pub validation_command: Option<String>,
     #[serde(default)]
+    pub exact_final_answer: Option<String>,
+    #[serde(default)]
     pub required_flags: Vec<String>,
     pub pass_criteria: PassCriteria,
     #[serde(default)]
@@ -69,6 +71,11 @@ pub fn validate_frontmatter(fm: &CheckFrontmatter) -> anyhow::Result<()> {
     if let Some(command) = &fm.validation_command {
         if command.trim().is_empty() {
             anyhow::bail!("validation_command must not be empty when set");
+        }
+    }
+    if let Some(answer) = &fm.exact_final_answer {
+        if answer.trim().is_empty() {
+            anyhow::bail!("exact_final_answer must not be empty when set");
         }
     }
     if let Some(b) = &fm.budget {

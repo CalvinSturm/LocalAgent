@@ -147,9 +147,14 @@ async fn resume_from_runtime_checkpoint(
     Ok(())
 }
 
-fn load_resume_run_args(checkpoint: &store::RuntimeRunCheckpointRecordV1) -> anyhow::Result<RunArgs> {
+fn load_resume_run_args(
+    checkpoint: &store::RuntimeRunCheckpointRecordV1,
+) -> anyhow::Result<RunArgs> {
     ensure_resumable_checkpoint(checkpoint)?;
-    let mut run_args = crate::agent_runtime::checkpoint::parse_resume_args(&checkpoint.resume_argv)?;
+    let mut run_args =
+        crate::agent_runtime::checkpoint::parse_resume_args(&checkpoint.resume_argv)?;
+    run_args.validation_command_override = checkpoint.validation_command_override.clone();
+    run_args.exact_final_answer_override = checkpoint.exact_final_answer_override.clone();
     let resume_session = format!("resume-{}", checkpoint.runtime_run_id);
     run_args.no_session = false;
     run_args.reset_session = false;
@@ -237,12 +242,18 @@ fn seed_resume_session(
         },
         std::cmp::max(
             run_args.max_session_messages,
-            checkpoint.resume_session_messages.len().saturating_add(1).max(1),
+            checkpoint
+                .resume_session_messages
+                .len()
+                .saturating_add(1)
+                .max(1),
         ),
     )
 }
 
-fn resume_boundary_message(checkpoint: &store::RuntimeRunCheckpointRecordV1) -> crate::types::Message {
+fn resume_boundary_message(
+    checkpoint: &store::RuntimeRunCheckpointRecordV1,
+) -> crate::types::Message {
     let tool_summary = checkpoint
         .pending_tool_call
         .as_ref()
@@ -386,7 +397,10 @@ mod tests {
                 .lock()
                 .expect("lock seen")
                 .push(req.messages.clone());
-            let saw_tool_result = req.messages.iter().any(|msg| matches!(msg.role, Role::Tool));
+            let saw_tool_result = req
+                .messages
+                .iter()
+                .any(|msg| matches!(msg.role, Role::Tool));
             if saw_tool_result {
                 return Ok(GenerateResponse {
                     assistant: Message {
@@ -437,6 +451,8 @@ mod tests {
                 "--approval-mode".to_string(),
                 "interrupt".to_string(),
             ],
+            validation_command_override: None,
+            exact_final_answer_override: None,
             checkpoint: Some(RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: RunCheckpointPhase::WaitingForApproval,
@@ -479,13 +495,11 @@ mod tests {
                 tool_call_id: Some("resume_tc_1".to_string()),
                 reason: Some("shell approval required".to_string()),
             }],
-            phase_summary: vec![
-                crate::agent_runtime::state::PhaseSummaryEntryV1 {
-                    phase: crate::agent_runtime::state::RunPhase::WaitingForApproval,
-                    entered_at: "2026-01-01T00:00:01Z".to_string(),
-                    exited_at: None,
-                },
-            ],
+            phase_summary: vec![crate::agent_runtime::state::PhaseSummaryEntryV1 {
+                phase: crate::agent_runtime::state::RunPhase::WaitingForApproval,
+                entered_at: "2026-01-01T00:00:01Z".to_string(),
+                exited_at: None,
+            }],
             completion_decisions: Vec::new(),
             tool_facts: Vec::new(),
             tool_fact_envelopes: Vec::new(),
@@ -517,6 +531,8 @@ mod tests {
                 "--trust".to_string(),
                 "on".to_string(),
             ],
+            validation_command_override: None,
+            exact_final_answer_override: None,
             checkpoint: Some(RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: RunCheckpointPhase::Interrupted,
@@ -592,6 +608,7 @@ mod tests {
                 required_command: Some("cargo test".to_string()),
                 satisfied: false,
                 repair_mode: false,
+                exact_final_answer_required: false,
                 collecting_final_answer: false,
             };
         checkpoint.boundary_output = Some("operator paused during validation".to_string());
@@ -615,6 +632,8 @@ mod tests {
                 "--trust".to_string(),
                 "on".to_string(),
             ],
+            validation_command_override: None,
+            exact_final_answer_override: None,
             checkpoint: None,
             runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1 {
                 schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
@@ -732,10 +751,9 @@ mod tests {
         assert!(seen.iter().any(|messages| {
             messages.iter().any(|message| {
                 message.role == Role::Developer
-                    && message
-                        .content
-                        .as_deref()
-                        .is_some_and(|content| content.contains("RUNTIME CHECKPOINT RESUME HANDOFF"))
+                    && message.content.as_deref().is_some_and(|content| {
+                        content.contains("RUNTIME CHECKPOINT RESUME HANDOFF")
+                    })
             })
         }));
 
@@ -746,7 +764,12 @@ mod tests {
             resumed_checkpoint.runtime_state_checkpoint.phase,
             crate::agent_runtime::state::RunPhase::Executing
         );
-        assert!(!resumed_checkpoint.runtime_state_checkpoint.approval_state.awaiting_approval);
+        assert!(
+            !resumed_checkpoint
+                .runtime_state_checkpoint
+                .approval_state
+                .awaiting_approval
+        );
         assert!(resumed_checkpoint
             .runtime_state_checkpoint
             .approval_state
@@ -759,30 +782,32 @@ mod tests {
             .is_none());
         assert!(resumed_checkpoint.checkpoint.is_none());
         assert!(resumed_checkpoint.pending_tool_call.is_none());
-        assert!(resumed_checkpoint.interrupt_history.iter().all(|entry| entry
-            .resolved_at
-            .as_deref()
-            .is_some()));
+        assert!(resumed_checkpoint
+            .interrupt_history
+            .iter()
+            .all(|entry| entry.resolved_at.as_deref().is_some()));
         assert!(resumed_checkpoint.phase_summary.iter().any(|entry| {
             entry.phase == crate::agent_runtime::state::RunPhase::Executing
                 && entry.exited_at.is_none()
         }));
 
-        let run_record =
-            crate::store::load_run_record(&paths.state_dir, &result.outcome.run_id).expect("run record");
+        let run_record = crate::store::load_run_record(&paths.state_dir, &result.outcome.run_id)
+            .expect("run record");
         assert!(run_record.phase_summary.iter().any(|entry| {
             entry.phase == crate::agent_runtime::state::RunPhase::WaitingForApproval
         }));
-        assert!(run_record.phase_summary.iter().any(|entry| {
-            entry.phase == crate::agent_runtime::state::RunPhase::Done
-        }));
+        assert!(run_record
+            .phase_summary
+            .iter()
+            .any(|entry| { entry.phase == crate::agent_runtime::state::RunPhase::Done }));
         assert!(run_record.interrupt_history.iter().any(|entry| {
             entry.kind == crate::agent_runtime::state::InterruptKindV1::ApprovalRequired
                 && entry.resolved_at.is_some()
         }));
-        assert!(run_record.completion_decisions.iter().any(|decision| {
-            decision.kind == "resume" && decision.allowed
-        }));
+        assert!(run_record
+            .completion_decisions
+            .iter()
+            .any(|decision| { decision.kind == "resume" && decision.allowed }));
     }
 
     #[tokio::test]
@@ -818,10 +843,9 @@ mod tests {
         assert!(seen.iter().any(|messages| {
             messages.iter().any(|message| {
                 message.role == Role::Developer
-                    && message
-                        .content
-                        .as_deref()
-                        .is_some_and(|content| content.contains("RUNTIME CHECKPOINT RESUME HANDOFF"))
+                    && message.content.as_deref().is_some_and(|content| {
+                        content.contains("RUNTIME CHECKPOINT RESUME HANDOFF")
+                    })
             })
         }));
 
@@ -834,40 +858,46 @@ mod tests {
         );
         assert!(resumed_checkpoint.checkpoint.is_none());
         assert!(resumed_checkpoint.pending_tool_call.is_none());
-        assert!(resumed_checkpoint.interrupt_history.iter().all(|entry| entry
-            .resolved_at
-            .as_deref()
-            .is_some()));
+        assert!(resumed_checkpoint
+            .interrupt_history
+            .iter()
+            .all(|entry| entry.resolved_at.as_deref().is_some()));
         assert!(resumed_checkpoint.phase_summary.iter().any(|entry| {
             entry.phase == crate::agent_runtime::state::RunPhase::Executing
                 && entry.exited_at.is_none()
         }));
-        assert!(resumed_checkpoint.completion_decisions.iter().any(|decision| {
-            decision.kind == "resume" && decision.allowed
-        }));
+        assert!(resumed_checkpoint
+            .completion_decisions
+            .iter()
+            .any(|decision| { decision.kind == "resume" && decision.allowed }));
 
-        let run_record =
-            crate::store::load_run_record(&paths.state_dir, &result.outcome.run_id).expect("run record");
+        let run_record = crate::store::load_run_record(&paths.state_dir, &result.outcome.run_id)
+            .expect("run record");
         assert!(run_record.phase_summary.iter().any(|entry| {
             entry.phase == crate::agent_runtime::state::RunPhase::WaitingForOperatorInput
         }));
-        assert!(run_record.phase_summary.iter().any(|entry| {
-            entry.phase == crate::agent_runtime::state::RunPhase::Done
-        }));
+        assert!(run_record
+            .phase_summary
+            .iter()
+            .any(|entry| { entry.phase == crate::agent_runtime::state::RunPhase::Done }));
         assert!(run_record.interrupt_history.iter().any(|entry| {
             entry.kind == crate::agent_runtime::state::InterruptKindV1::OperatorInterrupt
                 && entry.resolved_at.is_some()
         }));
-        assert!(run_record.completion_decisions.iter().any(|decision| {
-            decision.kind == "resume" && decision.allowed
-        }));
+        assert!(run_record
+            .completion_decisions
+            .iter()
+            .any(|decision| { decision.kind == "resume" && decision.allowed }));
     }
 
     #[test]
     fn interrupted_checkpoint_resume_metadata_is_supported() {
         let checkpoint = interrupted_checkpoint_record();
         let run_args = load_resume_run_args(&checkpoint).expect("resume args");
-        assert_eq!(run_args.prompt.as_deref(), Some("continue the interrupted task"));
+        assert_eq!(
+            run_args.prompt.as_deref(),
+            Some("continue the interrupted task")
+        );
 
         let prompt = checkpoint_resume_prompt(&checkpoint);
         assert!(prompt.contains("stored boundary"));
@@ -877,6 +907,23 @@ mod tests {
         assert!(body.contains("Boundary phase: waiting_for_operator_input"));
         assert!(body.contains("Resume target phase: executing"));
         assert!(body.contains("run interrupted by operator"));
+    }
+
+    #[test]
+    fn interrupted_checkpoint_restores_explicit_contract_overrides() {
+        let mut checkpoint = interrupted_checkpoint_record();
+        checkpoint.validation_command_override = Some("Cargo test".to_string());
+        checkpoint.exact_final_answer_override = Some("tests passed".to_string());
+
+        let run_args = load_resume_run_args(&checkpoint).expect("resume args");
+        assert_eq!(
+            run_args.validation_command_override.as_deref(),
+            Some("Cargo test")
+        );
+        assert_eq!(
+            run_args.exact_final_answer_override.as_deref(),
+            Some("tests passed")
+        );
     }
 
     #[test]
@@ -925,7 +972,8 @@ mod tests {
     #[test]
     fn cancelled_checkpoint_is_rejected_as_non_resumable() {
         let checkpoint = cancelled_checkpoint_record();
-        let err = load_resume_run_args(&checkpoint).expect_err("cancelled checkpoint must not resume");
+        let err =
+            load_resume_run_args(&checkpoint).expect_err("cancelled checkpoint must not resume");
         assert!(err
             .to_string()
             .contains("is not resumable: runtime phase is Cancelled"));

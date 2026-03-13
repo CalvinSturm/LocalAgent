@@ -31,7 +31,10 @@ fn push_task_contract_section(out: &mut String, record: &RunRecord) {
         "  validation_requirement: {:?}\n",
         contract.validation_requirement
     ));
-    out.push_str(&format!("  allowed_tools: {}\n", format_allowed_tools(record)));
+    out.push_str(&format!(
+        "  allowed_tools: {}\n",
+        format_allowed_tools(record)
+    ));
     out.push_str(&format!(
         "  final_answer_mode: {:?}\n",
         contract.final_answer_mode
@@ -59,7 +62,10 @@ fn push_task_contract_section(out: &mut String, record: &RunRecord) {
             "  validation_requirement: {:?}\n",
             provenance.validation_requirement
         ));
-        out.push_str(&format!("  allowed_tools: {:?}\n", provenance.allowed_tools));
+        out.push_str(&format!(
+            "  allowed_tools: {:?}\n",
+            provenance.allowed_tools
+        ));
         out.push_str(&format!(
             "  allowed_tools_semantics: {:?}\n",
             provenance.allowed_tools_semantics
@@ -83,7 +89,10 @@ fn push_task_contract_section(out: &mut String, record: &RunRecord) {
     if let Some(checkpoint) = &record.final_checkpoint {
         out.push_str("final_checkpoint:\n");
         out.push_str(&format!("  phase: {:?}\n", checkpoint.phase));
-        out.push_str(&format!("  execution_tier: {:?}\n", checkpoint.execution_tier));
+        out.push_str(&format!(
+            "  execution_tier: {:?}\n",
+            checkpoint.execution_tier
+        ));
         out.push_str(&format!("  step_index: {}\n", checkpoint.step_index));
     }
     if let Some(execution_tier) = &record.execution_tier {

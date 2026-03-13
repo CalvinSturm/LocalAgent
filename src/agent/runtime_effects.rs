@@ -3,12 +3,8 @@ use crate::types::Message;
 use super::completion_policy::{
     validation_resume_execution_transition_decision, RuntimePhaseTransitionDecision,
 };
-use super::phase_transitions::{
-    PostToolPhaseRefreshEffect, VerifiedWriteFollowOnUpdate,
-};
-use super::response_guards::{
-    PostResponseGuardDecision, RequiredValidationPhaseDecision,
-};
+use super::phase_transitions::{PostToolPhaseRefreshEffect, VerifiedWriteFollowOnUpdate};
+use super::response_guards::{PostResponseGuardDecision, RequiredValidationPhaseDecision};
 use super::{PhaseLoopControl, PhaseStepDispatch, Role};
 
 pub(crate) struct StepBlockedEffect {

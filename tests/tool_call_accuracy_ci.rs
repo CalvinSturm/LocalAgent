@@ -166,6 +166,8 @@ fn build_agent<P: ModelProvider + 'static>(
             taint_overall: TaintLevel::Clean,
             taint_sources: Vec::new(),
         },
+        validation_requirement: None,
+        final_answer_mode: None,
         mcp_registry: None,
         stream: false,
         event_sink: Some(Box::new(EventCaptureSink { events })),

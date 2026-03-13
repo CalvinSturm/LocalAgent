@@ -16,9 +16,9 @@ use crate::store::{self, PlannerRunRecord, WorkerRunRecord};
 use crate::tools::ToolRuntime;
 use crate::types::Message;
 use crate::RunArgs;
+pub(crate) mod checkpoint;
 mod finalize;
 mod guard;
-pub(crate) mod checkpoint;
 mod launch;
 mod planner_phase;
 mod setup;
@@ -315,6 +315,8 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         },
         gate,
         gate_ctx,
+        validation_requirement: Some(task_contract.validation_requirement.clone()),
+        final_answer_mode: Some(task_contract.final_answer_mode.clone()),
         mcp_registry,
         stream: args.stream,
         event_sink,
@@ -393,7 +395,13 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     let initial_runtime_checkpoint = resume_checkpoint
         .as_ref()
         .map(|record| record.runtime_state_checkpoint.clone())
-        .unwrap_or_else(|| checkpoint::initial_runtime_state_checkpoint(execution_tier.clone(), prompt));
+        .unwrap_or_else(|| {
+            checkpoint::initial_runtime_state_checkpoint(
+                execution_tier.clone(),
+                prompt,
+                Some(&task_contract),
+            )
+        });
     let initial_runtime_checkpoint_record = if let Some(mut record) = resume_checkpoint {
         record.runtime_run_id = run_id.clone();
         record.prompt = prompt.to_string();
@@ -407,6 +415,8 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             runtime_run_id: run_id.clone(),
             prompt: prompt.to_string(),
             resume_argv: Vec::new(),
+            validation_command_override: args.validation_command_override.clone(),
+            exact_final_answer_override: args.exact_final_answer_override.clone(),
             checkpoint: None,
             runtime_state_checkpoint: initial_runtime_checkpoint.clone(),
             execution_tier: execution_tier.clone(),
@@ -512,46 +522,45 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         &outcome,
     );
 
-    let (run_artifact_path, runtime_checkpoint_path) = finalize_run_artifacts(
-        FinalizeRunArtifactsInput {
-        event_sink: &mut agent.event_sink,
-        args: &args,
-        prompt,
-        paths,
-        provider_kind,
-        base_url,
-        worker_model: &worker_model,
-        planner_model: &planner_model,
-        planner_strict_effective,
-        effective_plan_tool_enforcement,
-        resolved_settings: &resolved_settings,
-        hooks_config_path: &hooks_config_path,
-        mcp_config_path: &mcp_config_path,
-        tool_catalog: &tool_catalog,
-        mcp_tool_snapshot: &mcp_tool_snapshot,
-        mcp_tool_catalog_hash_hex: &mcp_tool_catalog_hash_hex,
-        policy_source,
-        policy_hash_hex,
-        policy_version,
-        includes_resolved,
-        mcp_allowlist,
-        tool_schema_hash_hex_map,
-        hooks_config_hash_hex,
-        instruction_resolution: &instruction_resolution,
-        task_contract: &task_contract,
-        task_contract_provenance: &task_contract_provenance,
-        execution_tier,
-        project_guidance_resolution: project_guidance_resolution.as_ref(),
-        repo_map_resolution: repo_map_resolution.as_ref(),
-        lsp_context_resolution: lsp_context_resolution.as_ref(),
-        activated_packs: &activated_packs,
-        outcome: &outcome,
-        planner_record,
-        worker_record,
-        mcp_runtime_trace: agent.mcp_runtime_trace.clone(),
-        mcp_pin_snapshot,
-    },
-    )?;
+    let (run_artifact_path, runtime_checkpoint_path) =
+        finalize_run_artifacts(FinalizeRunArtifactsInput {
+            event_sink: &mut agent.event_sink,
+            args: &args,
+            prompt,
+            paths,
+            provider_kind,
+            base_url,
+            worker_model: &worker_model,
+            planner_model: &planner_model,
+            planner_strict_effective,
+            effective_plan_tool_enforcement,
+            resolved_settings: &resolved_settings,
+            hooks_config_path: &hooks_config_path,
+            mcp_config_path: &mcp_config_path,
+            tool_catalog: &tool_catalog,
+            mcp_tool_snapshot: &mcp_tool_snapshot,
+            mcp_tool_catalog_hash_hex: &mcp_tool_catalog_hash_hex,
+            policy_source,
+            policy_hash_hex,
+            policy_version,
+            includes_resolved,
+            mcp_allowlist,
+            tool_schema_hash_hex_map,
+            hooks_config_hash_hex,
+            instruction_resolution: &instruction_resolution,
+            task_contract: &task_contract,
+            task_contract_provenance: &task_contract_provenance,
+            execution_tier,
+            project_guidance_resolution: project_guidance_resolution.as_ref(),
+            repo_map_resolution: repo_map_resolution.as_ref(),
+            lsp_context_resolution: lsp_context_resolution.as_ref(),
+            activated_packs: &activated_packs,
+            outcome: &outcome,
+            planner_record,
+            worker_record,
+            mcp_runtime_trace: agent.mcp_runtime_trace.clone(),
+            mcp_pin_snapshot,
+        })?;
 
     if !suppress_stdout_stream {
         if args.tui {

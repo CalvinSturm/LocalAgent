@@ -45,8 +45,11 @@ pub(crate) fn implementation_integrity_violation_with_tool_executions(
     tool_executions: &[ToolExecutionRecord],
     enforce_implementation_integrity_guard: bool,
 ) -> Option<String> {
-    let tool_facts =
-        crate::agent::tool_facts_from_calls_and_executions(user_prompt, observed_tool_calls, tool_executions);
+    let tool_facts = crate::agent::tool_facts_from_calls_and_executions(
+        prompt_required_validation_command(user_prompt),
+        observed_tool_calls,
+        tool_executions,
+    );
     crate::agent::implementation_integrity_violation_from_facts(
         user_prompt,
         final_output,
@@ -59,8 +62,11 @@ pub(crate) fn pending_post_write_verification_paths(
     observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
 ) -> std::collections::BTreeSet<String> {
-    let tool_facts =
-        crate::agent::tool_facts_from_calls_and_executions("", observed_tool_calls, tool_executions);
+    let tool_facts = crate::agent::tool_facts_from_calls_and_executions(
+        None,
+        observed_tool_calls,
+        tool_executions,
+    );
     crate::agent::pending_post_write_verification_paths_from_facts(&tool_facts)
 }
 
@@ -155,9 +161,15 @@ pub(crate) fn required_validation_command_satisfied(
     observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
 ) -> bool {
-    let tool_facts =
-        crate::agent::tool_facts_from_calls_and_executions(prompt, observed_tool_calls, tool_executions);
-    crate::agent::required_validation_command_satisfied_from_facts(prompt, &tool_facts)
+    let tool_facts = crate::agent::tool_facts_from_calls_and_executions(
+        prompt_required_validation_command(prompt),
+        observed_tool_calls,
+        tool_executions,
+    );
+    crate::agent::required_validation_command_satisfied_from_facts(
+        prompt_required_validation_command(prompt),
+        &tool_facts,
+    )
 }
 
 #[allow(dead_code)]
@@ -166,9 +178,15 @@ pub(crate) fn required_validation_failure_needs_repair(
     observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
 ) -> bool {
-    let tool_facts =
-        crate::agent::tool_facts_from_calls_and_executions(prompt, observed_tool_calls, tool_executions);
-    crate::agent::required_validation_failure_needs_repair_from_facts(prompt, &tool_facts)
+    let tool_facts = crate::agent::tool_facts_from_calls_and_executions(
+        prompt_required_validation_command(prompt),
+        observed_tool_calls,
+        tool_executions,
+    );
+    crate::agent::required_validation_failure_needs_repair_from_facts(
+        prompt_required_validation_command(prompt),
+        &tool_facts,
+    )
 }
 
 pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String> {
@@ -187,6 +205,7 @@ pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String>
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn final_output_matches_required_exact_answer(prompt: &str, final_output: &str) -> bool {
     let Some(required) = prompt_required_exact_final_answer(prompt) else {
         return true;
@@ -194,6 +213,7 @@ pub(crate) fn final_output_matches_required_exact_answer(prompt: &str, final_out
     final_output.trim() == required.trim()
 }
 
+#[allow(dead_code)]
 pub(crate) fn recover_required_exact_final_answer(
     prompt: &str,
     final_output: &str,
@@ -239,6 +259,7 @@ pub(crate) fn recover_required_exact_final_answer(
     (substring_matches == 1).then_some(required)
 }
 
+#[allow(dead_code)]
 fn fenced_code_blocks(text: &str) -> Vec<&str> {
     let mut blocks = Vec::new();
     let mut rest = text;

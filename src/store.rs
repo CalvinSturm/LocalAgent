@@ -6,28 +6,29 @@ mod hash;
 mod io;
 mod render;
 mod types;
-pub use hash::{
-    cli_trust_mode, config_hash_hex, hash_tool_schema, mcp_tool_snapshot_hash_hex,
-    provider_to_string, sha256_hex, stable_path_string, tool_schema_hash_hex_map,
-};
-pub(crate) use io::write_json_atomic;
-pub use io::{ensure_dir, load_run_record, write_run_record};
-pub use io::{
-    delete_runtime_checkpoint_record, load_runtime_checkpoint_record, write_runtime_checkpoint_record,
-};
-pub use render::{extract_session_messages, render_replay};
-pub use types::{
-    ActivatedPackRecord, ConfigFingerprintV1, McpPinSnapshotRecord, McpToolSnapshotEntry,
-    PendingApprovalToolCallV1, RuntimeRunCheckpointRecordV1,
-    PlannerRunRecord, RunCheckpointInterruptKind, RunCheckpointInterruptV1, RunCheckpointPhase,
-    RunCheckpointV1, RunCliConfig, RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths,
-    ToolCatalogEntry, ToolReliabilityRecord, WorkerRunRecord,
-};
 #[allow(unused_imports)]
 pub use crate::agent_runtime::state::{
     ApprovalState, CompletionDecisionRecordV1, ExecutionTier, InterruptHistoryEntryV1,
     InterruptKindV1, PhaseSummaryEntryV1, RetryState, RunCheckpointV1 as RuntimeStateCheckpointV1,
     RunPhase, ValidationState,
+};
+pub use hash::{
+    cli_trust_mode, config_hash_hex, hash_tool_schema, mcp_tool_snapshot_hash_hex,
+    provider_to_string, sha256_hex, stable_path_string, tool_schema_hash_hex_map,
+};
+pub(crate) use io::write_json_atomic;
+pub use io::{
+    delete_runtime_checkpoint_record, load_runtime_checkpoint_record,
+    write_runtime_checkpoint_record,
+};
+pub use io::{ensure_dir, load_run_record, write_run_record};
+pub use render::{extract_session_messages, render_replay};
+pub use types::{
+    ActivatedPackRecord, ConfigFingerprintV1, McpPinSnapshotRecord, McpToolSnapshotEntry,
+    PendingApprovalToolCallV1, PlannerRunRecord, RunCheckpointInterruptKind,
+    RunCheckpointInterruptV1, RunCheckpointPhase, RunCheckpointV1, RunCliConfig,
+    RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths, RuntimeRunCheckpointRecordV1,
+    ToolCatalogEntry, ToolReliabilityRecord, WorkerRunRecord,
 };
 
 #[derive(Debug, Clone)]
@@ -94,10 +95,10 @@ mod tests {
     use super::{
         config_hash_hex, load_run_record, load_runtime_checkpoint_record, render_replay,
         resolve_state_dir, sha256_hex, write_run_record, write_runtime_checkpoint_record,
-        ConfigFingerprintV1, PlannerRunRecord, PolicyRecordInfo, RunCliConfig,
-        RunMetadata, RunRecord, RunResolvedPaths, RunCheckpointInterruptKind,
-        RunCheckpointInterruptV1, RunCheckpointPhase, RunCheckpointV1,
-        RuntimeRunCheckpointRecordV1, ToolReliabilityRecord, WorkerRunRecord,
+        ConfigFingerprintV1, PlannerRunRecord, PolicyRecordInfo, RunCheckpointInterruptKind,
+        RunCheckpointInterruptV1, RunCheckpointPhase, RunCheckpointV1, RunCliConfig, RunMetadata,
+        RunRecord, RunResolvedPaths, RuntimeRunCheckpointRecordV1, ToolReliabilityRecord,
+        WorkerRunRecord,
     };
     use crate::agent::{
         AgentExitReason, AgentOutcome, AllowedToolsSemantics, CompletionPolicyV1,
@@ -476,11 +477,17 @@ mod tests {
         assert_eq!(loaded.cli.lsp_context_provider, None);
         assert!(!loaded.cli.lsp_context_injected);
         assert_eq!(
-            loaded.task_contract.as_ref().map(|contract| contract.task_kind.as_str()),
+            loaded
+                .task_contract
+                .as_ref()
+                .map(|contract| contract.task_kind.as_str()),
             Some("coding")
         );
         assert_eq!(
-            loaded.task_contract_provenance.as_ref().map(|provenance| &provenance.task_kind),
+            loaded
+                .task_contract_provenance
+                .as_ref()
+                .map(|provenance| &provenance.task_kind),
             Some(&ContractValueSource::Explicit)
         );
         assert_eq!(
@@ -532,7 +539,13 @@ mod tests {
             schema_version: "openagent.runtime_checkpoint.v1".to_string(),
             runtime_run_id: "run_approval".to_string(),
             prompt: "fix it".to_string(),
-            resume_argv: vec!["localagent".to_string(), "--prompt".to_string(), "fix it".to_string()],
+            resume_argv: vec![
+                "localagent".to_string(),
+                "--prompt".to_string(),
+                "fix it".to_string(),
+            ],
+            validation_command_override: None,
+            exact_final_answer_override: None,
             checkpoint: Some(RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: RunCheckpointPhase::WaitingForApproval,

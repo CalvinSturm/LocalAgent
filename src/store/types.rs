@@ -572,6 +572,10 @@ pub struct RuntimeRunCheckpointRecordV1 {
     pub prompt: String,
     pub resume_argv: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_command_override: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_final_answer_override: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<RunCheckpointV1>,
     pub runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1,
     pub execution_tier: crate::agent_runtime::state::ExecutionTier,

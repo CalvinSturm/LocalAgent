@@ -31,7 +31,27 @@ pub(super) fn checkpoint_for_outcome(
 pub(super) fn initial_runtime_state_checkpoint(
     execution_tier: ExecutionTier,
     prompt: &str,
+    task_contract: Option<&crate::agent::task_contract::TaskContractV1>,
 ) -> RuntimeStateCheckpointV1 {
+    let required_command = task_contract
+        .map(|contract| match &contract.validation_requirement {
+            crate::agent::ValidationRequirement::Command { command } => Some(command.clone()),
+            crate::agent::ValidationRequirement::None => None,
+        })
+        .unwrap_or_else(|| {
+            crate::agent_impl_guard::prompt_required_validation_command(prompt)
+                .map(ToOwned::to_owned)
+        });
+    let exact_final_answer_required = task_contract
+        .map(|contract| {
+            matches!(
+                contract.final_answer_mode,
+                crate::agent::FinalAnswerMode::Exact { .. }
+            )
+        })
+        .unwrap_or_else(|| {
+            crate::agent_impl_guard::prompt_required_exact_final_answer(prompt).is_some()
+        });
     RuntimeStateCheckpointV1 {
         schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
         phase: RunPhase::Executing,
@@ -44,8 +64,8 @@ pub(super) fn initial_runtime_state_checkpoint(
             ..Default::default()
         },
         validation_state: ValidationState {
-            required_command: crate::agent_impl_guard::prompt_required_validation_command(prompt)
-                .map(ToOwned::to_owned),
+            required_command,
+            exact_final_answer_required,
             ..Default::default()
         },
         approval_state: ApprovalState::default(),
@@ -55,7 +75,10 @@ pub(super) fn initial_runtime_state_checkpoint(
 }
 
 pub(super) fn is_terminal_phase(phase: &RunPhase) -> bool {
-    matches!(phase, RunPhase::Done | RunPhase::Failed | RunPhase::Cancelled)
+    matches!(
+        phase,
+        RunPhase::Done | RunPhase::Failed | RunPhase::Cancelled
+    )
 }
 
 pub(super) fn validate_terminal_runtime_state_checkpoint(
@@ -161,8 +184,9 @@ pub(super) fn validate_final_run_artifact_consistency(
 
     match outcome.exit_reason {
         AgentExitReason::ApprovalRequired => {
-            let checkpoint = run_checkpoint
-                .ok_or_else(|| anyhow::anyhow!("approval-required run artifact must keep a run checkpoint"))?;
+            let checkpoint = run_checkpoint.ok_or_else(|| {
+                anyhow::anyhow!("approval-required run artifact must keep a run checkpoint")
+            })?;
             ensure!(
                 checkpoint.phase == crate::store::RunCheckpointPhase::WaitingForApproval,
                 "approval-required run checkpoint must stay in waiting_for_approval"
@@ -228,9 +252,27 @@ pub(super) fn runtime_state_checkpoint_for_outcome(
     prompt: &str,
     execution_tier: ExecutionTier,
     tool_fact_envelopes: &[crate::agent::tool_facts::ToolFactEnvelopeV1],
+    task_contract: Option<&crate::agent::task_contract::TaskContractV1>,
 ) -> RuntimeStateCheckpointV1 {
-    let required_command = crate::agent_impl_guard::prompt_required_validation_command(prompt)
-        .map(ToOwned::to_owned);
+    let required_command = task_contract
+        .map(|contract| match &contract.validation_requirement {
+            crate::agent::ValidationRequirement::Command { command } => Some(command.clone()),
+            crate::agent::ValidationRequirement::None => None,
+        })
+        .unwrap_or_else(|| {
+            crate::agent_impl_guard::prompt_required_validation_command(prompt)
+                .map(ToOwned::to_owned)
+        });
+    let exact_final_answer_required = task_contract
+        .map(|contract| {
+            matches!(
+                contract.final_answer_mode,
+                crate::agent::FinalAnswerMode::Exact { .. }
+            )
+        })
+        .unwrap_or_else(|| {
+            crate::agent_impl_guard::prompt_required_exact_final_answer(prompt).is_some()
+        });
     let approval = outcome
         .tool_decisions
         .iter()
@@ -257,15 +299,15 @@ pub(super) fn runtime_state_checkpoint_for_outcome(
         validation_state: ValidationState {
             required_command: required_command.clone(),
             satisfied: crate::agent::required_validation_command_satisfied_from_facts(
-                prompt,
+                required_command.as_deref(),
                 &tool_fact_envelopes
                     .iter()
                     .map(|envelope| envelope.fact.clone())
                     .collect::<Vec<_>>(),
             ),
             repair_mode: false,
-            collecting_final_answer:
-                crate::agent_impl_guard::prompt_required_exact_final_answer(prompt).is_some(),
+            exact_final_answer_required,
+            collecting_final_answer: exact_final_answer_required,
         },
         approval_state: ApprovalState {
             approval_id: approval.and_then(|decision| decision.approval_id.clone()),
@@ -319,7 +361,11 @@ pub(super) fn phase_summary_for_outcome_with_prior(
 
     let final_phase = terminal_phase_for_outcome(outcome);
     let mut summary = prior.phase_summary.clone();
-    if let Some(last_open_phase) = summary.iter_mut().rev().find(|entry| entry.exited_at.is_none()) {
+    if let Some(last_open_phase) = summary
+        .iter_mut()
+        .rev()
+        .find(|entry| entry.exited_at.is_none())
+    {
         if last_open_phase.phase == final_phase {
             return summary;
         }
@@ -345,10 +391,11 @@ pub(super) fn completion_decisions_for_outcome_with_prior(
     runtime_checkpoint: &RuntimeStateCheckpointV1,
     prior: Option<&RuntimeRunCheckpointRecordV1>,
 ) -> Vec<CompletionDecisionRecordV1> {
-    let validation_facts = crate::agent::completion_policy::collect_validation_facts_from_checkpoint(
-        runtime_checkpoint,
-        &runtime_checkpoint.last_tool_fact_envelopes,
-    );
+    let validation_facts =
+        crate::agent::completion_policy::collect_validation_facts_from_checkpoint(
+            runtime_checkpoint,
+            &runtime_checkpoint.last_tool_fact_envelopes,
+        );
     let mut decisions = prior
         .map(|record| record.completion_decisions.clone())
         .unwrap_or_default();
@@ -411,10 +458,13 @@ pub(super) fn interrupt_history_for_outcome_with_prior(
     let mut history = prior
         .map(|record| record.interrupt_history.clone())
         .unwrap_or_default();
-    history.extend(crate::agent::interrupts::interrupt_history_for_outcome(outcome));
+    history.extend(crate::agent::interrupts::interrupt_history_for_outcome(
+        outcome,
+    ));
     history
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn runtime_checkpoint_record_for_outcome(
     outcome: &crate::agent::AgentOutcome,
     prompt: &str,
@@ -423,6 +473,7 @@ pub(super) fn runtime_checkpoint_record_for_outcome(
     tool_facts: &[crate::agent::tool_facts::ToolFactV1],
     tool_fact_envelopes: &[crate::agent::tool_facts::ToolFactEnvelopeV1],
     prior: Option<&RuntimeRunCheckpointRecordV1>,
+    task_contract: Option<&crate::agent::task_contract::TaskContractV1>,
 ) -> Option<RuntimeRunCheckpointRecordV1> {
     let checkpoint = checkpoint_for_outcome(outcome)?;
     let checkpoint_phase_name = match checkpoint.phase {
@@ -431,8 +482,13 @@ pub(super) fn runtime_checkpoint_record_for_outcome(
     };
     let interrupt_history = interrupt_history_for_outcome_with_prior(outcome, prior);
     let phase_summary = phase_summary_for_outcome_with_prior(outcome, prior);
-    let runtime_state_checkpoint =
-        runtime_state_checkpoint_for_outcome(outcome, prompt, execution_tier.clone(), tool_fact_envelopes);
+    let runtime_state_checkpoint = runtime_state_checkpoint_for_outcome(
+        outcome,
+        prompt,
+        execution_tier.clone(),
+        tool_fact_envelopes,
+        task_contract,
+    );
     let completion_decisions =
         completion_decisions_for_outcome_with_prior(outcome, &runtime_state_checkpoint, prior);
     Some(RuntimeRunCheckpointRecordV1 {
@@ -440,6 +496,8 @@ pub(super) fn runtime_checkpoint_record_for_outcome(
         runtime_run_id: outcome.run_id.clone(),
         prompt: prompt.to_string(),
         resume_argv: build_resume_argv(args, prompt),
+        validation_command_override: args.validation_command_override.clone(),
+        exact_final_answer_override: args.exact_final_answer_override.clone(),
         checkpoint: Some(checkpoint),
         runtime_state_checkpoint,
         execution_tier,
@@ -497,7 +555,11 @@ fn build_resume_argv(args: &RunArgs, prompt: &str) -> Vec<String> {
     push_option_display(&mut out, "--max-tokens", args.max_tokens);
     push_option_display(&mut out, "--seed", args.seed);
     push_arg(&mut out, "--max-steps", &args.max_steps.to_string());
-    push_arg(&mut out, "--max-wall-time-ms", &args.max_wall_time_ms.to_string());
+    push_arg(
+        &mut out,
+        "--max-wall-time-ms",
+        &args.max_wall_time_ms.to_string(),
+    );
     push_arg(
         &mut out,
         "--max-total-tool-calls",
@@ -514,7 +576,11 @@ fn build_resume_argv(args: &RunArgs, prompt: &str) -> Vec<String> {
         "--max-filesystem-write-calls",
         &args.max_filesystem_write_calls.to_string(),
     );
-    push_arg(&mut out, "--max-shell-calls", &args.max_shell_calls.to_string());
+    push_arg(
+        &mut out,
+        "--max-shell-calls",
+        &args.max_shell_calls.to_string(),
+    );
     push_arg(
         &mut out,
         "--max-network-calls",
@@ -559,7 +625,11 @@ fn build_resume_argv(args: &RunArgs, prompt: &str) -> Vec<String> {
         "--max-tool-output-bytes",
         &args.max_tool_output_bytes.to_string(),
     );
-    push_arg(&mut out, "--max-read-bytes", &args.max_read_bytes.to_string());
+    push_arg(
+        &mut out,
+        "--max-read-bytes",
+        &args.max_read_bytes.to_string(),
+    );
     push_value_enum(&mut out, "--trust", args.trust);
     push_value_enum(&mut out, "--approval-mode", args.approval_mode);
     push_value_enum(&mut out, "--auto-approve-scope", args.auto_approve_scope);
@@ -600,7 +670,11 @@ fn build_resume_argv(args: &RunArgs, prompt: &str) -> Vec<String> {
     );
     push_value_enum_opt(&mut out, "--lsp-provider", args.lsp_provider);
     push_path_opt(&mut out, "--lsp-command", args.lsp_command.as_ref());
-    push_option(&mut out, "--reliability-profile", args.reliability_profile.as_ref());
+    push_option(
+        &mut out,
+        "--reliability-profile",
+        args.reliability_profile.as_ref(),
+    );
     push_value_enum(&mut out, "--compaction-mode", args.compaction_mode);
     push_arg(
         &mut out,
@@ -662,7 +736,11 @@ fn build_resume_argv(args: &RunArgs, prompt: &str) -> Vec<String> {
         "--http-max-retries",
         &args.http_max_retries.to_string(),
     );
-    push_arg(&mut out, "--http-timeout-ms", &args.http_timeout_ms.to_string());
+    push_arg(
+        &mut out,
+        "--http-timeout-ms",
+        &args.http_timeout_ms.to_string(),
+    );
     push_arg(
         &mut out,
         "--http-connect-timeout-ms",
@@ -703,16 +781,8 @@ fn build_resume_argv(args: &RunArgs, prompt: &str) -> Vec<String> {
         &args.planner_max_steps.to_string(),
     );
     push_value_enum(&mut out, "--planner-output", args.planner_output);
-    push_value_enum(
-        &mut out,
-        "--enforce-plan-tools",
-        args.enforce_plan_tools,
-    );
-    push_value_enum(
-        &mut out,
-        "--mcp-pin-enforcement",
-        args.mcp_pin_enforcement,
-    );
+    push_value_enum(&mut out, "--enforce-plan-tools", args.enforce_plan_tools);
+    push_value_enum(&mut out, "--mcp-pin-enforcement", args.mcp_pin_enforcement);
     push_bool_set(&mut out, "--planner-strict", args.planner_strict);
     push_flag(&mut out, "--no-planner-strict", args.no_planner_strict);
     out
@@ -758,7 +828,10 @@ fn push_vec(out: &mut Vec<String>, flag: &str, values: &[String]) {
 }
 
 fn push_value_enum<T: ValueEnum + Copy>(out: &mut Vec<String>, flag: &str, value: T) {
-    if let Some(name) = value.to_possible_value().map(|value| value.get_name().to_string()) {
+    if let Some(name) = value
+        .to_possible_value()
+        .map(|value| value.get_name().to_string())
+    {
         push_arg(out, flag, &name);
     }
 }
@@ -780,11 +853,10 @@ pub(crate) fn parse_resume_args(argv: &[String]) -> anyhow::Result<RunArgs> {
 #[cfg(test)]
 mod tests {
     use super::{
-        checkpoint_for_outcome, completion_decisions_for_outcome,
-        validate_final_run_artifact_consistency, parse_resume_args,
+        checkpoint_for_outcome, completion_decisions_for_outcome, parse_resume_args,
         phase_summary_for_outcome, phase_summary_for_outcome_with_prior,
         runtime_checkpoint_record_for_outcome, runtime_state_checkpoint_for_outcome,
-        validate_terminal_runtime_state_checkpoint,
+        validate_final_run_artifact_consistency, validate_terminal_runtime_state_checkpoint,
     };
     use crate::agent::{AgentExitReason, AgentOutcome, ToolDecisionRecord};
     use crate::agent_runtime::state::{
@@ -860,9 +932,8 @@ mod tests {
 
     #[test]
     fn checkpoint_created_for_approval_required() {
-        let checkpoint =
-            checkpoint_for_outcome(&outcome(AgentExitReason::ApprovalRequired, None))
-                .expect("checkpoint");
+        let checkpoint = checkpoint_for_outcome(&outcome(AgentExitReason::ApprovalRequired, None))
+            .expect("checkpoint");
         assert_eq!(checkpoint.phase, RunCheckpointPhase::WaitingForApproval);
         assert_eq!(
             checkpoint.pending_interrupt.as_ref().map(|it| &it.kind),
@@ -898,11 +969,15 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         )
         .expect("checkpoint record");
         assert_eq!(record.prompt, "real prompt");
         assert_eq!(
-            record.pending_tool_call.as_ref().map(|it| it.tool_name.as_str()),
+            record
+                .pending_tool_call
+                .as_ref()
+                .map(|it| it.tool_name.as_str()),
             Some("shell")
         );
         assert_eq!(
@@ -933,6 +1008,7 @@ mod tests {
                 required_command: Some("cargo test".to_string()),
                 satisfied: true,
                 repair_mode: false,
+                exact_final_answer_required: false,
                 collecting_final_answer: false,
             },
             approval_state: ApprovalState::default(),
@@ -958,6 +1034,7 @@ mod tests {
                 required_command: Some("cargo test".to_string()),
                 satisfied: false,
                 repair_mode: false,
+                exact_final_answer_required: false,
                 collecting_final_answer: false,
             },
             approval_state: ApprovalState::default(),
@@ -967,9 +1044,7 @@ mod tests {
 
         let err = validate_terminal_runtime_state_checkpoint(&outcome, &checkpoint)
             .expect_err("missing validation must fail");
-        assert!(err
-            .to_string()
-            .contains("must satisfy required validation"));
+        assert!(err.to_string().contains("must satisfy required validation"));
     }
 
     #[test]
@@ -1012,6 +1087,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         );
         assert!(record.is_none());
     }
@@ -1034,6 +1110,8 @@ mod tests {
             runtime_run_id: "r1".to_string(),
             prompt: "fix it".to_string(),
             resume_argv: Vec::new(),
+            validation_command_override: None,
+            exact_final_answer_override: None,
             checkpoint: None,
             runtime_state_checkpoint: RuntimeStateCheckpointV1 {
                 schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
@@ -1088,7 +1166,10 @@ mod tests {
         assert_eq!(summary.len(), 3);
         assert_eq!(summary[0].phase, RunPhase::WaitingForApproval);
         assert_eq!(summary[1].phase, RunPhase::Executing);
-        assert_eq!(summary[1].exited_at.as_deref(), Some("2026-01-01T00:00:01Z"));
+        assert_eq!(
+            summary[1].exited_at.as_deref(),
+            Some("2026-01-01T00:00:01Z")
+        );
         assert_eq!(summary[2].phase, RunPhase::Done);
     }
 
@@ -1100,6 +1181,7 @@ mod tests {
             "fix it",
             ExecutionTier::ScopedHostShell,
             &[],
+            None,
         );
         let run_checkpoint = checkpoint_for_outcome(&outcome);
 
@@ -1123,6 +1205,7 @@ mod tests {
             "fix it",
             ExecutionTier::ScopedHostShell,
             &[],
+            None,
         );
         let err = validate_final_run_artifact_consistency(
             &outcome,
@@ -1140,6 +1223,8 @@ mod tests {
             &completion_decisions_for_outcome(&outcome, &final_checkpoint),
         )
         .expect_err("done artifact should reject unresolved interrupts");
-        assert!(err.to_string().contains("cannot keep unresolved interrupts"));
+        assert!(err
+            .to_string()
+            .contains("cannot keep unresolved interrupts"));
     }
 }

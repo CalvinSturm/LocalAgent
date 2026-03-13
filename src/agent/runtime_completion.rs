@@ -466,9 +466,10 @@ impl<P: ModelProvider> Agent<P> {
                     ));
                 }
                 let validation_facts = crate::agent::completion_policy::collect_validation_facts(
-                    user_prompt,
+                    self.required_validation_command(user_prompt),
+                    self.exact_final_answer_required(user_prompt),
                     &crate::agent::tool_facts_from_calls_and_executions(
-                        user_prompt,
+                        self.required_validation_command(user_prompt),
                         &observed_tool_calls,
                         observed_tool_executions,
                     ),
@@ -573,18 +574,11 @@ impl<P: ModelProvider> Agent<P> {
                         ));
                     }
                 }
-                if crate::agent_impl_guard::prompt_required_exact_final_answer(user_prompt)
-                    .is_some()
-                    && !crate::agent_impl_guard::final_output_matches_required_exact_answer(
-                        user_prompt,
-                        &final_output,
-                    )
+                if self.exact_final_answer_required(user_prompt)
+                    && !self.final_output_matches_required_exact_answer(user_prompt, &final_output)
                 {
                     if let Some(recovered_output) =
-                        crate::agent_impl_guard::recover_required_exact_final_answer(
-                            user_prompt,
-                            &final_output,
-                        )
+                        self.recover_required_exact_final_answer(user_prompt, &final_output)
                     {
                         final_output = recovered_output;
                     } else if exact_final_answer_retry_count < 1 {

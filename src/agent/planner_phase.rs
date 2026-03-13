@@ -185,18 +185,16 @@ mod tests {
 
     #[test]
     fn planner_response_requires_control_envelope_before_failing() {
-        let decision = evaluate_planner_response(
-            PlannerResponseContext {
-                plan_enforcement_active: true,
-                has_actionable_tool_calls: false,
-                model_signaled_finalize: true,
-                worker_step_status: None,
-                blocked_control_envelope_count: 0,
-                active_plan_step_idx: 0,
-                plan_step_constraints: &constraints(),
-                step_retry_counts: &BTreeMap::new(),
-            },
-        );
+        let decision = evaluate_planner_response(PlannerResponseContext {
+            plan_enforcement_active: true,
+            has_actionable_tool_calls: false,
+            model_signaled_finalize: true,
+            worker_step_status: None,
+            blocked_control_envelope_count: 0,
+            active_plan_step_idx: 0,
+            plan_step_constraints: &constraints(),
+            step_retry_counts: &BTreeMap::new(),
+        });
         assert!(matches!(
             decision,
             PlannerResponseDecision::RemindControlEnvelope { blocked_count: 1 }
@@ -205,23 +203,21 @@ mod tests {
 
     #[test]
     fn planner_response_advances_to_explicit_next_step() {
-        let decision = evaluate_planner_response(
-            PlannerResponseContext {
-                plan_enforcement_active: true,
-                has_actionable_tool_calls: false,
-                model_signaled_finalize: true,
-                worker_step_status: Some(&WorkerStepStatus {
-                    step_id: "S1".to_string(),
-                    status: "done".to_string(),
-                    next_step_id: Some("S2".to_string()),
-                    user_output: Some("  ready  ".to_string()),
-                }),
-                blocked_control_envelope_count: 1,
-                active_plan_step_idx: 0,
-                plan_step_constraints: &constraints(),
-                step_retry_counts: &BTreeMap::new(),
-            },
-        );
+        let decision = evaluate_planner_response(PlannerResponseContext {
+            plan_enforcement_active: true,
+            has_actionable_tool_calls: false,
+            model_signaled_finalize: true,
+            worker_step_status: Some(&WorkerStepStatus {
+                step_id: "S1".to_string(),
+                status: "done".to_string(),
+                next_step_id: Some("S2".to_string()),
+                user_output: Some("  ready  ".to_string()),
+            }),
+            blocked_control_envelope_count: 1,
+            active_plan_step_idx: 0,
+            plan_step_constraints: &constraints(),
+            step_retry_counts: &BTreeMap::new(),
+        });
         assert!(matches!(
             decision,
             PlannerResponseDecision::StepDone {
@@ -235,23 +231,21 @@ mod tests {
     fn planner_response_rejects_invalid_retry_after_limit() {
         let mut retry_counts = BTreeMap::new();
         retry_counts.insert("S1".to_string(), 2);
-        let decision = evaluate_planner_response(
-            PlannerResponseContext {
-                plan_enforcement_active: true,
-                has_actionable_tool_calls: false,
-                model_signaled_finalize: true,
-                worker_step_status: Some(&WorkerStepStatus {
-                    step_id: "S1".to_string(),
-                    status: "retry".to_string(),
-                    next_step_id: None,
-                    user_output: None,
-                }),
-                blocked_control_envelope_count: 0,
-                active_plan_step_idx: 0,
-                plan_step_constraints: &constraints(),
-                step_retry_counts: &retry_counts,
-            },
-        );
+        let decision = evaluate_planner_response(PlannerResponseContext {
+            plan_enforcement_active: true,
+            has_actionable_tool_calls: false,
+            model_signaled_finalize: true,
+            worker_step_status: Some(&WorkerStepStatus {
+                step_id: "S1".to_string(),
+                status: "retry".to_string(),
+                next_step_id: None,
+                user_output: None,
+            }),
+            blocked_control_envelope_count: 0,
+            active_plan_step_idx: 0,
+            plan_step_constraints: &constraints(),
+            step_retry_counts: &retry_counts,
+        });
         assert!(matches!(
             decision,
             PlannerResponseDecision::RetryLimitExceeded { retry_count: 3, .. }

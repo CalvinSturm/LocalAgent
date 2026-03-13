@@ -13,9 +13,7 @@ pub(crate) fn run_phase_name(phase: &crate::agent_runtime::state::RunPhase) -> &
         }
         crate::agent_runtime::state::RunPhase::VerifyingChanges => "verifying_changes",
         crate::agent_runtime::state::RunPhase::Validating => "validating",
-        crate::agent_runtime::state::RunPhase::CollectingFinalAnswer => {
-            "collecting_final_answer"
-        }
+        crate::agent_runtime::state::RunPhase::CollectingFinalAnswer => "collecting_final_answer",
         crate::agent_runtime::state::RunPhase::Finalizing => "finalizing",
         crate::agent_runtime::state::RunPhase::Done => "done",
         crate::agent_runtime::state::RunPhase::Failed => "failed",
@@ -30,7 +28,9 @@ pub(crate) fn interrupt_kind_name(kind: &InterruptKindV1) -> &'static str {
     }
 }
 
-pub(crate) fn interrupt_history_for_outcome(outcome: &AgentOutcome) -> Vec<InterruptHistoryEntryV1> {
+pub(crate) fn interrupt_history_for_outcome(
+    outcome: &AgentOutcome,
+) -> Vec<InterruptHistoryEntryV1> {
     match outcome.exit_reason {
         crate::agent::AgentExitReason::ApprovalRequired => {
             let approval = outcome
@@ -66,7 +66,8 @@ pub(crate) fn transition_runtime_checkpoint_to_executing(
     let mut updated = checkpoint.clone();
     let now = crate::trust::now_rfc3339();
     let prior_phase = updated.runtime_state_checkpoint.phase.clone();
-    let resumed_phase = crate::agent::completion_policy::resume_phase_from_checkpoint_state(checkpoint);
+    let resumed_phase =
+        crate::agent::completion_policy::resume_phase_from_checkpoint_state(checkpoint);
 
     if let Some(last_phase) = updated
         .phase_summary
@@ -97,7 +98,10 @@ pub(crate) fn transition_runtime_checkpoint_to_executing(
     updated.runtime_state_checkpoint.terminal_boundary = false;
     updated.runtime_state_checkpoint.approval_state.approval_id = None;
     updated.runtime_state_checkpoint.approval_state.tool_call_id = None;
-    updated.runtime_state_checkpoint.approval_state.awaiting_approval = false;
+    updated
+        .runtime_state_checkpoint
+        .approval_state
+        .awaiting_approval = false;
     updated.runtime_state_checkpoint.step_index = updated
         .runtime_state_checkpoint
         .step_index
@@ -105,8 +109,9 @@ pub(crate) fn transition_runtime_checkpoint_to_executing(
 
     updated.checkpoint = None;
     updated.pending_tool_call = None;
-    updated.completion_decisions.push(
-        crate::agent_runtime::state::CompletionDecisionRecordV1 {
+    updated
+        .completion_decisions
+        .push(crate::agent_runtime::state::CompletionDecisionRecordV1 {
             kind: "resume".to_string(),
             allowed: true,
             retryable: false,
@@ -116,8 +121,7 @@ pub(crate) fn transition_runtime_checkpoint_to_executing(
                 prior_phase, resumed_phase
             ),
             unmet_requirements: Vec::new(),
-        },
-    );
+        });
 
     updated
 }

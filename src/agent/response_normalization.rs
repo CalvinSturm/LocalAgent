@@ -6,9 +6,7 @@ use crate::types::GenerateResponse;
 pub(super) enum AssistantResponseNormalization {
     Ready,
     MalformedWrapper,
-    MultipleToolCalls {
-        count: usize,
-    },
+    MultipleToolCalls { count: usize },
 }
 
 pub(super) fn normalize_assistant_response(
@@ -67,10 +65,7 @@ mod tests {
 
         let result = normalize_assistant_response(&mut response, 1, &allowed);
 
-        assert!(matches!(
-            result,
-            AssistantResponseNormalization::Ready
-        ));
+        assert!(matches!(result, AssistantResponseNormalization::Ready));
         assert_eq!(response.tool_calls.len(), 1);
         assert!(response.assistant.content.is_none());
     }

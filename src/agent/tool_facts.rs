@@ -60,12 +60,10 @@ pub struct ToolFactEnvelopeV1 {
 }
 
 pub(crate) fn tool_facts_from_calls_and_executions(
-    user_prompt: &str,
+    required_validation_command: Option<&str>,
     observed_tool_calls: &[ToolCall],
     tool_executions: &[ToolExecutionRecord],
 ) -> Vec<ToolFactV1> {
-    let required_validation_command =
-        crate::agent_impl_guard::prompt_required_validation_command(user_prompt);
     let mut sequence = 0u32;
     let mut facts = Vec::new();
     let mut execution_idx = 0usize;
@@ -103,18 +101,17 @@ pub(crate) fn tool_facts_from_calls_and_executions(
 }
 
 pub(crate) fn tool_facts_from_transcript(
-    user_prompt: &str,
+    required_validation_command: Option<&str>,
     observed_tool_calls: &[ToolCall],
     messages: &[Message],
 ) -> Vec<ToolFactV1> {
-    let required_validation_command =
-        crate::agent_impl_guard::prompt_required_validation_command(user_prompt);
     let mut sequence = 0u32;
     let mut facts = Vec::new();
-    for (call, message) in observed_tool_calls
-        .iter()
-        .zip(messages.iter().filter(|message| matches!(message.role, Role::Tool)))
-    {
+    for (call, message) in observed_tool_calls.iter().zip(
+        messages
+            .iter()
+            .filter(|message| matches!(message.role, Role::Tool)),
+    ) {
         if !tool_call_alignment_is_consistent(call, call.name.as_str()) {
             continue;
         }
@@ -151,7 +148,8 @@ pub(crate) fn tool_fact_envelopes_from_facts(
         phase: phase.map(ToOwned::to_owned),
         checkpoint_phase: checkpoint_phase.map(ToOwned::to_owned),
     };
-    facts.iter()
+    facts
+        .iter()
         .cloned()
         .map(|fact| ToolFactEnvelopeV1 {
             fact,
@@ -167,7 +165,7 @@ fn facts_for_observed_tool(
     ok: bool,
     normalized_path: Option<String>,
     changed: Option<bool>,
-    required_validation_command: Option<&'static str>,
+    required_validation_command: Option<&str>,
 ) -> Vec<ToolFactV1> {
     let mut facts = Vec::new();
     match tool_name {
@@ -196,13 +194,15 @@ fn facts_for_observed_tool(
         }
         "shell" => {
             if let Some(command) = shell_command_text(call) {
+                let required_lower = required_validation_command.map(str::to_ascii_lowercase);
                 facts.push(ToolFactV1::Shell {
                     sequence: next_sequence(sequence),
                     tool_call_id: call.id.clone(),
                     command: command.clone(),
                     ok,
                 });
-                if required_validation_command
+                if required_lower
+                    .as_deref()
                     .is_some_and(|required| command.to_ascii_lowercase().contains(required))
                 {
                     facts.push(ToolFactV1::Validation {
@@ -241,7 +241,7 @@ fn normalized_path_from_execution_or_call(
 fn facts_for_runtime_execution(
     sequence: &mut u32,
     execution: &ToolExecutionRecord,
-    required_validation_command: Option<&'static str>,
+    required_validation_command: Option<&str>,
 ) -> Vec<ToolFactV1> {
     let synthetic_tool_call_id = format!("runtime_execution_{}", *sequence);
     let normalized_path = execution
@@ -318,12 +318,13 @@ pub(crate) fn pending_post_write_verification_paths_from_facts(
 }
 
 pub(crate) fn required_validation_command_satisfied_from_facts(
-    user_prompt: &str,
+    required_validation_command: Option<&str>,
     tool_facts: &[ToolFactV1],
 ) -> bool {
-    let Some(required) = crate::agent_impl_guard::prompt_required_validation_command(user_prompt) else {
+    let Some(required) = required_validation_command else {
         return true;
     };
+    let required = required.to_ascii_lowercase();
     tool_facts.iter().any(|fact| {
         matches!(
             fact,
@@ -331,32 +332,29 @@ pub(crate) fn required_validation_command_satisfied_from_facts(
                 command,
                 ok: true,
                 ..
-            } if command.to_ascii_lowercase().contains(required)
+            } if command.to_ascii_lowercase().contains(required.as_str())
         )
     })
 }
 
 pub(crate) fn required_validation_failure_needs_repair_from_facts(
-    user_prompt: &str,
+    required_validation_command: Option<&str>,
     tool_facts: &[ToolFactV1],
 ) -> bool {
-    let Some(required) = crate::agent_impl_guard::prompt_required_validation_command(user_prompt) else {
+    let Some(required) = required_validation_command else {
         return false;
     };
+    let required = required.to_ascii_lowercase();
     let mut ordered = tool_facts.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|fact| fact.sequence());
     let mut needs_repair = false;
     for fact in ordered {
         match fact {
-            ToolFactV1::Write {
-                ok,
-                changed,
-                ..
-            } if *ok && changed.unwrap_or(true) => {
+            ToolFactV1::Write { ok, changed, .. } if *ok && changed.unwrap_or(true) => {
                 needs_repair = false;
             }
             ToolFactV1::Validation { command, ok, .. }
-                if command.to_ascii_lowercase().contains(required) =>
+                if command.to_ascii_lowercase().contains(required.as_str()) =>
             {
                 needs_repair = !ok;
             }
@@ -421,12 +419,7 @@ pub(crate) fn read_before_edit_violation_from_facts(
                     successful_read_paths.insert(path.clone());
                 }
             }
-            ToolFactV1::Write {
-                tool,
-                path,
-                ok,
-                ..
-            } => {
+            ToolFactV1::Write { tool, path, ok, .. } => {
                 if !ok {
                     continue;
                 }
@@ -505,8 +498,9 @@ fn output_has_placeholder_artifacts(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        implementation_integrity_violation_from_facts, pending_post_write_verification_paths_from_facts,
-        read_before_edit_violation_from_facts, required_validation_command_satisfied_from_facts,
+        implementation_integrity_violation_from_facts,
+        pending_post_write_verification_paths_from_facts, read_before_edit_violation_from_facts,
+        required_validation_command_satisfied_from_facts,
         required_validation_failure_needs_repair_from_facts, tool_fact_envelopes_from_facts,
         tool_facts_from_calls_and_executions, ToolFactEnvelopeV1, ToolFactSourceV1, ToolFactV1,
     };
@@ -553,15 +547,19 @@ mod tests {
                 changed: None,
             },
         ];
-        let facts = tool_facts_from_calls_and_executions(
-            "Before finishing, run cargo test successfully.",
-            &calls,
-            &executions,
-        );
-        assert!(facts.iter().any(|fact| matches!(fact, ToolFactV1::Read { .. })));
-        assert!(facts.iter().any(|fact| matches!(fact, ToolFactV1::Write { .. })));
-        assert!(facts.iter().any(|fact| matches!(fact, ToolFactV1::Shell { .. })));
-        assert!(facts.iter().any(|fact| matches!(fact, ToolFactV1::Validation { .. })));
+        let facts = tool_facts_from_calls_and_executions(Some("cargo test"), &calls, &executions);
+        assert!(facts
+            .iter()
+            .any(|fact| matches!(fact, ToolFactV1::Read { .. })));
+        assert!(facts
+            .iter()
+            .any(|fact| matches!(fact, ToolFactV1::Write { .. })));
+        assert!(facts
+            .iter()
+            .any(|fact| matches!(fact, ToolFactV1::Shell { .. })));
+        assert!(facts
+            .iter()
+            .any(|fact| matches!(fact, ToolFactV1::Validation { .. })));
     }
 
     #[test]
@@ -613,12 +611,8 @@ mod tests {
                 ok: true,
             },
         ];
-        let err = implementation_integrity_violation_from_facts(
-            "fix src/main.rs",
-            "done",
-            &facts,
-            true,
-        );
+        let err =
+            implementation_integrity_violation_from_facts("fix src/main.rs", "done", &facts, true);
         assert!(err.is_none());
     }
 
@@ -631,7 +625,21 @@ mod tests {
             ok: true,
         }];
         assert!(required_validation_command_satisfied_from_facts(
-            "Before finishing, run cargo test successfully.",
+            Some("cargo test"),
+            &facts,
+        ));
+    }
+
+    #[test]
+    fn validation_facts_match_required_command_case_insensitively() {
+        let facts = vec![ToolFactV1::Validation {
+            sequence: 0,
+            tool_call_id: "tc1".to_string(),
+            command: "cargo test".to_string(),
+            ok: true,
+        }];
+        assert!(required_validation_command_satisfied_from_facts(
+            Some("Cargo test"),
             &facts,
         ));
     }
@@ -655,7 +663,7 @@ mod tests {
             },
         ];
         assert!(!required_validation_failure_needs_repair_from_facts(
-            "Before finishing, run cargo test successfully.",
+            Some("cargo test"),
             &facts,
         ));
     }

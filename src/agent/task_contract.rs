@@ -168,16 +168,24 @@ pub(crate) fn resolve_task_contract(
         Some(names)
     };
 
-    let (final_answer_mode, final_answer_mode_source) = if let Some(required_text) =
-        crate::agent_impl_guard::prompt_required_exact_final_answer(prompt)
-    {
-        (
-            FinalAnswerMode::Exact { required_text },
-            ContractValueSource::Inferred,
-        )
-    } else {
-        (FinalAnswerMode::Freeform, ContractValueSource::Defaulted)
-    };
+    let (final_answer_mode, final_answer_mode_source) =
+        if let Some(required_text) = args.exact_final_answer_override.as_deref() {
+            (
+                FinalAnswerMode::Exact {
+                    required_text: required_text.to_string(),
+                },
+                ContractValueSource::Explicit,
+            )
+        } else if let Some(required_text) =
+            crate::agent_impl_guard::prompt_required_exact_final_answer(prompt)
+        {
+            (
+                FinalAnswerMode::Exact { required_text },
+                ContractValueSource::Inferred,
+            )
+        } else {
+            (FinalAnswerMode::Freeform, ContractValueSource::Defaulted)
+        };
 
     TaskContractResolution {
         contract: TaskContractV1 {
@@ -225,7 +233,8 @@ mod tests {
     use clap::Parser;
 
     fn tool_defs(names: &[&str]) -> Vec<crate::types::ToolDef> {
-        names.iter()
+        names
+            .iter()
             .map(|name| crate::types::ToolDef {
                 name: (*name).to_string(),
                 description: String::new(),
@@ -238,9 +247,13 @@ mod tests {
     #[test]
     fn explicit_task_kind_wins_and_normalizes() {
         let args = RunArgs::parse_from(["localagent", "--task-kind", "Code Fix"]);
-        let resolution = resolve_task_contract(&args, "do work", None, false, &tool_defs(&["read_file"]));
+        let resolution =
+            resolve_task_contract(&args, "do work", None, false, &tool_defs(&["read_file"]));
         assert_eq!(resolution.contract.task_kind, "coding");
-        assert_eq!(resolution.provenance.task_kind, ContractValueSource::Explicit);
+        assert_eq!(
+            resolution.provenance.task_kind,
+            ContractValueSource::Explicit
+        );
         assert_eq!(
             resolution.contract.allowed_tools_semantics,
             AllowedToolsSemantics::ExposedSnapshot
@@ -257,9 +270,20 @@ mod tests {
             true,
             &tool_defs(&["read_file", "edit"]),
         );
-        assert_eq!(resolution.contract.write_requirement, WriteRequirement::Required);
-        assert!(resolution.contract.completion_policy.require_effective_write);
-        assert_eq!(resolution.provenance.write_requirement, ContractValueSource::Inferred);
+        assert_eq!(
+            resolution.contract.write_requirement,
+            WriteRequirement::Required
+        );
+        assert!(
+            resolution
+                .contract
+                .completion_policy
+                .require_effective_write
+        );
+        assert_eq!(
+            resolution.provenance.write_requirement,
+            ContractValueSource::Inferred
+        );
     }
 
     #[test]
@@ -305,6 +329,29 @@ mod tests {
         );
         assert_eq!(
             resolution.provenance.validation_requirement,
+            ContractValueSource::Explicit
+        );
+    }
+
+    #[test]
+    fn explicit_exact_final_answer_override_beats_prompt_inference() {
+        let mut args = RunArgs::parse_from(["localagent"]);
+        args.exact_final_answer_override = Some("tests passed".to_string());
+        let resolution = resolve_task_contract(
+            &args,
+            "Reply with exactly:\n\nverified fix\n",
+            None,
+            false,
+            &tool_defs(&["read_file", "shell"]),
+        );
+        assert_eq!(
+            resolution.contract.final_answer_mode,
+            FinalAnswerMode::Exact {
+                required_text: "tests passed".to_string()
+            }
+        );
+        assert_eq!(
+            resolution.provenance.final_answer_mode,
             ContractValueSource::Explicit
         );
     }

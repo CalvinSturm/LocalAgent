@@ -1864,6 +1864,8 @@ fn default_run_args() -> super::RunArgs {
 
         validation_command_override: None,
 
+        exact_final_answer_override: None,
+
         disable_implementation_guard: false,
 
         taint: crate::taint::TaintToggle::Off,

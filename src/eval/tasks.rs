@@ -46,6 +46,7 @@ pub struct EvalTask {
     pub optional: bool,
     pub required_capabilities: RequiredCapabilities,
     pub verifier: Option<VerifierSpec>,
+    pub exact_final_answer: Option<String>,
 }
 
 impl EvalTask {
@@ -112,6 +113,7 @@ fn coding_tasks() -> Vec<EvalTask> {
                 needs_mcp: false,
             },
             verifier: None,
+            exact_final_answer: Some("done: src/hello.txt".to_string()),
         },
         EvalTask {
             id: "C2".to_string(),
@@ -146,6 +148,7 @@ fn coding_tasks() -> Vec<EvalTask> {
                 needs_mcp: false,
             },
             verifier: None,
+            exact_final_answer: Some("patched answer()".to_string()),
         },
         EvalTask {
             id: "C3".to_string(),
@@ -190,6 +193,7 @@ fn coding_tasks() -> Vec<EvalTask> {
                 cwd: ".".to_string(),
                 summary_success_contains: "test result: ok".to_string(),
             }),
+            exact_final_answer: Some("tests ok".to_string()),
         },
         EvalTask {
             id: "C4".to_string(),
@@ -225,6 +229,7 @@ fn coding_tasks() -> Vec<EvalTask> {
                 needs_mcp: false,
             },
             verifier: None,
+            exact_final_answer: Some("edited: src/messages.rs".to_string()),
         },
         EvalTask {
             id: "C5".to_string(),
@@ -270,6 +275,7 @@ fn coding_tasks() -> Vec<EvalTask> {
                 cwd: ".".to_string(),
                 summary_success_contains: "test result: ok".to_string(),
             }),
+            exact_final_answer: Some("verified fix".to_string()),
         },
         EvalTask {
             id: "CS1".to_string(),
@@ -309,6 +315,7 @@ fn coding_tasks() -> Vec<EvalTask> {
                 cwd: ".".to_string(),
                 summary_success_contains: "test result: ok".to_string(),
             }),
+            exact_final_answer: None,
         },
         EvalTask {
             id: "CS2".to_string(),
@@ -348,6 +355,7 @@ fn coding_tasks() -> Vec<EvalTask> {
                 cwd: ".".to_string(),
                 summary_success_contains: "test result: ok".to_string(),
             }),
+            exact_final_answer: None,
         },
     ]
 }
@@ -380,6 +388,7 @@ fn browser_tasks() -> Vec<EvalTask> {
                 needs_mcp: true,
             },
             verifier: None,
+            exact_final_answer: None,
         },
         EvalTask {
             id: "B2".to_string(),
@@ -407,6 +416,7 @@ fn browser_tasks() -> Vec<EvalTask> {
                 needs_mcp: true,
             },
             verifier: None,
+            exact_final_answer: None,
         },
         EvalTask {
             id: "B3".to_string(),
@@ -440,6 +450,7 @@ fn browser_tasks() -> Vec<EvalTask> {
                 needs_mcp: true,
             },
             verifier: None,
+            exact_final_answer: None,
         },
         EvalTask {
             id: "B4".to_string(),
@@ -473,6 +484,7 @@ fn browser_tasks() -> Vec<EvalTask> {
                 needs_mcp: true,
             },
             verifier: None,
+            exact_final_answer: None,
         },
         EvalTask {
             id: "B5".to_string(),
@@ -506,6 +518,7 @@ fn browser_tasks() -> Vec<EvalTask> {
                 needs_mcp: true,
             },
             verifier: None,
+            exact_final_answer: None,
         },
     ]
 }

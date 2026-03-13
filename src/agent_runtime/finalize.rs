@@ -411,8 +411,14 @@ pub(super) fn finalize_run_artifacts(
     let prior_runtime_checkpoint =
         store::load_runtime_checkpoint_record(input.paths, &input.outcome.run_id).ok();
     let run_checkpoint = super::checkpoint::checkpoint_for_outcome(input.outcome);
-    let tool_facts =
-        crate::agent::tool_facts_from_transcript(input.prompt, &input.outcome.tool_calls, &input.outcome.messages);
+    let tool_facts = crate::agent::tool_facts_from_transcript(
+        match &input.task_contract.validation_requirement {
+            crate::agent::ValidationRequirement::Command { command } => Some(command.as_str()),
+            crate::agent::ValidationRequirement::None => None,
+        },
+        &input.outcome.tool_calls,
+        &input.outcome.messages,
+    );
     let tool_fact_envelopes = crate::agent::tool_fact_envelopes_from_facts(
         &tool_facts,
         crate::agent::tool_facts::ToolFactSourceV1::Transcript,
@@ -426,13 +432,16 @@ pub(super) fn finalize_run_artifacts(
         input.prompt,
         input.execution_tier.clone(),
         &tool_fact_envelopes,
+        Some(input.task_contract),
     );
-    super::checkpoint::validate_terminal_runtime_state_checkpoint(input.outcome, &final_checkpoint)?;
-    let interrupt_history =
-        super::checkpoint::interrupt_history_for_outcome_with_prior(
-            input.outcome,
-            prior_runtime_checkpoint.as_ref(),
-        );
+    super::checkpoint::validate_terminal_runtime_state_checkpoint(
+        input.outcome,
+        &final_checkpoint,
+    )?;
+    let interrupt_history = super::checkpoint::interrupt_history_for_outcome_with_prior(
+        input.outcome,
+        prior_runtime_checkpoint.as_ref(),
+    );
     let phase_summary = super::checkpoint::phase_summary_for_outcome_with_prior(
         input.outcome,
         prior_runtime_checkpoint.as_ref(),
@@ -491,8 +500,8 @@ pub(super) fn finalize_run_artifacts(
             &tool_facts,
             &final_checkpoint.last_tool_fact_envelopes,
             prior_runtime_checkpoint.as_ref(),
-        )
-    {
+            Some(input.task_contract),
+        ) {
         match store::write_runtime_checkpoint_record(input.paths, &record) {
             Ok(path) => Some(path),
             Err(e) => {
