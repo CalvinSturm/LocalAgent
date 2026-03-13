@@ -470,7 +470,7 @@ fn prompt_allows_new_file_without_read(prompt: &str) -> bool {
         || p.contains("create the file")
 }
 
-fn prompt_requires_effective_write(prompt: &str) -> bool {
+pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
     let p = prompt.to_ascii_lowercase();
     p.contains("apply_patch")
         || p.contains("write_file")

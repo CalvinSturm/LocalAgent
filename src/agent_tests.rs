@@ -1096,7 +1096,7 @@ fn wrapper_marker_detection_works() {
 
 #[test]
 fn prompt_requires_effective_write_for_fix_prompt() {
-    assert!(crate::agent_impl_guard::prompt_requires_effective_write(
+    assert!(crate::agent::tool_facts::prompt_requires_effective_write(
         "Fix src/lib.rs so the parser handles empty input."
     ));
 }

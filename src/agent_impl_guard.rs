@@ -91,18 +91,6 @@ pub(crate) fn normalize_tool_path(path: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
-    let p = prompt.to_ascii_lowercase();
-    p.contains("apply_patch")
-        || p.contains("write_file")
-        || p.contains("edit ")
-        || p.contains("fix ")
-        || p.contains("modify ")
-        || p.contains("update ")
-        || p.contains("change ")
-}
-
 pub(crate) fn prompt_requires_tool_only(prompt: &str) -> bool {
     let p = prompt.to_ascii_lowercase();
     (p.contains("tool calls only")
@@ -155,40 +143,6 @@ pub(crate) fn prompt_required_validation_command(prompt: &str) -> Option<&'stati
         .find(|needle| p.contains(needle))
 }
 
-#[allow(dead_code)]
-pub(crate) fn required_validation_command_satisfied(
-    prompt: &str,
-    observed_tool_calls: &[ToolCall],
-    tool_executions: &[ToolExecutionRecord],
-) -> bool {
-    let tool_facts = crate::agent::tool_facts_from_calls_and_executions(
-        prompt_required_validation_command(prompt),
-        observed_tool_calls,
-        tool_executions,
-    );
-    crate::agent::required_validation_command_satisfied_from_facts(
-        prompt_required_validation_command(prompt),
-        &tool_facts,
-    )
-}
-
-#[allow(dead_code)]
-pub(crate) fn required_validation_failure_needs_repair(
-    prompt: &str,
-    observed_tool_calls: &[ToolCall],
-    tool_executions: &[ToolExecutionRecord],
-) -> bool {
-    let tool_facts = crate::agent::tool_facts_from_calls_and_executions(
-        prompt_required_validation_command(prompt),
-        observed_tool_calls,
-        tool_executions,
-    );
-    crate::agent::required_validation_failure_needs_repair_from_facts(
-        prompt_required_validation_command(prompt),
-        &tool_facts,
-    )
-}
-
 pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String> {
     let lower = prompt.to_ascii_lowercase();
     let markers = ["your final answer must be exactly:", "reply with exactly:"];
@@ -205,87 +159,12 @@ pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String>
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn final_output_matches_required_exact_answer(prompt: &str, final_output: &str) -> bool {
-    let Some(required) = prompt_required_exact_final_answer(prompt) else {
-        return true;
-    };
-    final_output.trim() == required.trim()
-}
-
-#[allow(dead_code)]
-pub(crate) fn recover_required_exact_final_answer(
-    prompt: &str,
-    final_output: &str,
-) -> Option<String> {
-    let required = prompt_required_exact_final_answer(prompt)?;
-    let required_trimmed = required.trim();
-    let output_trimmed = final_output.trim();
-    if output_trimmed == required_trimmed {
-        return Some(required);
-    }
-
-    let fenced_matches: Vec<&str> = fenced_code_blocks(output_trimmed)
-        .into_iter()
-        .filter(|block| block.trim() == required_trimmed)
-        .collect();
-    if fenced_matches.len() == 1 {
-        return Some(required);
-    }
-
-    let mut substring_matches = 0usize;
-    let mut search_start = 0usize;
-    while let Some(rel_idx) = output_trimmed[search_start..].find(required_trimmed) {
-        let idx = search_start + rel_idx;
-        let before_ok = idx == 0
-            || output_trimmed[..idx]
-                .chars()
-                .last()
-                .is_some_and(|c| c == '\n' || c == '\r');
-        let after_idx = idx + required_trimmed.len();
-        let after_ok = after_idx == output_trimmed.len()
-            || output_trimmed[after_idx..]
-                .chars()
-                .next()
-                .is_some_and(|c| c == '\n' || c == '\r');
-        if before_ok && after_ok {
-            substring_matches += 1;
-            if substring_matches > 1 {
-                return None;
-            }
-        }
-        search_start = idx + required_trimmed.len();
-    }
-    (substring_matches == 1).then_some(required)
-}
-
-#[allow(dead_code)]
-fn fenced_code_blocks(text: &str) -> Vec<&str> {
-    let mut blocks = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("```") {
-        let after_ticks = &rest[start + 3..];
-        let after_lang = match after_ticks.find('\n') {
-            Some(idx) => &after_ticks[idx + 1..],
-            None => break,
-        };
-        let Some(end) = after_lang.find("```") else {
-            break;
-        };
-        blocks.push(&after_lang[..end]);
-        rest = &after_lang[end + 3..];
-    }
-    blocks
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        final_output_matches_required_exact_answer,
         implementation_integrity_violation_with_tool_executions,
         pending_post_write_verification_paths, prompt_required_exact_final_answer,
-        recover_required_exact_final_answer, required_validation_command_satisfied,
-        required_validation_failure_needs_repair, ToolExecutionRecord,
+        ToolExecutionRecord,
     };
     use crate::types::ToolCall;
 
@@ -306,134 +185,6 @@ mod tests {
             prompt_required_exact_final_answer(prompt).as_deref(),
             Some("verified fix")
         );
-    }
-
-    #[test]
-    fn exact_final_answer_match_is_trim_tolerant() {
-        let prompt = "Your final answer must be exactly:\n\nverified=yes\nfile=src/status.ts\n";
-        assert!(final_output_matches_required_exact_answer(
-            prompt,
-            "verified=yes\nfile=src/status.ts\n"
-        ));
-        assert!(!final_output_matches_required_exact_answer(
-            prompt,
-            "verified=yes"
-        ));
-    }
-
-    #[test]
-    fn exact_final_answer_match_supports_reply_with_exactly() {
-        let prompt = "Reply with exactly:\n\nverified fix\n";
-        assert!(final_output_matches_required_exact_answer(
-            prompt,
-            "verified fix\n"
-        ));
-        assert!(!final_output_matches_required_exact_answer(
-            prompt, "verified"
-        ));
-    }
-
-    #[test]
-    fn exact_final_answer_can_be_recovered_from_fenced_block() {
-        let prompt =
-            "Your final answer must be exactly:\n\nverified=yes\ncommand=node --test\nresult=passed\n";
-        let wrapped =
-            "Validation passed.\n\n```\nverified=yes\ncommand=node --test\nresult=passed\n```";
-        assert_eq!(
-            recover_required_exact_final_answer(prompt, wrapped).as_deref(),
-            Some("verified=yes\ncommand=node --test\nresult=passed")
-        );
-    }
-
-    #[test]
-    fn exact_final_answer_recovery_requires_single_unambiguous_match() {
-        let prompt = "Your final answer must be exactly:\n\nverified=yes\nfile=main.rs\n";
-        let ambiguous = "verified=yes\nfile=main.rs\n\nextra\n\nverified=yes\nfile=main.rs\n";
-        assert!(recover_required_exact_final_answer(prompt, ambiguous).is_none());
-    }
-
-    #[test]
-    fn required_validation_command_requires_successful_matching_shell_call() {
-        let prompt = "Before finishing, run node --test successfully.";
-        let calls = vec![ToolCall {
-            id: "tc_shell".to_string(),
-            name: "shell".to_string(),
-            arguments: serde_json::json!({"cmd":"node","args":["--test"]}),
-        }];
-        let ok_execs = vec![ToolExecutionRecord {
-            name: "shell".to_string(),
-            path: None,
-            ok: true,
-            changed: None,
-        }];
-        assert!(required_validation_command_satisfied(
-            prompt, &calls, &ok_execs
-        ));
-
-        let failed_execs = vec![ToolExecutionRecord {
-            name: "shell".to_string(),
-            path: None,
-            ok: false,
-            changed: None,
-        }];
-        assert!(!required_validation_command_satisfied(
-            prompt,
-            &calls,
-            &failed_execs
-        ));
-    }
-
-    #[test]
-    fn failed_required_validation_without_changed_write_needs_repair() {
-        let prompt = "Before finishing, run node --test successfully.";
-        let calls = vec![ToolCall {
-            id: "tc_shell".to_string(),
-            name: "shell".to_string(),
-            arguments: serde_json::json!({"cmd":"node","args":["--test"]}),
-        }];
-        let execs = vec![ToolExecutionRecord {
-            name: "shell".to_string(),
-            path: None,
-            ok: false,
-            changed: None,
-        }];
-        assert!(required_validation_failure_needs_repair(
-            prompt, &calls, &execs
-        ));
-    }
-
-    #[test]
-    fn changed_write_clears_failed_validation_repair_need() {
-        let prompt = "Before finishing, run node --test successfully.";
-        let calls = vec![
-            ToolCall {
-                id: "tc_shell".to_string(),
-                name: "shell".to_string(),
-                arguments: serde_json::json!({"cmd":"node","args":["--test"]}),
-            },
-            ToolCall {
-                id: "tc_edit".to_string(),
-                name: "edit".to_string(),
-                arguments: serde_json::json!({"path":"main.rs","old_string":"1","new_string":"2"}),
-            },
-        ];
-        let execs = vec![
-            ToolExecutionRecord {
-                name: "shell".to_string(),
-                path: None,
-                ok: false,
-                changed: None,
-            },
-            ToolExecutionRecord {
-                name: "edit".to_string(),
-                path: Some("main.rs".to_string()),
-                ok: true,
-                changed: Some(true),
-            },
-        ];
-        assert!(!required_validation_failure_needs_repair(
-            prompt, &calls, &execs
-        ));
     }
 
     #[test]

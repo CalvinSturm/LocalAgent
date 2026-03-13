@@ -82,33 +82,84 @@ pub(crate) struct TaskContractResolution {
     pub(crate) provenance: TaskContractProvenanceV1,
 }
 
-fn task_kind_is_coding_like(value: &str) -> bool {
-    let lowered = value.to_ascii_lowercase();
-    lowered.contains("coding")
-        || lowered.contains("code")
-        || lowered.contains("implement")
-        || lowered.contains("fix")
-        || lowered.contains("refactor")
-        || lowered.contains("patch")
-        || lowered.contains("edit")
-        || lowered.contains("bugfix")
+fn normalize_task_kind_phrase(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut last_was_space = true;
+    for ch in value.trim().chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            ' '
+        };
+        if mapped == ' ' {
+            if !last_was_space {
+                normalized.push(' ');
+            }
+            last_was_space = true;
+        } else {
+            normalized.push(mapped);
+            last_was_space = false;
+        }
+    }
+    normalized.trim().to_string()
+}
+
+pub(crate) fn canonicalize_task_kind(value: &str) -> String {
+    let normalized = normalize_task_kind_phrase(value);
+    match normalized.as_str() {
+        "coding"
+        | "code"
+        | "code fix"
+        | "code modification"
+        | "bugfix"
+        | "edit"
+        | "fix"
+        | "implement"
+        | "implementation"
+        | "patch"
+        | "refactor" => "coding".to_string(),
+        "analysis"
+        | "read only"
+        | "read only analysis"
+        | "readonly"
+        | "readonly analysis"
+        | "review" => "analysis".to_string(),
+        "plan" | "planning" | "planning only" => "planning".to_string(),
+        "test" | "testing" | "validate" | "validation" | "validation only" => {
+            "validation".to_string()
+        }
+        "" | "general" => "general".to_string(),
+        _ => normalized,
+    }
+}
+
+pub(crate) fn task_kind_enables_implementation_guard(value: &str) -> bool {
+    canonicalize_task_kind(value) == "coding"
+}
+
+fn completion_policy_for_task_kind(task_kind: &str) -> CompletionPolicyV1 {
+    let requires_write_guards = task_kind == "coding";
+    CompletionPolicyV1 {
+        require_pre_write_read: requires_write_guards,
+        require_post_write_readback: requires_write_guards,
+        require_effective_write: requires_write_guards,
+    }
+}
+
+fn write_requirement_for_task_kind(task_kind: &str) -> WriteRequirement {
+    match task_kind {
+        "coding" => WriteRequirement::Required,
+        "analysis" | "planning" | "validation" => WriteRequirement::None,
+        _ => WriteRequirement::Optional,
+    }
 }
 
 fn normalize_task_kind(value: &str) -> String {
-    let lowered = value.trim().to_ascii_lowercase();
-    if task_kind_is_coding_like(&lowered) {
+    let canonical = canonicalize_task_kind(value);
+    if canonical == "coding" {
         "coding".to_string()
-    } else if lowered.contains("analysis") || lowered.contains("read") || lowered.contains("review")
-    {
-        "analysis".to_string()
-    } else if lowered.contains("plan") {
-        "planning".to_string()
-    } else if lowered.contains("validation") || lowered.contains("test") {
-        "validation".to_string()
-    } else if lowered.is_empty() {
-        "general".to_string()
     } else {
-        lowered
+        canonical
     }
 }
 
@@ -122,19 +173,26 @@ pub(crate) fn resolve_task_contract(
     let (task_kind, task_kind_source) = if let Some(value) = args.task_kind.as_deref() {
         (normalize_task_kind(value), ContractValueSource::Explicit)
     } else if let Some(value) = selected_task_profile {
-        (normalize_task_kind(value), ContractValueSource::Inferred)
+        (normalize_task_kind(value), ContractValueSource::Explicit)
     } else if implementation_guard_enabled {
         ("coding".to_string(), ContractValueSource::Inferred)
     } else {
         ("general".to_string(), ContractValueSource::Defaulted)
     };
 
-    let (write_requirement, write_requirement_source) = if implementation_guard_enabled {
-        (WriteRequirement::Required, ContractValueSource::Inferred)
-    } else if task_kind == "analysis" || task_kind == "planning" || task_kind == "validation" {
-        (WriteRequirement::None, ContractValueSource::Inferred)
+    let write_requirement = write_requirement_for_task_kind(&task_kind);
+    let completion_policy = completion_policy_for_task_kind(&task_kind);
+    let defaulted_task_kind = task_kind == "general"
+        && matches!(task_kind_source, ContractValueSource::Defaulted);
+    let write_requirement_source = if defaulted_task_kind {
+        ContractValueSource::Defaulted
     } else {
-        (WriteRequirement::Optional, ContractValueSource::Defaulted)
+        task_kind_source.clone()
+    };
+    let completion_policy_source = if defaulted_task_kind {
+        ContractValueSource::Defaulted
+    } else {
+        task_kind_source.clone()
     };
 
     let (validation_requirement, validation_requirement_source) =
@@ -194,11 +252,7 @@ pub(crate) fn resolve_task_contract(
             validation_requirement,
             allowed_tools,
             allowed_tools_semantics: AllowedToolsSemantics::ExposedSnapshot,
-            completion_policy: CompletionPolicyV1 {
-                require_pre_write_read: implementation_guard_enabled,
-                require_post_write_readback: implementation_guard_enabled,
-                require_effective_write: implementation_guard_enabled,
-            },
+            completion_policy,
             retry_policy: RetryPolicyV1 {
                 max_schema_repairs: 2,
                 max_repeat_failures_per_key: 3,
@@ -212,11 +266,7 @@ pub(crate) fn resolve_task_contract(
             validation_requirement: validation_requirement_source,
             allowed_tools: ContractValueSource::Inferred,
             allowed_tools_semantics: ContractValueSource::Defaulted,
-            completion_policy: if implementation_guard_enabled {
-                ContractValueSource::Inferred
-            } else {
-                ContractValueSource::Defaulted
-            },
+            completion_policy: completion_policy_source,
             retry_policy: ContractValueSource::Defaulted,
             final_answer_mode: final_answer_mode_source,
         },
@@ -226,8 +276,9 @@ pub(crate) fn resolve_task_contract(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_task_contract, AllowedToolsSemantics, ContractValueSource, FinalAnswerMode,
-        ValidationRequirement, WriteRequirement,
+        canonicalize_task_kind, resolve_task_contract, task_kind_enables_implementation_guard,
+        AllowedToolsSemantics, ContractValueSource, FinalAnswerMode, ValidationRequirement,
+        WriteRequirement,
     };
     use crate::cli_args::RunArgs;
     use clap::Parser;
@@ -261,6 +312,26 @@ mod tests {
     }
 
     #[test]
+    fn task_profile_is_an_explicit_task_kind_source() {
+        let args = RunArgs::parse_from(["localagent"]);
+        let resolution =
+            resolve_task_contract(&args, "do work", Some("planning"), false, &tool_defs(&[]));
+        assert_eq!(resolution.contract.task_kind, "planning");
+        assert_eq!(
+            resolution.provenance.task_kind,
+            ContractValueSource::Explicit
+        );
+    }
+
+    #[test]
+    fn task_kind_aliases_are_exact_phrase_based_not_substring_based() {
+        assert_eq!(canonicalize_task_kind("Code Fix"), "coding");
+        assert_eq!(canonicalize_task_kind("read-only-analysis"), "analysis");
+        assert_eq!(canonicalize_task_kind("decoder"), "decoder");
+        assert!(!task_kind_enables_implementation_guard("decoder"));
+    }
+
+    #[test]
     fn implementation_guard_implies_required_write_contract() {
         let args = RunArgs::parse_from(["localagent"]);
         let resolution = resolve_task_contract(
@@ -283,6 +354,81 @@ mod tests {
         assert_eq!(
             resolution.provenance.write_requirement,
             ContractValueSource::Inferred
+        );
+        assert_eq!(
+            resolution.provenance.completion_policy,
+            ContractValueSource::Inferred
+        );
+    }
+
+    #[test]
+    fn explicit_analysis_task_kind_controls_contract_defaults() {
+        let args = RunArgs::parse_from(["localagent", "--task-kind", "analysis"]);
+        let resolution =
+            resolve_task_contract(&args, "summarize the repository", None, true, &tool_defs(&[]));
+        assert_eq!(resolution.contract.task_kind, "analysis");
+        assert_eq!(resolution.contract.write_requirement, WriteRequirement::None);
+        assert!(
+            !resolution
+                .contract
+                .completion_policy
+                .require_pre_write_read
+        );
+        assert!(
+            !resolution
+                .contract
+                .completion_policy
+                .require_post_write_readback
+        );
+        assert!(
+            !resolution
+                .contract
+                .completion_policy
+                .require_effective_write
+        );
+        assert_eq!(
+            resolution.provenance.write_requirement,
+            ContractValueSource::Explicit
+        );
+        assert_eq!(
+            resolution.provenance.completion_policy,
+            ContractValueSource::Explicit
+        );
+    }
+
+    #[test]
+    fn explicit_planning_task_kind_controls_contract_defaults() {
+        let args = RunArgs::parse_from(["localagent", "--task-kind", "planning"]);
+        let resolution =
+            resolve_task_contract(&args, "plan the migration", None, false, &tool_defs(&[]));
+        assert_eq!(resolution.contract.write_requirement, WriteRequirement::None);
+        assert!(
+            !resolution
+                .contract
+                .completion_policy
+                .require_effective_write
+        );
+        assert_eq!(
+            resolution.provenance.write_requirement,
+            ContractValueSource::Explicit
+        );
+    }
+
+    #[test]
+    fn explicit_validation_task_kind_controls_contract_defaults() {
+        let args = RunArgs::parse_from(["localagent", "--task-kind", "validation"]);
+        let resolution =
+            resolve_task_contract(&args, "run checks", None, false, &tool_defs(&[]));
+        assert_eq!(resolution.contract.write_requirement, WriteRequirement::None);
+        assert!(
+            !resolution
+                .contract
+                .completion_policy
+                .require_effective_write
+        );
+        assert_eq!(
+            resolution.provenance.write_requirement,
+            ContractValueSource::Explicit
         );
     }
 
