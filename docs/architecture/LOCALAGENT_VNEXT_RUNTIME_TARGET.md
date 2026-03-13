@@ -1428,7 +1428,7 @@ Current state:
 
 ### Phase 5: Explicit Phase Loop
 
-Status: in progress
+Status: effectively complete for v1
 
 Goal:
 
@@ -1465,7 +1465,8 @@ Current state:
 - runtime completion checkpoint transitions and post-tool/post-write checkpoint mutation policy now route through a dedicated `phase_transitions` helper module
 - required-validation phase and post-response guard checkpoint mutation policy now route through a dedicated `response_guards` helper module
 - the remaining guard/post-tool decision-to-effects translation now routes through a dedicated `runtime_effects` helper module
-- the main loop is not yet fully rewritten around end-to-end explicit per-phase handlers
+- the outer per-step runtime loop now routes through a dedicated coordinator helper, leaving `run_with_checkpoint` closer to setup -> iterate -> finalize
+- the Phase 5 coordinator/phase-loop target is now effectively satisfied for v1; remaining cleanup can defer to later phases unless a concrete regression appears
 
 ### Phase 6: Execution Tier Integration
 
@@ -1517,15 +1518,13 @@ The vNext runtime target is achieved when:
 
 ## Immediate Next Work
 
-The next slice should focus on explicit phase-loop consolidation, not more schema expansion.
+Phase 5 should not be extended by default.
 
-Recommended order:
+Recommended next work:
 
-1. Keep shrinking the shared active-turn orchestration in `src/agent.rs` so the dispatcher delegates more phase-owned behavior.
-2. Move the remaining inline completion/transition decisions into checkpoint-driven helpers and `src/agent/completion_policy.rs`.
-3. Tighten checkpoint persistence and resume handling at any remaining nonterminal phase boundaries that are still implicit.
-4. Extend explicit phase dispatch beyond the active model phases so the runtime more directly matches the target pseudocode.
-5. Keep behavior parity green while shrinking `src/agent.rs`.
+1. Treat explicit phase-loop consolidation as effectively closed unless a concrete runtime regression or clarity issue appears.
+2. Move to the next runtime priorities that build on the checkpoint-backed phase model instead of reopening coordinator-shape cleanup.
+3. Keep `cargo test --quiet` green and use targeted regressions if a future change touches the runtime loop again.
 
 ## Recommended First PR Sequence
 

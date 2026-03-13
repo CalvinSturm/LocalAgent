@@ -2697,6 +2697,335 @@ impl<P: ModelProvider> Agent<P> {
         Ok(PhaseStepDispatch::StepComplete)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn run_agent_step_iteration(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        last_compaction_report: &mut Option<CompactionReport>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        announced_plan_step_id: &mut Option<String>,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        enforce_implementation_integrity_guard: bool,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        allowed_tool_names: &std::collections::BTreeSet<String>,
+        run_started: &std::time::Instant,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        runtime_checkpoint.step_index = step;
+        self.drain_external_operator_queue(run_id, step);
+        if let Some(reason) = self.check_wall_time_budget_exceeded(run_id, step, run_started) {
+            let final_prompt_size_chars = context_size_chars(messages);
+            return Err(self.finalize_budget_exceeded(
+                run_id.to_string(),
+                started_at.to_string(),
+                reason,
+                messages.clone(),
+                observed_tool_calls.clone(),
+                observed_tool_decisions.clone(),
+                final_prompt_size_chars,
+                last_compaction_report.clone(),
+                hook_invocations.clone(),
+                *provider_retry_count,
+                *provider_error_count,
+                *saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ));
+        }
+        self.emit_plan_step_started_if_needed(
+            run_id,
+            step,
+            *active_plan_step_idx,
+            announced_plan_step_id,
+        );
+        let compacted = self.compact_messages_for_step(
+            run_id,
+            step,
+            messages,
+            provider_retry_count,
+            provider_error_count,
+        );
+        let compacted = match compacted {
+            Ok(c) => c,
+            Err(err_text) => {
+                return Err(self.finalize_provider_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    err_text,
+                    messages.clone(),
+                    observed_tool_calls.clone(),
+                    observed_tool_decisions.clone(),
+                    0,
+                    last_compaction_report.clone(),
+                    hook_invocations.clone(),
+                    *provider_retry_count,
+                    *provider_error_count,
+                    *saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+        };
+        if let Some(report) = compacted.report.clone() {
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::CompactionPerformed,
+                serde_json::json!({
+                    "before_chars": report.before_chars,
+                    "after_chars": report.after_chars,
+                    "before_messages": report.before_messages,
+                    "after_messages": report.after_messages,
+                    "compacted_messages": report.compacted_messages,
+                    "summary_digest_sha256": report.summary_digest_sha256
+                }),
+            );
+            *last_compaction_report = Some(report);
+        }
+        *messages = compacted.messages;
+        let mut tools_sorted = self.tools.clone();
+        tools_sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        if self.hooks.enabled() {
+            let pre_payload = PreModelPayload {
+                messages: messages.clone(),
+                tools: tools_sorted.clone(),
+                stream: self.stream,
+                compaction: PreModelCompactionPayload::from(&self.compaction_settings),
+            };
+            let hook_input = make_pre_model_input(
+                run_id,
+                step,
+                provider_name(self.gate_ctx.provider),
+                &self.model,
+                &self.gate_ctx.workdir,
+                match serde_json::to_value(pre_payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(self.finalize_provider_error_with_end(
+                            step,
+                            run_id.to_string(),
+                            started_at.to_string(),
+                            format!("failed to encode pre_model hook payload: {e}"),
+                            messages.clone(),
+                            observed_tool_calls.clone(),
+                            observed_tool_decisions.clone(),
+                            0,
+                            last_compaction_report.clone(),
+                            hook_invocations.clone(),
+                            *provider_retry_count,
+                            *provider_error_count,
+                            *saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ));
+                    }
+                },
+            );
+            match self.hooks.run_pre_model_hooks(hook_input).await {
+                Ok(result) => {
+                    for inv in &result.invocations {
+                        self.emit_event(
+                            run_id,
+                            step,
+                            EventKind::HookStart,
+                            serde_json::json!({
+                                "hook_name": inv.hook_name,
+                                "stage": inv.stage
+                            }),
+                        );
+                        self.emit_event(
+                            run_id,
+                            step,
+                            EventKind::HookEnd,
+                            serde_json::json!({
+                                "hook_name": inv.hook_name,
+                                "stage": inv.stage,
+                                "action": inv.action,
+                                "modified": inv.modified,
+                                "duration_ms": inv.duration_ms
+                            }),
+                        );
+                    }
+                    hook_invocations.extend(result.invocations);
+                    if let Some(reason) = result.abort_reason {
+                        let prompt_chars = context_size_chars(messages);
+                        return Err(self.finalize_hook_aborted_with_end(
+                            step,
+                            run_id.to_string(),
+                            started_at.to_string(),
+                            reason.clone(),
+                            reason,
+                            messages.clone(),
+                            observed_tool_calls.clone(),
+                            observed_tool_decisions.clone(),
+                            prompt_chars,
+                            last_compaction_report.clone(),
+                            hook_invocations.clone(),
+                            *provider_retry_count,
+                            *provider_error_count,
+                            *saw_token_usage,
+                            total_token_usage,
+                            taint_state,
+                        ));
+                    }
+                    if !result.append_messages.is_empty() {
+                        messages.extend(result.append_messages);
+                        if self.compaction_settings.max_context_chars > 0 {
+                            let compacted_again = maybe_compact(messages, &self.compaction_settings)
+                                .map_err(|e| format!("compaction failed after hooks: {e}"));
+                            match compacted_again {
+                                Ok(out) => {
+                                    if let Some(report) = out.report.clone() {
+                                        self.emit_event(
+                                            run_id,
+                                            step,
+                                            EventKind::CompactionPerformed,
+                                            serde_json::json!({
+                                                "before_chars": report.before_chars,
+                                                "after_chars": report.after_chars,
+                                                "before_messages": report.before_messages,
+                                                "after_messages": report.after_messages,
+                                                "compacted_messages": report.compacted_messages,
+                                                "summary_digest_sha256": report.summary_digest_sha256,
+                                                "phase": "post_pre_model_hooks"
+                                            }),
+                                        );
+                                        *last_compaction_report = Some(report);
+                                    }
+                                    *messages = out.messages;
+                                    if self.compaction_settings.max_context_chars > 0
+                                        && context_size_chars(messages)
+                                            > self.compaction_settings.max_context_chars
+                                    {
+                                        let prompt_chars = context_size_chars(messages);
+                                        return Err(self.finalize_provider_error_with_end(
+                                            step,
+                                            run_id.to_string(),
+                                            started_at.to_string(),
+                                            "hooks caused prompt to exceed budget".to_string(),
+                                            messages.clone(),
+                                            observed_tool_calls.clone(),
+                                            observed_tool_decisions.clone(),
+                                            prompt_chars,
+                                            last_compaction_report.clone(),
+                                            hook_invocations.clone(),
+                                            *provider_retry_count,
+                                            *provider_error_count,
+                                            *saw_token_usage,
+                                            total_token_usage,
+                                            taint_state,
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    let prompt_chars = context_size_chars(messages);
+                                    return Err(self.finalize_provider_error_with_end(
+                                        step,
+                                        run_id.to_string(),
+                                        started_at.to_string(),
+                                        e,
+                                        messages.clone(),
+                                        observed_tool_calls.clone(),
+                                        observed_tool_decisions.clone(),
+                                        prompt_chars,
+                                        last_compaction_report.clone(),
+                                        hook_invocations.clone(),
+                                        *provider_retry_count,
+                                        *provider_error_count,
+                                        *saw_token_usage,
+                                        total_token_usage,
+                                        taint_state,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::HookError,
+                        serde_json::json!({"stage":"pre_model","error": e.message}),
+                    );
+                    let prompt_chars = context_size_chars(messages);
+                    return Err(self.finalize_hook_aborted_with_end(
+                        step,
+                        run_id.to_string(),
+                        started_at.to_string(),
+                        String::new(),
+                        e.message,
+                        messages.clone(),
+                        observed_tool_calls.clone(),
+                        observed_tool_decisions.clone(),
+                        prompt_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.clone(),
+                        *provider_retry_count,
+                        *provider_error_count,
+                        *saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ));
+                }
+            }
+        }
+
+        self.dispatch_runtime_phase_step(
+            user_prompt,
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_executions,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            runtime_checkpoint,
+            active_plan_step_idx,
+            last_user_output,
+            step_retry_counts,
+            failed_repeat_counts,
+            malformed_tool_call_attempts,
+            invalid_patch_format_attempts,
+            schema_repair_attempts,
+            tool_budget_usage,
+            enforce_implementation_integrity_guard,
+            expected_mcp_catalog_hash_hex,
+            expected_mcp_docs_hash_hex,
+            allowed_tool_names,
+            tools_sorted,
+        )
+        .await
+    }
+
     pub async fn run(
         &mut self,
         user_prompt: &str,
@@ -2754,271 +3083,8 @@ impl<P: ModelProvider> Agent<P> {
         let (expected_mcp_catalog_hash_hex, expected_mcp_docs_hash_hex, allowed_tool_names) =
             self.compute_run_preflight_caches();
         'agent_steps: for step in 0..self.max_steps {
-            runtime_checkpoint.step_index = step as u32;
-            self.drain_external_operator_queue(&run_id, step as u32);
-            if let Some(reason) =
-                self.check_wall_time_budget_exceeded(&run_id, step as u32, &run_started)
-            {
-                let final_prompt_size_chars = context_size_chars(&messages);
-                return self.finalize_budget_exceeded(
-                    run_id,
-                    started_at,
-                    reason,
-                    messages,
-                    observed_tool_calls,
-                    observed_tool_decisions,
-                    final_prompt_size_chars,
-                    last_compaction_report,
-                    hook_invocations,
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    &total_token_usage,
-                    &taint_state,
-                );
-            }
-            self.emit_plan_step_started_if_needed(
-                &run_id,
-                step as u32,
-                active_plan_step_idx,
-                &mut announced_plan_step_id,
-            );
-            let compacted = match self.compact_messages_for_step(
-                &run_id,
-                step as u32,
-                &messages,
-                &mut provider_retry_count,
-                &mut provider_error_count,
-            ) {
-                Ok(c) => c,
-                Err(err_text) => {
-                    return self.finalize_provider_error_with_end(
-                        step as u32,
-                        run_id,
-                        started_at,
-                        err_text,
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        0,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    );
-                }
-            };
-            if let Some(report) = compacted.report.clone() {
-                self.emit_event(
-                    &run_id,
-                    step as u32,
-                    EventKind::CompactionPerformed,
-                    serde_json::json!({
-                        "before_chars": report.before_chars,
-                        "after_chars": report.after_chars,
-                        "before_messages": report.before_messages,
-                        "after_messages": report.after_messages,
-                        "compacted_messages": report.compacted_messages,
-                        "summary_digest_sha256": report.summary_digest_sha256
-                    }),
-                );
-                last_compaction_report = Some(report);
-            }
-            messages = compacted.messages;
-            let mut tools_sorted = self.tools.clone();
-            tools_sorted.sort_by(|a, b| a.name.cmp(&b.name));
-            if self.hooks.enabled() {
-                let pre_payload = PreModelPayload {
-                    messages: messages.clone(),
-                    tools: tools_sorted.clone(),
-                    stream: self.stream,
-                    compaction: PreModelCompactionPayload::from(&self.compaction_settings),
-                };
-                let hook_input = make_pre_model_input(
-                    &run_id,
-                    step as u32,
-                    provider_name(self.gate_ctx.provider),
-                    &self.model,
-                    &self.gate_ctx.workdir,
-                    match serde_json::to_value(pre_payload) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return self.finalize_provider_error_with_end(
-                                step as u32,
-                                run_id,
-                                started_at,
-                                format!("failed to encode pre_model hook payload: {e}"),
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
-                                0,
-                                last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &taint_state,
-                            );
-                        }
-                    },
-                );
-                match self.hooks.run_pre_model_hooks(hook_input).await {
-                    Ok(result) => {
-                        for inv in &result.invocations {
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::HookStart,
-                                serde_json::json!({
-                                    "hook_name": inv.hook_name,
-                                    "stage": inv.stage
-                                }),
-                            );
-                            self.emit_event(
-                                &run_id,
-                                step as u32,
-                                EventKind::HookEnd,
-                                serde_json::json!({
-                                    "hook_name": inv.hook_name,
-                                    "stage": inv.stage,
-                                    "action": inv.action,
-                                    "modified": inv.modified,
-                                    "duration_ms": inv.duration_ms
-                                }),
-                            );
-                        }
-                        hook_invocations.extend(result.invocations);
-                        if let Some(reason) = result.abort_reason {
-                            let prompt_chars = context_size_chars(&messages);
-                            return self.finalize_hook_aborted_with_end(
-                                step as u32,
-                                run_id,
-                                started_at,
-                                reason.clone(),
-                                reason,
-                                messages,
-                                observed_tool_calls,
-                                observed_tool_decisions,
-                                prompt_chars,
-                                last_compaction_report,
-                                hook_invocations,
-                                provider_retry_count,
-                                provider_error_count,
-                                saw_token_usage,
-                                &total_token_usage,
-                                &taint_state,
-                            );
-                        }
-                        if !result.append_messages.is_empty() {
-                            messages.extend(result.append_messages);
-                            if self.compaction_settings.max_context_chars > 0 {
-                                let compacted_again =
-                                    maybe_compact(&messages, &self.compaction_settings)
-                                        .map_err(|e| format!("compaction failed after hooks: {e}"));
-                                match compacted_again {
-                                    Ok(out) => {
-                                        if let Some(report) = out.report.clone() {
-                                            self.emit_event(
-                                                &run_id,
-                                                step as u32,
-                                                EventKind::CompactionPerformed,
-                                                serde_json::json!({
-                                                    "before_chars": report.before_chars,
-                                                    "after_chars": report.after_chars,
-                                                    "before_messages": report.before_messages,
-                                                    "after_messages": report.after_messages,
-                                                    "compacted_messages": report.compacted_messages,
-                                                    "summary_digest_sha256": report.summary_digest_sha256,
-                                                    "phase": "post_pre_model_hooks"
-                                                }),
-                                            );
-                                            last_compaction_report = Some(report);
-                                        }
-                                        messages = out.messages;
-                                        if self.compaction_settings.max_context_chars > 0
-                                            && context_size_chars(&messages)
-                                                > self.compaction_settings.max_context_chars
-                                        {
-                                            let prompt_chars = context_size_chars(&messages);
-                                            return self.finalize_provider_error_with_end(
-                                                step as u32,
-                                                run_id,
-                                                started_at,
-                                                "hooks caused prompt to exceed budget".to_string(),
-                                                messages,
-                                                observed_tool_calls,
-                                                observed_tool_decisions,
-                                                prompt_chars,
-                                                last_compaction_report,
-                                                hook_invocations,
-                                                provider_retry_count,
-                                                provider_error_count,
-                                                saw_token_usage,
-                                                &total_token_usage,
-                                                &taint_state,
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let prompt_chars = context_size_chars(&messages);
-                                        return self.finalize_provider_error_with_end(
-                                            step as u32,
-                                            run_id,
-                                            started_at,
-                                            e,
-                                            messages,
-                                            observed_tool_calls,
-                                            observed_tool_decisions,
-                                            prompt_chars,
-                                            last_compaction_report,
-                                            hook_invocations,
-                                            provider_retry_count,
-                                            provider_error_count,
-                                            saw_token_usage,
-                                            &total_token_usage,
-                                            &taint_state,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::HookError,
-                            serde_json::json!({"stage":"pre_model","error": e.message}),
-                        );
-                        let prompt_chars = context_size_chars(&messages);
-                        return self.finalize_hook_aborted_with_end(
-                            step as u32,
-                            run_id,
-                            started_at,
-                            String::new(),
-                            e.message,
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            prompt_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
-                }
-            }
-
             match self
-                .dispatch_runtime_phase_step(
+                .run_agent_step_iteration(
                     user_prompt,
                     &run_id,
                     step as u32,
@@ -3027,7 +3093,7 @@ impl<P: ModelProvider> Agent<P> {
                     &mut observed_tool_calls,
                     &mut observed_tool_executions,
                     &mut observed_tool_decisions,
-                    &last_compaction_report,
+                    &mut last_compaction_report,
                     &mut hook_invocations,
                     &mut provider_retry_count,
                     &mut provider_error_count,
@@ -3036,6 +3102,7 @@ impl<P: ModelProvider> Agent<P> {
                     &mut taint_state,
                     &mut runtime_checkpoint,
                     &mut active_plan_step_idx,
+                    &mut announced_plan_step_id,
                     &mut last_user_output,
                     &mut step_retry_counts,
                     &mut failed_repeat_counts,
@@ -3047,7 +3114,7 @@ impl<P: ModelProvider> Agent<P> {
                     expected_mcp_catalog_hash_hex.as_ref(),
                     expected_mcp_docs_hash_hex.as_ref(),
                     &allowed_tool_names,
-                    tools_sorted,
+                    &run_started,
                 )
                 .await
             {

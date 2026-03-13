@@ -104,7 +104,7 @@ Still incomplete:
 
 ### Phase 5: Explicit Phase Loop
 
-Status: in progress
+Status: effectively complete for v1
 
 Implemented so far:
 
@@ -140,11 +140,13 @@ Recent consolidation slices already landed in `src/agent.rs`:
 - runtime completion checkpoint transitions and post-tool/post-write checkpoint refresh logic now route through `src/agent/phase_transitions.rs`, leaving `agent.rs` to handle orchestration and event emission
 - required-validation phase and post-response guard checkpoint logic now route through `src/agent/response_guards.rs`, leaving `agent.rs` to handle repair injection, events, and planner-error finalization
 - the remaining decision-to-effects translation for guard outcomes and post-tool follow-on now routes through `src/agent/runtime_effects.rs`, further reducing inline message/event/control adaptation in `agent.rs`
+- the outer per-step runtime loop now routes through a dedicated coordinator helper, leaving `run_with_checkpoint` closer to setup -> iterate -> finalize
 
-Still incomplete:
+Phase 5 closeout assessment:
 
-- `src/agent.rs` still contains shared lower-level orchestration reused by multiple active phases
-- the live loop is phase-dispatched for active phases, but not yet a full end-to-end `match checkpoint.phase { ... }` runtime matching the target pseudocode
+- `src/agent.rs` is now materially coordinator-like for v1 purposes
+- the explicit phase-loop target is effectively satisfied for v1
+- any remaining cleanup is optional unless a concrete runtime regression or readability issue appears
 
 ### Phase 6: Execution Tier Integration
 
@@ -197,15 +199,13 @@ Most relevant files for the next person picking this up:
 
 ## Remaining Work
 
-The next logical work is all under Phase 5.
+The next logical work is no longer more open-ended Phase 5 extraction.
 
 Recommended order:
 
-1. Continue shrinking `src/agent.rs` into a coordinator over checkpoint-backed helper methods.
-2. Split the remaining shared `run_model_phase_step` orchestration further so each active phase owns less inline branching.
-3. Move any remaining inline completion/transition logic into `completion_policy.rs` or other phase-specific helpers where appropriate.
-4. Tighten any remaining implicit nonterminal checkpoint/resume boundaries as the loop becomes more explicitly phase-dispatched.
-5. Update the runtime target doc progress text again when another meaningful consolidation slice lands.
+1. Treat Phase 5 as effectively closed unless a concrete runtime-loop regression appears.
+2. If future runtime work touches the loop again, use targeted regressions plus `cargo test --quiet` and avoid reopening broad coordinator refactors without evidence.
+3. Shift attention to later runtime priorities that build on the checkpoint-backed phase model rather than more structural cleanup for its own sake.
 
 ## Suggested Handoff Rules
 
