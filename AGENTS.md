@@ -17,7 +17,7 @@ LocalAgent is a single-crate Rust CLI/runtime for local-first agent execution wi
 ## Before You Change Code
 1. Read the crate and CLI entrypoints first: `Cargo.toml`, `src/cli_args.rs`, `src/cli_dispatch.rs`, `src/agent_runtime.rs`.
 2. Identify whether your change touches shared runtime-loop behavior, tool/runtime policy, or only a narrower surface.
-3. Read the deeper doc that matches the task instead of extending this file.
+3. Read `docs/README.md` for the current docs layout, then open the deeper doc that matches the task instead of extending this file.
 4. For CLI/defaults questions, treat `src/cli_args.rs` and `src/cli_dispatch.rs` as the source of truth over prose docs.
 
 * `Evidence: Cargo.toml#<config:package.default-run>`
@@ -67,7 +67,10 @@ Runtime policy docs:
 * `Evidence: src/agent_impl_guard.rs`
 
 ## Docs Map
+- Docs index: [docs/README.md](docs/README.md)
 - Architecture: [docs/architecture/RUNTIME_ARCHITECTURE.md](docs/architecture/RUNTIME_ARCHITECTURE.md)
+- Runtime target: [docs/architecture/LOCALAGENT_VNEXT_RUNTIME_TARGET.md](docs/architecture/LOCALAGENT_VNEXT_RUNTIME_TARGET.md)
+- Runtime handoff: [docs/architecture/LOCALAGENT_VNEXT_RUNTIME_HANDOFF.md](docs/architecture/LOCALAGENT_VNEXT_RUNTIME_HANDOFF.md)
 - Operations: [docs/operations/OPERATIONAL_RUNBOOK.md](docs/operations/OPERATIONAL_RUNBOOK.md)
 - Config/state: [docs/reference/CONFIGURATION_AND_STATE.md](docs/reference/CONFIGURATION_AND_STATE.md)
 - CLI reference: [docs/reference/CLI_REFERENCE.md](docs/reference/CLI_REFERENCE.md)
@@ -77,3 +80,6 @@ Runtime policy docs:
 - Instruction tuning: [docs/guides/INSTRUCTION_PROFILES.md](docs/guides/INSTRUCTION_PROFILES.md)
 - Safe tool tuning baseline: [docs/guides/SAFE_TOOL_TUNING_BASELINE.md](docs/guides/SAFE_TOOL_TUNING_BASELINE.md)
 - Human-in-the-loop checklist: [docs/guides/HUMAN_IN_THE_LOOP_CHECKLIST.md](docs/guides/HUMAN_IN_THE_LOOP_CHECKLIST.md)
+
+Archive note:
+- Historical planning, audit, and superseded handoff docs live under [docs/archive](docs/archive/README.md). Do not treat archived docs as the current source of truth.
