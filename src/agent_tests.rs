@@ -8365,7 +8365,12 @@ async fn repeated_failed_str_replace_forces_pivot_before_repeat_block() {
         )
         .await;
     assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
-    assert_eq!(out.final_output, "done");
+    assert_eq!(out.final_output, "");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        6,
+        "runtime should finalize directly after successful verified write"
+    );
     let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
         .await
         .expect("read main");
@@ -8526,7 +8531,12 @@ async fn repeated_failed_apply_patch_forces_smaller_fix_pivot_before_repeat_bloc
         )
         .await;
     assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
-    assert_eq!(out.final_output, "done");
+    assert_eq!(out.final_output, "");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        6,
+        "runtime should finalize directly after successful verified write"
+    );
     let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
         .await
         .expect("read main");

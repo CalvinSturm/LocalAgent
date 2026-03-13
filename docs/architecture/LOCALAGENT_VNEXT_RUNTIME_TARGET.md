@@ -727,8 +727,10 @@ Why this ordering is correct:
 
 - checks and eval tasks now feed explicit validator/output contract data into the runtime; manual packs remain the next follow-on surface if they need the same structured task metadata
 - instruction/task profiles are the next-best explicit source for reusable task-shaping metadata
+- explicit `--task-kind` and explicit instruction task profiles now drive canonical task-kind resolution ahead of fallback inference
+- write requirement and completion policy defaults now derive from resolved task kind instead of raw implementation-guard state
 - CLI/config should remain available for operator-authored overrides, but should not be the only path to structured task contracts
-- prompt heuristics may remain as fallback where no explicit metadata exists, but they should no longer be the preferred runtime-semantic source
+- prompt heuristics may remain as fallback where no explicit metadata exists, but they should no longer be the preferred runtime-semantic source; the remaining post-write follow-on heuristic is now narrowed to explicit closeout-style requests only
 
 ### Planner Authority Boundaries
 
@@ -1457,6 +1459,8 @@ Current state:
 - approval/operator/final-answer transition helpers exist
 - the validation / exact-final-answer / post-write phase family now uses checkpoint-backed state in the live loop
 - the tool-protocol loop state previously carried as separate booleans/counters now lives in `RunCheckpointV1`
+- task-kind canonicalization now prefers explicit task/profile metadata and exact alias handling over broad substring inference
+- write requirement and completion policy defaults now follow resolved task kind, making non-coding tasks deterministically read-only by default
 - some completion and transition logic still remains inline in `src/agent.rs`
 
 ### Phase 5: Explicit Phase Loop

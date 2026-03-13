@@ -107,22 +107,9 @@ fn normalize_task_kind_phrase(value: &str) -> String {
 pub(crate) fn canonicalize_task_kind(value: &str) -> String {
     let normalized = normalize_task_kind_phrase(value);
     match normalized.as_str() {
-        "coding"
-        | "code"
-        | "code fix"
-        | "code modification"
-        | "bugfix"
-        | "edit"
-        | "fix"
-        | "implement"
-        | "implementation"
-        | "patch"
-        | "refactor" => "coding".to_string(),
-        "analysis"
-        | "read only"
-        | "read only analysis"
-        | "readonly"
-        | "readonly analysis"
+        "coding" | "code" | "code fix" | "code modification" | "bugfix" | "edit" | "fix"
+        | "implement" | "implementation" | "patch" | "refactor" => "coding".to_string(),
+        "analysis" | "read only" | "read only analysis" | "readonly" | "readonly analysis"
         | "review" => "analysis".to_string(),
         "plan" | "planning" | "planning only" => "planning".to_string(),
         "test" | "testing" | "validate" | "validation" | "validation only" => {
@@ -182,8 +169,8 @@ pub(crate) fn resolve_task_contract(
 
     let write_requirement = write_requirement_for_task_kind(&task_kind);
     let completion_policy = completion_policy_for_task_kind(&task_kind);
-    let defaulted_task_kind = task_kind == "general"
-        && matches!(task_kind_source, ContractValueSource::Defaulted);
+    let defaulted_task_kind =
+        task_kind == "general" && matches!(task_kind_source, ContractValueSource::Defaulted);
     let write_requirement_source = if defaulted_task_kind {
         ContractValueSource::Defaulted
     } else {
@@ -353,27 +340,30 @@ mod tests {
         );
         assert_eq!(
             resolution.provenance.write_requirement,
-            ContractValueSource::Inferred
+            ContractValueSource::Explicit
         );
         assert_eq!(
             resolution.provenance.completion_policy,
-            ContractValueSource::Inferred
+            ContractValueSource::Explicit
         );
     }
 
     #[test]
     fn explicit_analysis_task_kind_controls_contract_defaults() {
         let args = RunArgs::parse_from(["localagent", "--task-kind", "analysis"]);
-        let resolution =
-            resolve_task_contract(&args, "summarize the repository", None, true, &tool_defs(&[]));
-        assert_eq!(resolution.contract.task_kind, "analysis");
-        assert_eq!(resolution.contract.write_requirement, WriteRequirement::None);
-        assert!(
-            !resolution
-                .contract
-                .completion_policy
-                .require_pre_write_read
+        let resolution = resolve_task_contract(
+            &args,
+            "summarize the repository",
+            None,
+            true,
+            &tool_defs(&[]),
         );
+        assert_eq!(resolution.contract.task_kind, "analysis");
+        assert_eq!(
+            resolution.contract.write_requirement,
+            WriteRequirement::None
+        );
+        assert!(!resolution.contract.completion_policy.require_pre_write_read);
         assert!(
             !resolution
                 .contract
@@ -401,7 +391,10 @@ mod tests {
         let args = RunArgs::parse_from(["localagent", "--task-kind", "planning"]);
         let resolution =
             resolve_task_contract(&args, "plan the migration", None, false, &tool_defs(&[]));
-        assert_eq!(resolution.contract.write_requirement, WriteRequirement::None);
+        assert_eq!(
+            resolution.contract.write_requirement,
+            WriteRequirement::None
+        );
         assert!(
             !resolution
                 .contract
@@ -417,9 +410,11 @@ mod tests {
     #[test]
     fn explicit_validation_task_kind_controls_contract_defaults() {
         let args = RunArgs::parse_from(["localagent", "--task-kind", "validation"]);
-        let resolution =
-            resolve_task_contract(&args, "run checks", None, false, &tool_defs(&[]));
-        assert_eq!(resolution.contract.write_requirement, WriteRequirement::None);
+        let resolution = resolve_task_contract(&args, "run checks", None, false, &tool_defs(&[]));
+        assert_eq!(
+            resolution.contract.write_requirement,
+            WriteRequirement::None
+        );
         assert!(
             !resolution
                 .contract

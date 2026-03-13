@@ -103,37 +103,20 @@ pub(crate) fn prompt_requires_tool_only(prompt: &str) -> bool {
 
 pub(crate) fn prompt_requires_post_write_follow_on(prompt: &str) -> bool {
     let p = prompt.to_ascii_lowercase();
-    let requires_validation = [
-        "run test",
-        "run tests",
-        "cargo test",
-        "node --test",
-        "npm test",
-        "pnpm test",
-        "validate",
-        "validation",
-        "verify",
-        "confirm",
-        "check that",
-        "check the",
-        "before finishing",
-        "before you finish",
-        "before finalizing",
-    ]
-    .iter()
-    .any(|needle| p.contains(needle));
-    let requires_user_facing_closeout = [
+    [
         "final answer",
         "final response",
         "summarize what changed",
         "summarise what changed",
+        "summary of changes",
+        "change summary",
         "explain what changed",
         "tell me what changed",
         "describe what changed",
+        "what changed",
     ]
     .iter()
-    .any(|needle| p.contains(needle));
-    requires_validation || requires_user_facing_closeout
+    .any(|needle| p.contains(needle))
 }
 
 pub(crate) fn prompt_required_validation_command(prompt: &str) -> Option<&'static str> {
@@ -185,6 +168,16 @@ mod tests {
             prompt_required_exact_final_answer(prompt).as_deref(),
             Some("verified fix")
         );
+    }
+
+    #[test]
+    fn post_write_follow_on_is_only_for_explicit_closeout_requests() {
+        assert!(super::prompt_requires_post_write_follow_on(
+            "Fix the bug and summarize what changed."
+        ));
+        assert!(!super::prompt_requires_post_write_follow_on(
+            "Fix the bug. Before finishing, run cargo test successfully."
+        ));
     }
 
     #[test]
