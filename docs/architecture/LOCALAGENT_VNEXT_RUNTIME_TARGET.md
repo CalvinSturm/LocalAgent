@@ -125,10 +125,10 @@ pub enum RunPhase {
     Planning,
     Executing,
     WaitingForApproval,
-    WaitingForOperator,
-    VerifyingWrite,
-    RunningValidation,
-    AwaitingFinalAnswer,
+    WaitingForOperatorInput,
+    VerifyingChanges,
+    Validating,
+    CollectingFinalAnswer,
     Finalizing,
     Done,
     Failed,
@@ -215,10 +215,10 @@ Allowed transitions:
 
 - `Executing`
 - `WaitingForApproval`
-- `WaitingForOperator`
-- `VerifyingWrite`
-- `RunningValidation`
-- `AwaitingFinalAnswer`
+- `WaitingForOperatorInput`
+- `VerifyingChanges`
+- `Validating`
+- `CollectingFinalAnswer`
 - `Finalizing`
 - `Failed`
 - `Cancelled`
@@ -251,7 +251,7 @@ Checkpoint requirements:
 - required on entry
 - required on resolution
 
-### `WaitingForOperator`
+### `WaitingForOperatorInput`
 
 Allowed inputs:
 
@@ -273,7 +273,7 @@ Checkpoint requirements:
 - required on entry
 - required on resolution
 
-### `VerifyingWrite`
+### `VerifyingChanges`
 
 Allowed inputs:
 
@@ -288,8 +288,8 @@ Allowed outputs:
 Allowed transitions:
 
 - `Executing`
-- `RunningValidation`
-- `AwaitingFinalAnswer`
+- `Validating`
+- `CollectingFinalAnswer`
 - `Failed`
 - `Cancelled`
 
@@ -298,7 +298,7 @@ Checkpoint requirements:
 - required on entry
 - required after verification results are recorded
 
-### `RunningValidation`
+### `Validating`
 
 Allowed inputs:
 
@@ -313,7 +313,7 @@ Allowed outputs:
 Allowed transitions:
 
 - `Executing`
-- `AwaitingFinalAnswer`
+- `CollectingFinalAnswer`
 - `Failed`
 - `Cancelled`
 
@@ -322,7 +322,7 @@ Checkpoint requirements:
 - required on entry
 - required after validation attempt
 
-### `AwaitingFinalAnswer`
+### `CollectingFinalAnswer`
 
 Allowed inputs:
 
@@ -336,7 +336,7 @@ Allowed outputs:
 
 Allowed transitions:
 
-- `AwaitingFinalAnswer`
+- `CollectingFinalAnswer`
 - `Finalizing`
 - `Failed`
 - `Cancelled`
@@ -374,10 +374,10 @@ Phase meanings:
 - `Planning`: planner-worker planning phase when enabled
 - `Executing`: normal tool-capable execution loop
 - `WaitingForApproval`: persisted interrupt because a gate requires approval
-- `WaitingForOperator`: persisted interrupt for explicit operator interaction
-- `VerifyingWrite`: runtime-owned readback / post-write verification
-- `RunningValidation`: runtime-owned validation phase such as `cargo test`
-- `AwaitingFinalAnswer`: work is done, model owes only the closeout
+- `WaitingForOperatorInput`: persisted interrupt for explicit operator interaction
+- `VerifyingChanges`: runtime-owned readback / post-write verification
+- `Validating`: runtime-owned validation phase such as `cargo test`
+- `CollectingFinalAnswer`: work is done, model owes only the closeout
 - `Finalizing`: runtime assembling outcome/artifacts
 - `Done`, `Failed`, `Cancelled`: terminal states
 
@@ -456,7 +456,10 @@ pub enum WriteRequirement {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ValidationRequirement {
     None,
-    Command { command: String },
+    Command {
+        command: String,
+        required_phase: RunPhase,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -490,6 +493,39 @@ pub struct TaskContractV1 {
     pub final_answer_mode: FinalAnswerMode,
 }
 ```
+
+### `task_kind` rigor
+
+`task_kind` should not remain a freeform string forever. For v1 it may still serialize as a string for compatibility, but the runtime should converge on a bounded enum plus an optional custom tag.
+
+Recommended direction:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TaskKindV1 {
+    ReadOnlyAnalysis,
+    CodeModification,
+    ValidationOnly,
+    PlanningOnly,
+    OperatorMediated,
+    Custom(String),
+}
+```
+
+If `task_kind` remains string-backed temporarily, contract resolution must still normalize it into a canonical internal value before the run starts.
+
+Required properties:
+
+- canonicalized once during setup
+- persisted in checkpoint and artifacts
+- not mutated by planner output
+- used as an input to contract validation, completion policy, and execution-tier selection
+
+Examples of invalid behavior to avoid:
+
+- inferring different `task_kind` values mid-run from later prompt text
+- letting planner output silently change a read-only task into a write task
+- using raw prompt text as the authoritative `task_kind`
 
 ### Contract Field Rigor
 
@@ -525,6 +561,39 @@ Every contract field should have:
 - `final_answer_mode`
   - owned by runtime
   - planner may not change output contract
+
+#### Validation requirement modeling
+
+Validation should be modeled as an explicit runtime requirement, not just as "a shell command we hope got run."
+
+For v1:
+
+- `ValidationRequirement::None` means validation is not part of completion semantics
+- `ValidationRequirement::Command` means the runtime must observe a successful validation fact before `Done`
+
+Rules:
+
+- validation requirement is part of completion semantics, not planner advice
+- validation requirement must identify the phase where it is satisfied
+- validation failure is not automatically terminal if runtime policy allows repair/retry
+- validation requirement may exist even when planner is disabled
+
+Recommended follow-on direction if validation broadens:
+
+```rust
+pub enum ValidationRequirementV2 {
+    None,
+    Command {
+        command: String,
+        required_phase: RunPhase,
+    },
+    ToolBacked {
+        tool_name: String,
+        arguments_fingerprint: String,
+        required_phase: RunPhase,
+    },
+}
+```
 
 #### Merge rule
 
@@ -706,6 +775,41 @@ pub struct RunCheckpointV1 {
 }
 ```
 
+### Checkpoint atomicity rules
+
+Checkpointing should be treated as an atomic runtime boundary, not just best-effort persistence.
+
+Rules:
+
+- never mutate in-memory phase/interrupt state and then continue execution without either:
+  - atomically persisting the new checkpoint, or
+  - failing the run
+- every interrupt-raising transition must be checkpointed before control is yielded
+- every terminal transition must be checkpointed before `RunEnd` is emitted
+- checkpoint writes must be atomic replace operations, not partial overwrite
+- checkpoint schema version and run id must be validated on every load/resume
+
+Recommended discipline:
+
+1. build next checkpoint value in memory
+2. write atomically to disk
+3. emit `CheckpointSaved`
+4. then emit interrupt/phase/terminal events that depend on that checkpoint
+
+Suggested helpers:
+
+```rust
+pub fn write_checkpoint_atomic(
+    path: &std::path::Path,
+    checkpoint: &RunCheckpointV1,
+) -> anyhow::Result<()>;
+
+pub fn load_checkpoint_verified(
+    path: &std::path::Path,
+    expected_run_id: &str,
+) -> anyhow::Result<RunCheckpointV1>;
+```
+
 Persist checkpoints:
 
 - before raising an interrupt
@@ -714,6 +818,8 @@ Persist checkpoints:
 - before and after post-write verification
 - on cancellation
 - before terminal finalize
+
+These should be interpreted as required atomic boundaries, not advisory opportunities.
 
 ## Typed Tool Facts
 
@@ -1185,10 +1291,10 @@ loop {
         RunPhase::Planning => run_planner_and_checkpoint(),
         RunPhase::Executing => run_worker_turn_and_collect_tool_calls(),
         RunPhase::WaitingForApproval => await_or_resume_approval(),
-        RunPhase::WaitingForOperator => await_or_resume_operator(),
-        RunPhase::VerifyingWrite => run_post_write_readback(),
-        RunPhase::RunningValidation => run_required_validation(),
-        RunPhase::AwaitingFinalAnswer => collect_exact_or_freeform_closeout(),
+        RunPhase::WaitingForOperatorInput => await_or_resume_operator(),
+        RunPhase::VerifyingChanges => run_post_write_readback(),
+        RunPhase::Validating => run_required_validation(),
+        RunPhase::CollectingFinalAnswer => collect_exact_or_freeform_closeout(),
         RunPhase::Finalizing => write_artifacts_and_finish(),
         RunPhase::Done | RunPhase::Failed | RunPhase::Cancelled => break,
     }
