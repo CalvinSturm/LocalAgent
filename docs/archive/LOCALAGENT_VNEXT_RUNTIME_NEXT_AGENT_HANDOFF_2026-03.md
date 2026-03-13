@@ -1,5 +1,9 @@
 # LocalAgent vNext Runtime Next-Agent Handoff
 
+Archived on 2026-03-13 after the v1 runtime target reached its achieved baseline and the branch state it described was no longer current.
+
+Use [LOCALAGENT_VNEXT_RUNTIME_HANDOFF.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/docs/architecture/LOCALAGENT_VNEXT_RUNTIME_HANDOFF.md) and [LOCALAGENT_VNEXT_RUNTIME_TARGET.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/docs/architecture/LOCALAGENT_VNEXT_RUNTIME_TARGET.md) for current guidance.
+
 This is the short pickup note for the next agent continuing from the current runtime migration checkpoint.
 
 Canonical background docs:

@@ -2,7 +2,7 @@
 
 Status: Active  
 Owner: LocalAgent maintainers  
-Last reviewed: 2026-03-03
+Last reviewed: 2026-03-13
 
 This docs tree is organized by document type.
 
@@ -22,14 +22,14 @@ Non-normative docs (contributor context/history only):
 
 | Path | Status | Owner | Last reviewed | Notes |
 |---|---|---|---|---|
-| `docs/architecture/*` | current | LocalAgent maintainers | 2026-03-07 | Deep system maps and critical execution flows |
-| `docs/operations/*` | current | LocalAgent maintainers | 2026-03-07 | Operational debugging, repro, and incident docs |
+| `docs/architecture/*` | current | LocalAgent maintainers | 2026-03-13 | Deep system maps, runtime targets, and execution-flow handoffs |
+| `docs/operations/*` | current | LocalAgent maintainers | 2026-03-13 | Operational debugging, repro, and incident docs |
 | `docs/guides/*` | current | LocalAgent maintainers | 2026-03-07 | User/operator how-to docs |
 | `docs/reference/*` | current | LocalAgent maintainers | 2026-03-07 | Runtime, state, and CLI reference docs |
 | `docs/policy/*` | current | LocalAgent maintainers | 2026-03-07 | Repo-local runtime policy and review requirements |
 | `docs/adr/*` | current | LocalAgent maintainers | 2026-02-27 | Decision records |
 | `docs/research/*` | historical | LocalAgent maintainers | 2026-02-27 | Non-normative research and exploration |
-| `docs/archive/*` | historical | LocalAgent maintainers | 2026-03-03 | Historical planning/audit snapshots |
+| `docs/archive/*` | historical | LocalAgent maintainers | 2026-03-13 | Historical planning/audit snapshots |
 | `docs/ARCHITECTURE_AND_OPERATIONS.md` | historical redirect | LocalAgent maintainers | 2026-03-03 | Moved to `docs/archive/ARCHITECTURE_AND_OPERATIONS.md` |
 | `docs/OOTB_AGENT_EFFECTIVENESS_AUDIT.md` | historical redirect | LocalAgent maintainers | 2026-03-03 | Moved to `docs/archive/OOTB_AGENT_EFFECTIVENESS_AUDIT.md` |
 | `docs/TOOL_CALL_ACCURACY_SPEC.md` | historical redirect | LocalAgent maintainers | 2026-03-03 | Moved to `docs/archive/TOOL_CALL_ACCURACY_SPEC.md` |
@@ -39,6 +39,8 @@ Root-level redirect stubs in `docs/` are compatibility shims only. They should n
 ## Architecture
 
 - [Runtime Architecture](architecture/RUNTIME_ARCHITECTURE.md)
+- [vNext Runtime Target](architecture/LOCALAGENT_VNEXT_RUNTIME_TARGET.md)
+- [vNext Runtime Handoff](architecture/LOCALAGENT_VNEXT_RUNTIME_HANDOFF.md)
 
 ## Operations
 
@@ -87,6 +89,11 @@ Root-level redirect stubs in `docs/` are compatibility shims only. They should n
 - [PR5 Scope](archive/PR5_SCOPE_ASSISTED_LEARN_CAPTURE.md)
 - [PR6 Scope](archive/PR6_SCOPE_TUI_LEARN_COMMANDS.md)
 - [PR7 Scope Archive Summary](archive/PR7_SCOPE_ARCHIVE_SUMMARY.md)
+- [vNext Runtime Next-Agent Handoff](archive/LOCALAGENT_VNEXT_RUNTIME_NEXT_AGENT_HANDOFF_2026-03.md)
+- [Runtime Artifact/Checkpoint Consistency Hardening Plan](archive/RUNTIME_ARTIFACT_CHECKPOINT_CONSISTENCY_HARDENING_PLAN_2026-03.md)
+- [Agent Runtime Audit Implementation Plan](archive/AGENT_RUNTIME_AUDIT_IMPLEMENTATION_PLAN_2026-03.md)
+- [Runtime Improvement Harness PR1 Plan](archive/RUNTIME_IMPROVEMENT_HARNESS_PR1_PLAN_2026-03.md)
+- [Clippy Runtime Cleanup Assessment](archive/CLIPPY_RUNTIME_CLEANUP_ASSESSMENT_2026-03.md)
 
 ## Tool Call Accuracy PR Specs (Historical)
 

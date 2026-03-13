@@ -1375,7 +1375,7 @@ Behavior:
 
 ### Phase 3: Checkpointed Interrupt Boundaries
 
-Status: substantially complete, with explicit phase-loop consolidation still remaining
+Status: complete enough for v1 baseline use, with checkpoint-backed interrupt boundaries landed
 
 Goal:
 

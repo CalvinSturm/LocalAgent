@@ -1,5 +1,12 @@
 # Runtime Artifact/Checkpoint Consistency Hardening Plan
 
+Archived on 2026-03-13 after the hardening slice landed and the worktree returned to a clean post-migration baseline.
+
+This file is retained as historical implementation context. Current runtime status and future guidance now live in:
+
+- [LOCALAGENT_VNEXT_RUNTIME_HANDOFF.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/docs/architecture/LOCALAGENT_VNEXT_RUNTIME_HANDOFF.md)
+- [LOCALAGENT_VNEXT_RUNTIME_TARGET.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/docs/architecture/LOCALAGENT_VNEXT_RUNTIME_TARGET.md)
+
 ## Status Summary
 
 The earlier runtime-semantics investigation and contract-test phases are complete enough for this branch. Phase 5 runtime-loop consolidation is also effectively closed for v1.
