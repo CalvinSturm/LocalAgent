@@ -1450,7 +1450,19 @@ Current state:
 - approval, operator-interrupt, validation, and final-answer boundaries emit explicit phase transitions
 - artifacts/checkpoints persist phase-oriented state
 - the live loop now uses checkpoint-backed phase/retry/protocol state for more runtime decisions
-- the main loop is not yet fully rewritten around explicit per-phase handlers
+- assistant tool-call normalization and planner-response evaluation now route through dedicated helper modules
+- the active runtime loop now explicitly dispatches `Executing`, `Validating`, `VerifyingChanges`, and `CollectingFinalAnswer`
+- the shared active-turn path is starting to split into smaller helpers for normalized-response handling and verified-write follow-on handling
+- the shared active-turn path now also delegates completion/tool-execution handling to a dedicated helper
+- the shared active-turn path now also delegates provider response acquisition and assistant protocol normalization
+- `Validating` and `CollectingFinalAnswer` no longer enter through the same top-level phase function as `Executing`
+- `VerifyingChanges` no longer enters through the same top-level phase function as `Executing`
+- `Executing` no longer enters through a shared top-level active-phase function either
+- the dispatcher now handles interrupt/pre-active/terminal non-active phases explicitly rather than through one generic fallback branch
+- the dispatcher now also names `Setup`, `Planning`, `Finalizing`, interrupt, and terminal handling individually
+- the repeated active-turn setup now routes through one lower-level helper for generation/normalization/response-processing instead of being duplicated across active phases
+- the completion/tool coordinator path now also delegates runtime completion application, tool execution, and post-tool follow-on handling through smaller helpers
+- the main loop is not yet fully rewritten around end-to-end explicit per-phase handlers
 
 ### Phase 6: Execution Tier Integration
 
@@ -1506,10 +1518,11 @@ The next slice should focus on explicit phase-loop consolidation, not more schem
 
 Recommended order:
 
-1. Extract explicit per-phase handlers from `src/agent.rs` so the main loop becomes a coordinator over `RunCheckpointV1`.
+1. Keep shrinking the shared active-turn orchestration in `src/agent.rs` so the dispatcher delegates more phase-owned behavior.
 2. Move the remaining inline completion/transition decisions into checkpoint-driven helpers and `src/agent/completion_policy.rs`.
 3. Tighten checkpoint persistence and resume handling at any remaining nonterminal phase boundaries that are still implicit.
-4. Keep behavior parity green while shrinking `src/agent.rs` and making the phase loop more directly match the target pseudocode.
+4. Extend explicit phase dispatch beyond the active model phases so the runtime more directly matches the target pseudocode.
+5. Keep behavior parity green while shrinking `src/agent.rs`.
 
 ## Recommended First PR Sequence
 

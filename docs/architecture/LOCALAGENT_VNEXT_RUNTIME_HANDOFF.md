@@ -122,12 +122,26 @@ Recent consolidation slices already landed in `src/agent.rs`:
 - tool-fact / validation phase refresh extracted into helper logic
 - verified-write follow-on handling extracted into helper logic
 - planner control-envelope handling extracted into helper logic
+- planner-response evaluation extracted into `src/agent/planner_phase.rs`
+- assistant tool-call normalization / protocol validation extracted into `src/agent/response_normalization.rs`
 - tool execution planning/gate loop extracted into helper logic
+- active runtime phases now route through an explicit dispatcher in `src/agent.rs`
+- executing / validating / verifying-changes / collecting-final-answer phase turns now have named helper entrypoints
+- normalized-response handling and verified-write follow-on handling are now split out of the shared active-turn path
+- completion / tool-execution handling is now split out of the shared active-turn path
+- provider response acquisition and assistant protocol normalization are now split out of the shared active-turn path
+- `Validating` and `CollectingFinalAnswer` now own their phase entrypoint flow instead of routing through the same top-level phase function as `Executing`
+- `VerifyingChanges` now also owns its phase entrypoint flow instead of routing through the same top-level phase function as `Executing`
+- `Executing` now also owns its phase entrypoint flow; no active phase routes through a shared top-level phase function anymore
+- the phase dispatcher now has explicit non-active phase handlers instead of one generic fallback branch
+- the dispatcher now names `Setup`, `Planning`, `Finalizing`, interrupt, and terminal handling individually rather than classifying them only via a shared non-active branch
+- the repeated active-turn setup now routes through one lower-level helper for response generation, normalization, and runtime-owned response processing while preserving explicit per-phase entrypoints
+- the remaining completion/tool coordinator path is now split into separate helpers for runtime completion decisions, tool execution, and post-tool follow-on handling
 
 Still incomplete:
 
-- `src/agent.rs` still contains mixed model/response orchestration and top-level step driving logic
-- the live loop is not yet a simple `match checkpoint.phase { ... }` dispatcher matching the target pseudocode
+- `src/agent.rs` still contains shared lower-level orchestration reused by multiple active phases
+- the live loop is phase-dispatched for active phases, but not yet a full end-to-end `match checkpoint.phase { ... }` runtime matching the target pseudocode
 
 ### Phase 6: Execution Tier Integration
 
@@ -166,7 +180,7 @@ What is true now:
 
 - checkpoint-backed state is the main live control surface for validation / final-answer / post-write / tool-protocol runtime state
 - resume is checkpoint-backed rather than boundary-only
-- the main runtime loop is materially cleaner than before, but still not fully phase-dispatched
+- the main runtime loop is materially cleaner than before and now explicitly dispatches active runtime phases, but it is still not fully phase-dispatched end to end
 
 Most relevant files for the next person picking this up:
 
@@ -184,8 +198,8 @@ The next logical work is all under Phase 5.
 
 Recommended order:
 
-1. Extract the remaining model/assistant normalization and planner-response handling from `src/agent.rs`.
-2. Continue shrinking `src/agent.rs` into a coordinator over checkpoint-backed helper methods.
+1. Continue shrinking `src/agent.rs` into a coordinator over checkpoint-backed helper methods.
+2. Split the remaining shared `run_model_phase_step` orchestration further so each active phase owns less inline branching.
 3. Move any remaining inline completion/transition logic into `completion_policy.rs` or other phase-specific helpers where appropriate.
 4. Tighten any remaining implicit nonterminal checkpoint/resume boundaries as the loop becomes more explicitly phase-dispatched.
 5. Update the runtime target doc progress text again when another meaningful consolidation slice lands.

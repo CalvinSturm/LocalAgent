@@ -27,6 +27,7 @@ pub(crate) mod interrupts;
 mod mcp_drift;
 mod model_io;
 mod operator_queue;
+mod planner_phase;
 mod response_normalization;
 mod run_control;
 mod run_events;
@@ -67,7 +68,8 @@ pub(crate) use completion_policy::{
 pub(crate) use agent_types::WorkerStepStatus;
 use gate_paths::{AllowToolCallDecision, GateNonAllowDecision, PlanConstraintDecision};
 use mcp_drift::McpDriftDecision;
-use response_normalization::{normalize_tool_calls_from_assistant, ToolWrapperParseState};
+use planner_phase::{evaluate_planner_response, PlannerResponseDecision};
+use response_normalization::{normalize_assistant_response, AssistantResponseNormalization};
 use run_events::apply_usage_totals;
 #[cfg(test)]
 pub(crate) use runtime_completion::RuntimeCompletionDecision;
@@ -140,6 +142,24 @@ enum PlannerEnvelopeControl {
 enum ToolLoopControl {
     Proceed,
     RestartAgentStep,
+}
+
+enum PhaseStepDispatch {
+    StepComplete,
+    ContinueStep,
+    ContinueAgentStep,
+}
+
+struct NormalizedTurnState {
+    assistant: Message,
+    request_context_chars: usize,
+    has_actionable_tool_calls: bool,
+    tool_calls: Vec<ToolCall>,
+}
+
+struct GeneratedTurnResponse {
+    request_context_chars: usize,
+    resp: crate::types::GenerateResponse,
 }
 
 impl<P: ModelProvider> Agent<P> {
@@ -783,26 +803,52 @@ impl<P: ModelProvider> Agent<P> {
         step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
     ) -> Result<PlannerEnvelopeControl, AgentOutcome> {
         let worker_step_status = self.parse_worker_step_status_if_enforced(assistant);
-        if self.plan_enforcement_active()
-            && !has_actionable_tool_calls
-            && worker_step_status.is_none()
-            && model_signaled_finalize
-        {
-            runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = runtime_checkpoint
-                .tool_protocol_state
-                .blocked_control_envelope_count
-                .saturating_add(1);
-            self.emit_event(
-                run_id,
-                step,
-                EventKind::StepBlocked,
-                serde_json::json!({
-                    "reason": "invalid_control_envelope",
-                    "required_schema_version": crate::planner::STEP_RESULT_SCHEMA_VERSION,
-                    "blocked_count": runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count
-                }),
-            );
-            if runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count >= 2 {
+        match evaluate_planner_response(
+            self.plan_enforcement_active(),
+            has_actionable_tool_calls,
+            model_signaled_finalize,
+            worker_step_status.as_ref(),
+            runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count,
+            *active_plan_step_idx,
+            &self.plan_step_constraints,
+            step_retry_counts,
+        ) {
+            PlannerResponseDecision::Proceed => {}
+            PlannerResponseDecision::RemindControlEnvelope { blocked_count } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count =
+                    blocked_count;
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": "invalid_control_envelope",
+                        "required_schema_version": crate::planner::STEP_RESULT_SCHEMA_VERSION,
+                        "blocked_count": blocked_count
+                    }),
+                );
+                messages.push(Message {
+                    role: Role::Developer,
+                    content: Some(self.control_envelope_reminder_message()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                });
+                return Ok(PlannerEnvelopeControl::ContinueStep);
+            }
+            PlannerResponseDecision::MissingControlEnvelopeFatal { blocked_count } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count =
+                    blocked_count;
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": "invalid_control_envelope",
+                        "required_schema_version": crate::planner::STEP_RESULT_SCHEMA_VERSION,
+                        "blocked_count": blocked_count
+                    }),
+                );
                 return Err(self.finalize_planner_error_with_end(
                     step,
                     run_id.to_string(),
@@ -822,191 +868,43 @@ impl<P: ModelProvider> Agent<P> {
                     taint_state,
                 ));
             }
-            messages.push(Message {
-                role: Role::Developer,
-                content: Some(self.control_envelope_reminder_message()),
-                tool_call_id: None,
-                tool_name: None,
-                tool_calls: None,
-            });
-            return Ok(PlannerEnvelopeControl::ContinueStep);
-        }
-
-        let Some(step_status) = worker_step_status.as_ref() else {
-            return Ok(PlannerEnvelopeControl::Proceed);
-        };
-        runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
-        if let Some(user_output) = step_status.user_output.as_ref() {
-            if !user_output.trim().is_empty() {
-                *last_user_output = Some(user_output.trim().to_string());
-            }
-        }
-        let current_step_id = self.current_plan_step_id_or_unknown(*active_plan_step_idx);
-        match step_status.status.as_str() {
-            "done" => {
-                if step_status.step_id != current_step_id {
-                    let transition_error = format!(
-                        "invalid step completion transition: got done for {}, expected {}",
-                        step_status.step_id, current_step_id
-                    );
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "step_id": step_status.step_id,
-                            "expected_step_id": current_step_id,
-                            "reason": "invalid_done_transition"
-                        }),
-                    );
-                    return Err(self.finalize_planner_error_with_end(
-                        step,
-                        run_id.to_string(),
-                        started_at.to_string(),
-                        transition_error,
-                        messages.clone(),
-                        observed_tool_calls.to_vec(),
-                        observed_tool_decisions.to_vec(),
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.to_vec(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
-                    ));
+            PlannerResponseDecision::StepDone {
+                completed_step_id,
+                next_step_id,
+                next_active_plan_step_idx,
+                user_output,
+            } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                runtime_checkpoint.retry_state.blocked_runtime_completion_count = 0;
+                if let Some(user_output) = user_output {
+                    *last_user_output = Some(user_output);
                 }
                 self.emit_event(
                     run_id,
                     step,
                     EventKind::StepVerified,
                     serde_json::json!({
-                        "step_id": step_status.step_id,
-                        "next_step_id": step_status.next_step_id,
-                        "status": step_status.status
+                        "step_id": completed_step_id,
+                        "next_step_id": next_step_id,
+                        "status": "done"
                     }),
                 );
-                runtime_checkpoint.retry_state.blocked_runtime_completion_count = 0;
-                step_retry_counts.remove(&current_step_id);
-                if let Some(next) = &step_status.next_step_id {
-                    if next == "final" {
-                        *active_plan_step_idx = self.plan_step_constraints.len();
-                    } else if let Some(next_idx) = self
-                        .plan_step_constraints
-                        .iter()
-                        .position(|s| s.step_id == *next)
-                    {
-                        *active_plan_step_idx = next_idx;
-                    } else {
-                        self.emit_event(
-                            run_id,
-                            step,
-                            EventKind::StepBlocked,
-                            serde_json::json!({
-                                "step_id": step_status.step_id,
-                                "next_step_id": next,
-                                "reason": "invalid_next_step_id"
-                            }),
-                        );
-                        return Err(self.finalize_planner_error_with_end(
-                            step,
-                            run_id.to_string(),
-                            started_at.to_string(),
-                            format!("invalid next_step_id in worker status: {}", next),
-                            messages.clone(),
-                            observed_tool_calls.to_vec(),
-                            observed_tool_decisions.to_vec(),
-                            request_context_chars,
-                            last_compaction_report.clone(),
-                            hook_invocations.to_vec(),
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            total_token_usage,
-                            taint_state,
-                        ));
-                    }
-                } else if *active_plan_step_idx < self.plan_step_constraints.len() {
-                    *active_plan_step_idx = active_plan_step_idx.saturating_add(1);
-                }
+                step_retry_counts.remove(&completed_step_id);
+                *active_plan_step_idx = next_active_plan_step_idx;
             }
-            "retry" => {
-                if step_status.step_id != current_step_id {
-                    let transition_error = format!(
-                        "invalid retry transition: got retry for {}, expected {}",
-                        step_status.step_id, current_step_id
-                    );
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "step_id": step_status.step_id,
-                            "expected_step_id": current_step_id,
-                            "reason": "invalid_retry_transition"
-                        }),
-                    );
-                    return Err(self.finalize_planner_error_with_end(
-                        step,
-                        run_id.to_string(),
-                        started_at.to_string(),
-                        transition_error,
-                        messages.clone(),
-                        observed_tool_calls.to_vec(),
-                        observed_tool_decisions.to_vec(),
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.to_vec(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
-                    ));
-                }
-                let entry = step_retry_counts
-                    .entry(step_status.step_id.clone())
-                    .or_insert(0);
-                *entry = entry.saturating_add(1);
-                if *entry > 2 {
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "step_id": step_status.step_id,
-                            "reason": "retry_limit_exceeded",
-                            "retry_count": *entry
-                        }),
-                    );
-                    return Err(self.finalize_planner_error_with_end(
-                        step,
-                        run_id.to_string(),
-                        started_at.to_string(),
-                        format!("step {} exceeded retry transition limit", step_status.step_id),
-                        messages.clone(),
-                        observed_tool_calls.to_vec(),
-                        observed_tool_decisions.to_vec(),
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.to_vec(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        total_token_usage,
-                        taint_state,
-                    ));
-                }
-            }
-            "replan" => {
+            PlannerResponseDecision::InvalidDoneTransition {
+                step_id,
+                expected_step_id,
+            } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
                 self.emit_event(
                     run_id,
                     step,
-                    EventKind::StepReplanned,
+                    EventKind::StepBlocked,
                     serde_json::json!({
-                        "step_id": step_status.step_id,
-                        "status": step_status.status
+                        "step_id": step_id,
+                        "expected_step_id": expected_step_id,
+                        "reason": "invalid_done_transition"
                     }),
                 );
                 return Err(self.finalize_planner_error_with_end(
@@ -1014,8 +912,8 @@ impl<P: ModelProvider> Agent<P> {
                     run_id.to_string(),
                     started_at.to_string(),
                     format!(
-                        "worker requested {} transition for step {}",
-                        step_status.status, step_status.step_id
+                        "invalid step completion transition: got done for {}, expected {}",
+                        step_id, expected_step_id
                     ),
                     messages.clone(),
                     observed_tool_calls.to_vec(),
@@ -1030,13 +928,156 @@ impl<P: ModelProvider> Agent<P> {
                     taint_state,
                 ));
             }
-            "fail" => {
+            PlannerResponseDecision::InvalidNextStepId {
+                step_id,
+                next_step_id,
+            } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
                 self.emit_event(
                     run_id,
                     step,
                     EventKind::StepBlocked,
                     serde_json::json!({
-                        "step_id": step_status.step_id,
+                        "step_id": step_id,
+                        "next_step_id": next_step_id,
+                        "reason": "invalid_next_step_id"
+                    }),
+                );
+                return Err(self.finalize_planner_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    format!("invalid next_step_id in worker status: {}", next_step_id),
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+            PlannerResponseDecision::StepRetry {
+                step_id,
+                retry_count,
+                user_output,
+            } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                if let Some(user_output) = user_output {
+                    *last_user_output = Some(user_output);
+                }
+                step_retry_counts.insert(step_id, retry_count);
+            }
+            PlannerResponseDecision::RetryLimitExceeded {
+                step_id,
+                retry_count,
+            } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "step_id": step_id,
+                        "reason": "retry_limit_exceeded",
+                        "retry_count": retry_count
+                    }),
+                );
+                return Err(self.finalize_planner_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    format!("step {} exceeded retry transition limit", step_id),
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+            PlannerResponseDecision::InvalidRetryTransition {
+                step_id,
+                expected_step_id,
+            } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "step_id": step_id,
+                        "expected_step_id": expected_step_id,
+                        "reason": "invalid_retry_transition"
+                    }),
+                );
+                return Err(self.finalize_planner_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    format!(
+                        "invalid retry transition: got retry for {}, expected {}",
+                        step_id, expected_step_id
+                    ),
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+            PlannerResponseDecision::ReplanRequested { step_id, status } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepReplanned,
+                    serde_json::json!({
+                        "step_id": step_id,
+                        "status": status
+                    }),
+                );
+                return Err(self.finalize_planner_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    format!("worker requested {} transition for step {}", status, step_id),
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+            PlannerResponseDecision::FailRequested { step_id, status } => {
+                runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count = 0;
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "step_id": step_id,
                         "reason": "worker_fail_transition"
                     }),
                 );
@@ -1044,10 +1085,7 @@ impl<P: ModelProvider> Agent<P> {
                     step,
                     run_id.to_string(),
                     started_at.to_string(),
-                    format!(
-                        "worker requested {} transition for step {}",
-                        step_status.status, step_status.step_id
-                    ),
+                    format!("worker requested {} transition for step {}", status, step_id),
                     messages.clone(),
                     observed_tool_calls.to_vec(),
                     observed_tool_decisions.to_vec(),
@@ -1061,7 +1099,6 @@ impl<P: ModelProvider> Agent<P> {
                     taint_state,
                 ));
             }
-            _ => {}
         }
         Ok(PlannerEnvelopeControl::Proceed)
     }
@@ -1319,6 +1356,1612 @@ impl<P: ModelProvider> Agent<P> {
             }
         }
         Ok(ToolLoopControl::Proceed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_runtime_phase_step(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        enforce_implementation_integrity_guard: bool,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        allowed_tool_names: &std::collections::BTreeSet<String>,
+        tools_sorted: Vec<ToolDef>,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        use crate::agent_runtime::state::RunPhase;
+
+        match runtime_checkpoint.phase {
+            RunPhase::Executing => {
+                self.run_executing_phase_step(
+                    user_prompt,
+                    run_id,
+                    step,
+                    started_at,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_executions,
+                    observed_tool_decisions,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                    runtime_checkpoint,
+                    active_plan_step_idx,
+                    last_user_output,
+                    step_retry_counts,
+                    failed_repeat_counts,
+                    malformed_tool_call_attempts,
+                    invalid_patch_format_attempts,
+                    schema_repair_attempts,
+                    tool_budget_usage,
+                    enforce_implementation_integrity_guard,
+                    expected_mcp_catalog_hash_hex,
+                    expected_mcp_docs_hash_hex,
+                    allowed_tool_names,
+                    tools_sorted,
+                )
+                .await
+            }
+            RunPhase::Validating => {
+                self.run_validating_phase_step(
+                    user_prompt,
+                    run_id,
+                    step,
+                    started_at,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_executions,
+                    observed_tool_decisions,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                    runtime_checkpoint,
+                    active_plan_step_idx,
+                    last_user_output,
+                    step_retry_counts,
+                    failed_repeat_counts,
+                    malformed_tool_call_attempts,
+                    invalid_patch_format_attempts,
+                    schema_repair_attempts,
+                    tool_budget_usage,
+                    enforce_implementation_integrity_guard,
+                    expected_mcp_catalog_hash_hex,
+                    expected_mcp_docs_hash_hex,
+                    allowed_tool_names,
+                    tools_sorted,
+                )
+                .await
+            }
+            RunPhase::VerifyingChanges => {
+                self.run_verifying_changes_phase_step(
+                    user_prompt,
+                    run_id,
+                    step,
+                    started_at,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_executions,
+                    observed_tool_decisions,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                    runtime_checkpoint,
+                    active_plan_step_idx,
+                    last_user_output,
+                    step_retry_counts,
+                    failed_repeat_counts,
+                    malformed_tool_call_attempts,
+                    invalid_patch_format_attempts,
+                    schema_repair_attempts,
+                    tool_budget_usage,
+                    enforce_implementation_integrity_guard,
+                    expected_mcp_catalog_hash_hex,
+                    expected_mcp_docs_hash_hex,
+                    allowed_tool_names,
+                    tools_sorted,
+                )
+                .await
+            }
+            RunPhase::CollectingFinalAnswer => {
+                self.run_collecting_final_answer_phase_step(
+                    user_prompt,
+                    run_id,
+                    step,
+                    started_at,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_executions,
+                    observed_tool_decisions,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                    runtime_checkpoint,
+                    active_plan_step_idx,
+                    last_user_output,
+                    step_retry_counts,
+                    failed_repeat_counts,
+                    malformed_tool_call_attempts,
+                    invalid_patch_format_attempts,
+                    schema_repair_attempts,
+                    tool_budget_usage,
+                    enforce_implementation_integrity_guard,
+                    expected_mcp_catalog_hash_hex,
+                    expected_mcp_docs_hash_hex,
+                    allowed_tool_names,
+                    tools_sorted,
+                )
+                .await
+            }
+            RunPhase::WaitingForApproval | RunPhase::WaitingForOperatorInput => {
+                self.run_interrupt_phase_step(
+                    run_id,
+                    step,
+                    started_at,
+                    messages,
+                    observed_tool_calls,
+                    observed_tool_decisions,
+                    last_compaction_report,
+                    hook_invocations,
+                    provider_retry_count,
+                    provider_error_count,
+                    saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                    &runtime_checkpoint.phase,
+                )
+            }
+            RunPhase::Setup => self.run_setup_phase_step(
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ),
+            RunPhase::Planning => self.run_planning_phase_step(
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ),
+            RunPhase::Finalizing => self.run_finalizing_phase_step(
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ),
+            RunPhase::Done | RunPhase::Failed | RunPhase::Cancelled => self.run_terminal_phase_step(
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                &runtime_checkpoint.phase,
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_setup_phase_step(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &[Message],
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &u32,
+        provider_error_count: &u32,
+        saw_token_usage: &bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        self.run_non_active_phase_step(
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            crate::agent_runtime::state::RunPhase::Setup,
+            "setup",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_planning_phase_step(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &[Message],
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &u32,
+        provider_error_count: &u32,
+        saw_token_usage: &bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        self.run_non_active_phase_step(
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            crate::agent_runtime::state::RunPhase::Planning,
+            "planning",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_finalizing_phase_step(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &[Message],
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &u32,
+        provider_error_count: &u32,
+        saw_token_usage: &bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        self.run_non_active_phase_step(
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            crate::agent_runtime::state::RunPhase::Finalizing,
+            "finalizing",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_terminal_phase_step(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &[Message],
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &u32,
+        provider_error_count: &u32,
+        saw_token_usage: &bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+        phase: &crate::agent_runtime::state::RunPhase,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        self.run_non_active_phase_step(
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            phase.clone(),
+            "terminal",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_interrupt_phase_step(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &[Message],
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &u32,
+        provider_error_count: &u32,
+        saw_token_usage: &bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+        phase: &crate::agent_runtime::state::RunPhase,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        self.run_non_active_phase_step(
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            phase.clone(),
+            "interrupt",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_non_active_phase_step(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &[Message],
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &u32,
+        provider_error_count: &u32,
+        saw_token_usage: &bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+        phase: crate::agent_runtime::state::RunPhase,
+        class_name: &str,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        Err(self.finalize_planner_error_with_output_with_end(
+            step,
+            run_id.to_string(),
+            started_at.to_string(),
+            format!(
+                "runtime entered {class_name} phase {:?} inside active loop dispatcher",
+                phase
+            ),
+            messages.to_vec(),
+            observed_tool_calls.to_vec(),
+            observed_tool_decisions.to_vec(),
+            context_size_chars(messages),
+            last_compaction_report.clone(),
+            hook_invocations.to_vec(),
+            *provider_retry_count,
+            *provider_error_count,
+            *saw_token_usage,
+            total_token_usage,
+            taint_state,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_executing_phase_step(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        enforce_implementation_integrity_guard: bool,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        allowed_tool_names: &std::collections::BTreeSet<String>,
+        tools_sorted: Vec<ToolDef>,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        let normalized = match self
+            .prepare_active_phase_turn(
+                user_prompt,
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                runtime_checkpoint,
+                active_plan_step_idx,
+                last_user_output,
+                step_retry_counts,
+                malformed_tool_call_attempts,
+                allowed_tool_names,
+                tools_sorted,
+            )
+            .await?
+        {
+            Ok(state) => state,
+            Err(control) => return Ok(control),
+        };
+        self.run_completion_and_tool_phase(
+            user_prompt,
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_executions,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            runtime_checkpoint,
+            active_plan_step_idx,
+            last_user_output,
+            failed_repeat_counts,
+            malformed_tool_call_attempts,
+            invalid_patch_format_attempts,
+            schema_repair_attempts,
+            tool_budget_usage,
+            enforce_implementation_integrity_guard,
+            expected_mcp_catalog_hash_hex,
+            expected_mcp_docs_hash_hex,
+            normalized,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_validating_phase_step(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        enforce_implementation_integrity_guard: bool,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        allowed_tool_names: &std::collections::BTreeSet<String>,
+        tools_sorted: Vec<ToolDef>,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        let normalized = match self
+            .prepare_active_phase_turn(
+                user_prompt,
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                runtime_checkpoint,
+                active_plan_step_idx,
+                last_user_output,
+                step_retry_counts,
+                malformed_tool_call_attempts,
+                allowed_tool_names,
+                tools_sorted,
+            )
+            .await?
+        {
+            Ok(state) => state,
+            Err(control) => return Ok(control),
+        };
+        self.run_completion_and_tool_phase(
+            user_prompt,
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_executions,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            runtime_checkpoint,
+            active_plan_step_idx,
+            last_user_output,
+            failed_repeat_counts,
+            malformed_tool_call_attempts,
+            invalid_patch_format_attempts,
+            schema_repair_attempts,
+            tool_budget_usage,
+            enforce_implementation_integrity_guard,
+            expected_mcp_catalog_hash_hex,
+            expected_mcp_docs_hash_hex,
+            normalized,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_verifying_changes_phase_step(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        enforce_implementation_integrity_guard: bool,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        allowed_tool_names: &std::collections::BTreeSet<String>,
+        tools_sorted: Vec<ToolDef>,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        let normalized = match self
+            .prepare_active_phase_turn(
+                user_prompt,
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                runtime_checkpoint,
+                active_plan_step_idx,
+                last_user_output,
+                step_retry_counts,
+                malformed_tool_call_attempts,
+                allowed_tool_names,
+                tools_sorted,
+            )
+            .await?
+        {
+            Ok(state) => state,
+            Err(control) => return Ok(control),
+        };
+        self.run_completion_and_tool_phase(
+            user_prompt,
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_executions,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            runtime_checkpoint,
+            active_plan_step_idx,
+            last_user_output,
+            failed_repeat_counts,
+            malformed_tool_call_attempts,
+            invalid_patch_format_attempts,
+            schema_repair_attempts,
+            tool_budget_usage,
+            enforce_implementation_integrity_guard,
+            expected_mcp_catalog_hash_hex,
+            expected_mcp_docs_hash_hex,
+            normalized,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_collecting_final_answer_phase_step(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        enforce_implementation_integrity_guard: bool,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        allowed_tool_names: &std::collections::BTreeSet<String>,
+        tools_sorted: Vec<ToolDef>,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        let normalized = match self
+            .prepare_active_phase_turn(
+                user_prompt,
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                runtime_checkpoint,
+                active_plan_step_idx,
+                last_user_output,
+                step_retry_counts,
+                malformed_tool_call_attempts,
+                allowed_tool_names,
+                tools_sorted,
+            )
+            .await?
+        {
+            Ok(state) => state,
+            Err(control) => return Ok(control),
+        };
+        self.run_completion_and_tool_phase(
+            user_prompt,
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_executions,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            runtime_checkpoint,
+            active_plan_step_idx,
+            last_user_output,
+            failed_repeat_counts,
+            malformed_tool_call_attempts,
+            invalid_patch_format_attempts,
+            schema_repair_attempts,
+            tool_budget_usage,
+            enforce_implementation_integrity_guard,
+            expected_mcp_catalog_hash_hex,
+            expected_mcp_docs_hash_hex,
+            normalized,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_active_phase_turn(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        allowed_tool_names: &std::collections::BTreeSet<String>,
+        tools_sorted: Vec<ToolDef>,
+    ) -> Result<Result<NormalizedTurnState, PhaseStepDispatch>, AgentOutcome> {
+        let GeneratedTurnResponse {
+            request_context_chars,
+            mut resp,
+        } = self
+            .generate_and_normalize_turn_response(
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                malformed_tool_call_attempts,
+                allowed_tool_names,
+                tools_sorted,
+            )
+            .await?;
+        self.process_normalized_model_response(
+            user_prompt,
+            run_id,
+            step,
+            started_at,
+            &mut resp,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            runtime_checkpoint,
+            active_plan_step_idx,
+            last_user_output,
+            step_retry_counts,
+            request_context_chars,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn generate_and_normalize_turn_response(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &[Message],
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &TokenUsage,
+        taint_state: &TaintState,
+        malformed_tool_call_attempts: &mut u32,
+        allowed_tool_names: &std::collections::BTreeSet<String>,
+        tools_sorted: Vec<ToolDef>,
+    ) -> Result<GeneratedTurnResponse, AgentOutcome> {
+        let req = self.build_generate_request(messages, tools_sorted);
+        let request_context_chars = context_size_chars(&req.messages);
+        let resp_result = self.execute_model_request(run_id, step, req).await;
+
+        let mut resp = match resp_result {
+            Ok(r) => r,
+            Err(e) => {
+                self.record_provider_error_events(
+                    run_id,
+                    step,
+                    &e,
+                    provider_retry_count,
+                    provider_error_count,
+                );
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::Error,
+                    serde_json::json!({"error": e.to_string()}),
+                );
+                return Err(self.finalize_provider_error_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    e.to_string(),
+                    messages.to_vec(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    *provider_retry_count,
+                    *provider_error_count,
+                    *saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+        };
+        match normalize_assistant_response(&mut resp, step, allowed_tool_names) {
+            AssistantResponseNormalization::Ready => {}
+            AssistantResponseNormalization::MalformedWrapper => {
+                *malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
+                if *malformed_tool_call_attempts >= 2 {
+                    let reason =
+                        "MODEL_TOOL_PROTOCOL_VIOLATION: empty or malformed [TOOL_CALL] envelope"
+                            .to_string();
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::Error,
+                        serde_json::json!({
+                            "error": reason,
+                            "source": "tool_protocol_guard",
+                            "failure_class": "E_PROTOCOL_TOOL_WRAPPER",
+                            "attempt": malformed_tool_call_attempts
+                        }),
+                    );
+                    return Err(self.finalize_planner_error_with_output_with_end(
+                        step,
+                        run_id.to_string(),
+                        started_at.to_string(),
+                        reason,
+                        messages.to_vec(),
+                        observed_tool_calls.to_vec(),
+                        observed_tool_decisions.to_vec(),
+                        request_context_chars,
+                        last_compaction_report.clone(),
+                        hook_invocations.to_vec(),
+                        *provider_retry_count,
+                        *provider_error_count,
+                        *saw_token_usage,
+                        total_token_usage,
+                        taint_state,
+                    ));
+                }
+            }
+            AssistantResponseNormalization::MultipleToolCalls { count } => {
+                let reason = format!(
+                    "MODEL_TOOL_PROTOCOL_VIOLATION: multiple tool calls in a single assistant step (max 1, got {})",
+                    count
+                );
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::Error,
+                    serde_json::json!({
+                        "error": reason,
+                        "source": "tool_protocol_guard",
+                        "failure_class": "E_PROTOCOL_MULTI_TOOL",
+                        "tool_calls": count
+                    }),
+                );
+                return Err(self.finalize_planner_error_with_output_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    reason,
+                    messages.to_vec(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    request_context_chars,
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    *provider_retry_count,
+                    *provider_error_count,
+                    *saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+        };
+        Ok(GeneratedTurnResponse {
+            request_context_chars,
+            resp,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_normalized_model_response(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        resp: &mut crate::types::GenerateResponse,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &[ToolCall],
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
+        request_context_chars: usize,
+    ) -> Result<Result<NormalizedTurnState, PhaseStepDispatch>, AgentOutcome> {
+        if let Some(usage) = &resp.usage {
+            apply_usage_totals(usage, saw_token_usage, total_token_usage);
+        }
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::ModelResponseEnd,
+            serde_json::json!({"tool_calls": resp.tool_calls.len()}),
+        );
+        match self.handle_required_validation_phase_response(
+            user_prompt,
+            resp,
+            run_id,
+            step,
+            started_at,
+            runtime_checkpoint,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            request_context_chars,
+            last_compaction_report,
+            hook_invocations,
+            *provider_retry_count,
+            *provider_error_count,
+            *saw_token_usage,
+            total_token_usage,
+            taint_state,
+        ) {
+            Ok(PhaseLoopControl::Proceed) => {}
+            Ok(PhaseLoopControl::ContinueStep) => {
+                return Ok(Err(PhaseStepDispatch::ContinueStep));
+            }
+            Ok(PhaseLoopControl::ContinueAgentStep) => {
+                return Ok(Err(PhaseStepDispatch::ContinueAgentStep));
+            }
+            Err(outcome) => return Err(outcome),
+        }
+        let has_actionable_tool_calls = !resp.tool_calls.is_empty();
+        let model_signaled_finalize = !has_actionable_tool_calls;
+        match self.handle_post_response_phase_guards(
+            user_prompt,
+            &resp.assistant,
+            has_actionable_tool_calls,
+            model_signaled_finalize,
+            run_id,
+            step,
+            started_at,
+            runtime_checkpoint,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            request_context_chars,
+            last_compaction_report,
+            hook_invocations,
+            *provider_retry_count,
+            *provider_error_count,
+            *saw_token_usage,
+            total_token_usage,
+            taint_state,
+            &resp.tool_calls,
+        ) {
+            Ok(PhaseLoopControl::Proceed) => {}
+            Ok(PhaseLoopControl::ContinueStep) => {
+                return Ok(Err(PhaseStepDispatch::ContinueStep));
+            }
+            Ok(PhaseLoopControl::ContinueAgentStep) => {
+                return Ok(Err(PhaseStepDispatch::ContinueAgentStep));
+            }
+            Err(outcome) => return Err(outcome),
+        }
+        if has_actionable_tool_calls {
+            runtime_checkpoint.tool_protocol_state.tool_only_phase_active = false;
+            runtime_checkpoint.tool_protocol_state.blocked_tool_only_count = 0;
+        }
+        let mut assistant = resp.assistant.clone();
+        if let Some(c) = assistant.content.as_deref() {
+            assistant.content = Some(sanitize_user_visible_output(c));
+        }
+        messages.push(assistant.clone());
+        match self.handle_planner_control_envelope(
+            &assistant,
+            run_id,
+            step,
+            started_at,
+            runtime_checkpoint,
+            messages,
+            observed_tool_calls,
+            observed_tool_decisions,
+            request_context_chars,
+            last_compaction_report,
+            hook_invocations,
+            *provider_retry_count,
+            *provider_error_count,
+            *saw_token_usage,
+            total_token_usage,
+            taint_state,
+            has_actionable_tool_calls,
+            model_signaled_finalize,
+            active_plan_step_idx,
+            last_user_output,
+            step_retry_counts,
+        ) {
+            Ok(PlannerEnvelopeControl::Proceed) => {}
+            Ok(PlannerEnvelopeControl::ContinueStep) => {
+                return Ok(Err(PhaseStepDispatch::ContinueStep));
+            }
+            Err(outcome) => return Err(outcome),
+        }
+        if matches!(self.taint_toggle, TaintToggle::On) {
+            let idx = messages.len().saturating_sub(1);
+            taint_state.mark_assistant_context_tainted(idx);
+        }
+        Ok(Ok(NormalizedTurnState {
+            assistant,
+            request_context_chars,
+            has_actionable_tool_calls,
+            tool_calls: resp.tool_calls.clone(),
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_verified_write_follow_on_phase(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &[ToolCall],
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        enforce_implementation_integrity_guard: bool,
+        successful_write_tool_ok_this_step: bool,
+        request_context_chars: usize,
+    ) -> Result<Option<PhaseStepDispatch>, AgentOutcome> {
+        if !(enforce_implementation_integrity_guard && successful_write_tool_ok_this_step) {
+            return Ok(None);
+        }
+        let verified_write_result = self
+            .finalize_verified_write_step_or_error(
+                run_id.to_string(),
+                step,
+                started_at.to_string(),
+                user_prompt,
+                observed_tool_calls.to_vec(),
+                observed_tool_executions,
+                observed_tool_decisions.to_vec(),
+                messages.clone(),
+                request_context_chars,
+                last_compaction_report.clone(),
+                hook_invocations.to_vec(),
+                *provider_retry_count,
+                *provider_error_count,
+                *saw_token_usage,
+                total_token_usage,
+                taint_state,
+                enforce_implementation_integrity_guard,
+                runtime_checkpoint.retry_state.post_write_guard_retry_count,
+                runtime_checkpoint.retry_state.post_write_follow_on_turn_count,
+            )
+            .await;
+        match verified_write_result {
+            runtime_completion::VerifiedWriteResult::Done(outcome) => Err(*outcome),
+            other => {
+                let control = self
+                    .apply_verified_write_follow_on(user_prompt, runtime_checkpoint, messages, &other)
+                    .map(|control| match control {
+                        PhaseLoopControl::Proceed => PhaseStepDispatch::StepComplete,
+                        PhaseLoopControl::ContinueStep => PhaseStepDispatch::ContinueStep,
+                        PhaseLoopControl::ContinueAgentStep => PhaseStepDispatch::ContinueAgentStep,
+                    });
+                Ok(control)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_completion_and_tool_phase(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        enforce_implementation_integrity_guard: bool,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        normalized: NormalizedTurnState,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        if let Some(control) = self
+            .run_runtime_completion_phase(
+                user_prompt,
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_executions,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                runtime_checkpoint,
+                active_plan_step_idx,
+                last_user_output,
+                enforce_implementation_integrity_guard,
+                &normalized,
+            )
+            .await?
+        {
+            return Ok(control);
+        }
+
+        let successful_write_tool_ok_this_step = match self
+            .run_tool_execution_phase(
+                user_prompt,
+                run_id,
+                step,
+                started_at,
+                expected_mcp_catalog_hash_hex,
+                expected_mcp_docs_hash_hex,
+                messages,
+                observed_tool_calls,
+                observed_tool_executions,
+                observed_tool_decisions,
+                hook_invocations,
+                failed_repeat_counts,
+                malformed_tool_call_attempts,
+                invalid_patch_format_attempts,
+                schema_repair_attempts,
+                tool_budget_usage,
+                last_compaction_report,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                runtime_checkpoint,
+                active_plan_step_idx,
+                &normalized,
+            )
+            .await
+        {
+            Ok(Ok(successful_write_tool_ok_this_step)) => successful_write_tool_ok_this_step,
+            Ok(Err(control)) => return Ok(control),
+            Err(outcome) => return Err(outcome),
+        };
+
+        self.run_post_tool_phase(
+            user_prompt,
+            run_id,
+            step,
+            started_at,
+            messages,
+            observed_tool_calls,
+            observed_tool_executions,
+            observed_tool_decisions,
+            last_compaction_report,
+            hook_invocations,
+            provider_retry_count,
+            provider_error_count,
+            saw_token_usage,
+            total_token_usage,
+            taint_state,
+            runtime_checkpoint,
+            enforce_implementation_integrity_guard,
+            successful_write_tool_ok_this_step,
+            normalized.request_context_chars,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_runtime_completion_phase(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &[ToolCall],
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        last_user_output: &mut Option<String>,
+        enforce_implementation_integrity_guard: bool,
+        normalized: &NormalizedTurnState,
+    ) -> Result<Option<PhaseStepDispatch>, AgentOutcome> {
+        let blocked_attempt_count_next = runtime_checkpoint
+            .retry_state
+            .blocked_runtime_completion_count
+            .saturating_add(1);
+        let completion_inputs = RuntimeCompletionInputs {
+            has_tool_calls: normalized.has_actionable_tool_calls,
+            plan_tool_enforcement: self.plan_tool_enforcement,
+            active_plan_step_idx: *active_plan_step_idx,
+            plan_step_constraints_len: self.plan_step_constraints.len(),
+            tool_only_phase_active: runtime_checkpoint.tool_protocol_state.tool_only_phase_active,
+            exact_final_answer_only_phase_active: runtime_checkpoint.phase
+                == crate::agent_runtime::state::RunPhase::CollectingFinalAnswer,
+            enforce_implementation_integrity_guard,
+            observed_tool_calls_len: observed_tool_calls.len(),
+            blocked_attempt_count_next,
+        };
+        let completion_decision = runtime_completion_decision(&completion_inputs);
+        let completion_action = self
+            .handle_runtime_completion_action(
+                completion_decision,
+                run_id.to_string(),
+                step,
+                started_at.to_string(),
+                user_prompt,
+                last_user_output.as_ref(),
+                normalized.assistant.content.as_deref(),
+                *active_plan_step_idx,
+                enforce_implementation_integrity_guard,
+                blocked_attempt_count_next,
+                runtime_checkpoint.tool_protocol_state.operator_delivery_count,
+                messages,
+                observed_tool_calls.to_vec(),
+                observed_tool_executions,
+                observed_tool_decisions.to_vec(),
+                normalized.request_context_chars,
+                last_compaction_report.clone(),
+                hook_invocations.to_vec(),
+                *provider_retry_count,
+                *provider_error_count,
+                *saw_token_usage,
+                total_token_usage,
+                taint_state,
+                runtime_checkpoint.retry_state.exact_final_answer_retry_count,
+                runtime_checkpoint.retry_state.required_validation_retry_count,
+            )
+            .await;
+        match self.apply_runtime_completion_action_to_checkpoint(
+            user_prompt,
+            completion_action,
+            runtime_checkpoint,
+        ) {
+            Ok(PhaseLoopControl::Proceed) => Ok(None),
+            Ok(PhaseLoopControl::ContinueStep) => Ok(Some(PhaseStepDispatch::ContinueStep)),
+            Ok(PhaseLoopControl::ContinueAgentStep) => {
+                Ok(Some(PhaseStepDispatch::ContinueAgentStep))
+            }
+            Err(outcome) => Err(outcome),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_tool_execution_phase(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        expected_mcp_catalog_hash_hex: Option<&String>,
+        expected_mcp_docs_hash_hex: Option<&String>,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &mut Vec<ToolCall>,
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &mut Vec<ToolDecisionRecord>,
+        hook_invocations: &mut Vec<HookInvocationReport>,
+        failed_repeat_counts: &mut std::collections::BTreeMap<String, u32>,
+        malformed_tool_call_attempts: &mut u32,
+        invalid_patch_format_attempts: &mut std::collections::BTreeMap<String, u32>,
+        schema_repair_attempts: &mut std::collections::BTreeMap<String, u32>,
+        tool_budget_usage: &mut ToolCallBudgetUsage,
+        last_compaction_report: &Option<CompactionReport>,
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        active_plan_step_idx: &mut usize,
+        normalized: &NormalizedTurnState,
+    ) -> Result<Result<bool, PhaseStepDispatch>, AgentOutcome> {
+        let mut successful_write_tool_ok_this_step = false;
+        match self
+            .process_tool_calls_for_response(
+                &normalized.tool_calls,
+                run_id,
+                step,
+                started_at,
+                *active_plan_step_idx,
+                normalized.request_context_chars,
+                expected_mcp_catalog_hash_hex,
+                expected_mcp_docs_hash_hex,
+                messages,
+                observed_tool_calls,
+                observed_tool_executions,
+                observed_tool_decisions,
+                hook_invocations,
+                failed_repeat_counts,
+                malformed_tool_call_attempts,
+                invalid_patch_format_attempts,
+                schema_repair_attempts,
+                tool_budget_usage,
+                last_compaction_report,
+                *provider_retry_count,
+                *provider_error_count,
+                *saw_token_usage,
+                total_token_usage,
+                taint_state,
+                &mut successful_write_tool_ok_this_step,
+            )
+            .await
+        {
+            Ok(ToolLoopControl::Proceed) => {}
+            Ok(ToolLoopControl::RestartAgentStep) => {
+                return Ok(Err(PhaseStepDispatch::ContinueAgentStep));
+            }
+            Err(outcome) => return Err(outcome),
+        }
+
+        self.refresh_phase_state_from_tool_facts(
+            user_prompt,
+            run_id,
+            step,
+            runtime_checkpoint,
+            observed_tool_calls,
+            observed_tool_executions,
+            successful_write_tool_ok_this_step,
+        );
+
+        Ok(Ok(successful_write_tool_ok_this_step))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_post_tool_phase(
+        &mut self,
+        user_prompt: &str,
+        run_id: &str,
+        step: u32,
+        started_at: &str,
+        messages: &mut Vec<Message>,
+        observed_tool_calls: &[ToolCall],
+        observed_tool_executions: &mut Vec<ToolExecutionRecord>,
+        observed_tool_decisions: &[ToolDecisionRecord],
+        last_compaction_report: &Option<CompactionReport>,
+        hook_invocations: &[HookInvocationReport],
+        provider_retry_count: &mut u32,
+        provider_error_count: &mut u32,
+        saw_token_usage: &mut bool,
+        total_token_usage: &mut TokenUsage,
+        taint_state: &mut TaintState,
+        runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
+        enforce_implementation_integrity_guard: bool,
+        successful_write_tool_ok_this_step: bool,
+        request_context_chars: usize,
+    ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        if let Some(control) = self
+            .handle_verified_write_follow_on_phase(
+                user_prompt,
+                run_id,
+                step,
+                started_at,
+                messages,
+                observed_tool_calls,
+                observed_tool_executions,
+                observed_tool_decisions,
+                last_compaction_report,
+                hook_invocations,
+                provider_retry_count,
+                provider_error_count,
+                saw_token_usage,
+                total_token_usage,
+                taint_state,
+                runtime_checkpoint,
+                enforce_implementation_integrity_guard,
+                successful_write_tool_ok_this_step,
+                request_context_chars,
+            )
+            .await?
+        {
+            return Ok(control);
+        }
+
+        Ok(PhaseStepDispatch::StepComplete)
     }
 
     pub async fn run(
@@ -1641,371 +3284,44 @@ impl<P: ModelProvider> Agent<P> {
                 }
             }
 
-            let req = self.build_generate_request(&messages, tools_sorted);
-            let request_context_chars = context_size_chars(&req.messages);
-            let resp_result = self.execute_model_request(&run_id, step as u32, req).await;
-
-            let mut resp = match resp_result {
-                Ok(r) => r,
-                Err(e) => {
-                    self.record_provider_error_events(
-                        &run_id,
-                        step as u32,
-                        &e,
-                        &mut provider_retry_count,
-                        &mut provider_error_count,
-                    );
-                    self.emit_event(
-                        &run_id,
-                        step as u32,
-                        EventKind::Error,
-                        serde_json::json!({"error": e.to_string()}),
-                    );
-                    return self.finalize_provider_error_with_end(
-                        step as u32,
-                        run_id,
-                        started_at,
-                        e.to_string(),
-                        messages,
-                        observed_tool_calls,
-                        observed_tool_decisions,
-                        request_context_chars,
-                        last_compaction_report,
-                        hook_invocations,
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                    );
-                }
-            };
-            match normalize_tool_calls_from_assistant(&resp, step as u32, &allowed_tool_names) {
-                ToolWrapperParseState::Normalized(normalized_calls) => {
-                    resp.tool_calls = normalized_calls;
-                    resp.assistant.content = None;
-                }
-                ToolWrapperParseState::MalformedWrapper => {
-                    malformed_tool_call_attempts = malformed_tool_call_attempts.saturating_add(1);
-                    if malformed_tool_call_attempts >= 2 {
-                        let reason =
-                            "MODEL_TOOL_PROTOCOL_VIOLATION: empty or malformed [TOOL_CALL] envelope"
-                                .to_string();
-                        self.emit_event(
-                            &run_id,
-                            step as u32,
-                            EventKind::Error,
-                            serde_json::json!({
-                                "error": reason,
-                                "source": "tool_protocol_guard",
-                                "failure_class": "E_PROTOCOL_TOOL_WRAPPER",
-                                "attempt": malformed_tool_call_attempts
-                            }),
-                        );
-                        return self.finalize_planner_error_with_output_with_end(
-                            step as u32,
-                            run_id,
-                            started_at,
-                            reason,
-                            messages,
-                            observed_tool_calls,
-                            observed_tool_decisions,
-                            request_context_chars,
-                            last_compaction_report,
-                            hook_invocations,
-                            provider_retry_count,
-                            provider_error_count,
-                            saw_token_usage,
-                            &total_token_usage,
-                            &taint_state,
-                        );
-                    }
-                }
-                ToolWrapperParseState::Unchanged => {}
-            }
-            if let Some(usage) = &resp.usage {
-                apply_usage_totals(usage, &mut saw_token_usage, &mut total_token_usage);
-            }
-            self.emit_event(
-                &run_id,
-                step as u32,
-                EventKind::ModelResponseEnd,
-                serde_json::json!({"tool_calls": resp.tool_calls.len()}),
-            );
-            if resp.tool_calls.len() > 1 {
-                let reason = format!(
-                    "MODEL_TOOL_PROTOCOL_VIOLATION: multiple tool calls in a single assistant step (max 1, got {})",
-                    resp.tool_calls.len()
-                );
-                self.emit_event(
-                    &run_id,
-                    step as u32,
-                    EventKind::Error,
-                    serde_json::json!({
-                        "error": reason,
-                        "source": "tool_protocol_guard",
-                        "failure_class": "E_PROTOCOL_MULTI_TOOL",
-                        "tool_calls": resp.tool_calls.len()
-                    }),
-                );
-                return self.finalize_planner_error_with_output_with_end(
-                    step as u32,
-                    run_id,
-                    started_at,
-                    reason,
-                    messages,
-                    observed_tool_calls,
-                    observed_tool_decisions,
-                    request_context_chars,
-                    last_compaction_report,
-                    hook_invocations,
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    &total_token_usage,
-                    &taint_state,
-                );
-            }
-            match self.handle_required_validation_phase_response(
-                user_prompt,
-                &mut resp,
-                &run_id,
-                step as u32,
-                &started_at,
-                &mut runtime_checkpoint,
-                &mut messages,
-                &observed_tool_calls,
-                &observed_tool_decisions,
-                request_context_chars,
-                &last_compaction_report,
-                &hook_invocations,
-                provider_retry_count,
-                provider_error_count,
-                saw_token_usage,
-                &total_token_usage,
-                &taint_state,
-            ) {
-                Ok(PhaseLoopControl::Proceed) => {}
-                Ok(PhaseLoopControl::ContinueStep) => continue,
-                Ok(PhaseLoopControl::ContinueAgentStep) => continue 'agent_steps,
-                Err(outcome) => return outcome,
-            }
-            let has_actionable_tool_calls = !resp.tool_calls.is_empty();
-            let model_signaled_finalize = !has_actionable_tool_calls;
-            match self.handle_post_response_phase_guards(
-                user_prompt,
-                &resp.assistant,
-                has_actionable_tool_calls,
-                model_signaled_finalize,
-                &run_id,
-                step as u32,
-                &started_at,
-                &mut runtime_checkpoint,
-                &mut messages,
-                &observed_tool_calls,
-                &observed_tool_decisions,
-                request_context_chars,
-                &last_compaction_report,
-                &hook_invocations,
-                provider_retry_count,
-                provider_error_count,
-                saw_token_usage,
-                &total_token_usage,
-                &taint_state,
-                &resp.tool_calls,
-            ) {
-                Ok(PhaseLoopControl::Proceed) => {}
-                Ok(PhaseLoopControl::ContinueStep) => continue,
-                Ok(PhaseLoopControl::ContinueAgentStep) => continue 'agent_steps,
-                Err(outcome) => return outcome,
-            }
-            if has_actionable_tool_calls {
-                runtime_checkpoint.tool_protocol_state.tool_only_phase_active = false;
-                runtime_checkpoint.tool_protocol_state.blocked_tool_only_count = 0;
-            }
-            let mut assistant = resp.assistant.clone();
-            if let Some(c) = assistant.content.as_deref() {
-                assistant.content = Some(sanitize_user_visible_output(c));
-            }
-            messages.push(assistant.clone());
-            match self.handle_planner_control_envelope(
-                &assistant,
-                &run_id,
-                step as u32,
-                &started_at,
-                &mut runtime_checkpoint,
-                &mut messages,
-                &observed_tool_calls,
-                &observed_tool_decisions,
-                request_context_chars,
-                &last_compaction_report,
-                &hook_invocations,
-                provider_retry_count,
-                provider_error_count,
-                saw_token_usage,
-                &total_token_usage,
-                &taint_state,
-                has_actionable_tool_calls,
-                model_signaled_finalize,
-                &mut active_plan_step_idx,
-                &mut last_user_output,
-                &mut step_retry_counts,
-            ) {
-                Ok(PlannerEnvelopeControl::Proceed) => {}
-                Ok(PlannerEnvelopeControl::ContinueStep) => continue,
-                Err(outcome) => return outcome,
-            }
-            if matches!(self.taint_toggle, TaintToggle::On) {
-                let idx = messages.len().saturating_sub(1);
-                taint_state.mark_assistant_context_tainted(idx);
-            }
-
-            let completion_inputs = RuntimeCompletionInputs {
-                has_tool_calls: has_actionable_tool_calls,
-                plan_tool_enforcement: self.plan_tool_enforcement,
-                active_plan_step_idx,
-                plan_step_constraints_len: self.plan_step_constraints.len(),
-                tool_only_phase_active: runtime_checkpoint.tool_protocol_state.tool_only_phase_active,
-                exact_final_answer_only_phase_active: runtime_checkpoint.phase
-                    == crate::agent_runtime::state::RunPhase::CollectingFinalAnswer,
-                enforce_implementation_integrity_guard,
-                observed_tool_calls_len: observed_tool_calls.len(),
-                blocked_attempt_count_next: runtime_checkpoint
-                    .retry_state
-                    .blocked_runtime_completion_count
-                    .saturating_add(1),
-            };
-            let completion_decision = runtime_completion_decision(&completion_inputs);
-            let completion_action = self
-                .handle_runtime_completion_action(
-                    completion_decision,
-                    run_id.clone(),
-                    step as u32,
-                    started_at.clone(),
-                    user_prompt,
-                    last_user_output.as_ref(),
-                    assistant.content.as_deref(),
-                    active_plan_step_idx,
-                    enforce_implementation_integrity_guard,
-                    runtime_checkpoint
-                        .retry_state
-                        .blocked_runtime_completion_count
-                        .saturating_add(1),
-                    runtime_checkpoint.tool_protocol_state.operator_delivery_count,
-                    &mut messages,
-                    observed_tool_calls.clone(),
-                    &mut observed_tool_executions,
-                    observed_tool_decisions.clone(),
-                    request_context_chars,
-                    last_compaction_report.clone(),
-                    hook_invocations.clone(),
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    &total_token_usage,
-                    &taint_state,
-                    runtime_checkpoint.retry_state.exact_final_answer_retry_count,
-                    runtime_checkpoint.retry_state.required_validation_retry_count,
-                )
-                .await;
-            match self.apply_runtime_completion_action_to_checkpoint(
-                user_prompt,
-                completion_action,
-                &mut runtime_checkpoint,
-            ) {
-                Ok(PhaseLoopControl::Proceed) => {}
-                Ok(PhaseLoopControl::ContinueStep) => continue,
-                Ok(PhaseLoopControl::ContinueAgentStep) => continue 'agent_steps,
-                Err(outcome) => return outcome,
-            }
-
-            let mut successful_write_tool_ok_this_step = false;
             match self
-                .process_tool_calls_for_response(
-                    &resp.tool_calls,
+                .dispatch_runtime_phase_step(
+                    user_prompt,
                     &run_id,
                     step as u32,
                     &started_at,
-                    active_plan_step_idx,
-                    request_context_chars,
-                    expected_mcp_catalog_hash_hex.as_ref(),
-                    expected_mcp_docs_hash_hex.as_ref(),
                     &mut messages,
                     &mut observed_tool_calls,
                     &mut observed_tool_executions,
                     &mut observed_tool_decisions,
+                    &last_compaction_report,
                     &mut hook_invocations,
+                    &mut provider_retry_count,
+                    &mut provider_error_count,
+                    &mut saw_token_usage,
+                    &mut total_token_usage,
+                    &mut taint_state,
+                    &mut runtime_checkpoint,
+                    &mut active_plan_step_idx,
+                    &mut last_user_output,
+                    &mut step_retry_counts,
                     &mut failed_repeat_counts,
                     &mut malformed_tool_call_attempts,
                     &mut invalid_patch_format_attempts,
                     &mut schema_repair_attempts,
                     &mut tool_budget_usage,
-                    &last_compaction_report,
-                    provider_retry_count,
-                    provider_error_count,
-                    saw_token_usage,
-                    &total_token_usage,
-                    &mut taint_state,
-                    &mut successful_write_tool_ok_this_step,
+                    enforce_implementation_integrity_guard,
+                    expected_mcp_catalog_hash_hex.as_ref(),
+                    expected_mcp_docs_hash_hex.as_ref(),
+                    &allowed_tool_names,
+                    tools_sorted,
                 )
                 .await
             {
-                Ok(ToolLoopControl::Proceed) => {}
-                Ok(ToolLoopControl::RestartAgentStep) => continue 'agent_steps,
+                Ok(PhaseStepDispatch::StepComplete) => {}
+                Ok(PhaseStepDispatch::ContinueStep) => continue,
+                Ok(PhaseStepDispatch::ContinueAgentStep) => continue 'agent_steps,
                 Err(outcome) => return outcome,
-            }
-
-            self.refresh_phase_state_from_tool_facts(
-                user_prompt,
-                &run_id,
-                step as u32,
-                &mut runtime_checkpoint,
-                &observed_tool_calls,
-                &observed_tool_executions,
-                successful_write_tool_ok_this_step,
-            );
-
-            if enforce_implementation_integrity_guard && successful_write_tool_ok_this_step {
-                let verified_write_result = self
-                    .finalize_verified_write_step_or_error(
-                        run_id.clone(),
-                        step as u32,
-                        started_at.clone(),
-                        user_prompt,
-                        observed_tool_calls.clone(),
-                        &mut observed_tool_executions,
-                        observed_tool_decisions.clone(),
-                        messages.clone(),
-                        request_context_chars,
-                        last_compaction_report.clone(),
-                        hook_invocations.clone(),
-                        provider_retry_count,
-                        provider_error_count,
-                        saw_token_usage,
-                        &total_token_usage,
-                        &taint_state,
-                        enforce_implementation_integrity_guard,
-                        runtime_checkpoint.retry_state.post_write_guard_retry_count,
-                        runtime_checkpoint.retry_state.post_write_follow_on_turn_count,
-                    )
-                    .await;
-                match verified_write_result {
-                    runtime_completion::VerifiedWriteResult::Done(outcome) => return *outcome,
-                    other => {
-                        if let Some(control) = self.apply_verified_write_follow_on(
-                            user_prompt,
-                            &mut runtime_checkpoint,
-                            &mut messages,
-                            &other,
-                        ) {
-                            match control {
-                                PhaseLoopControl::Proceed => {}
-                                PhaseLoopControl::ContinueStep => continue,
-                                PhaseLoopControl::ContinueAgentStep => continue 'agent_steps,
-                            }
-                        }
-                    }
-                }
             }
         }
 
