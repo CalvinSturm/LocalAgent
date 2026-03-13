@@ -643,7 +643,7 @@ fn common_coding_ux_tasks() -> Vec<EvalTask> {
                     pattern: "read_file".to_string(),
                 },
                 Assertion::ToolUsedGlob {
-                    pattern: "{apply_patch,str_replace}".to_string(),
+                    pattern: "{edit,apply_patch,str_replace}".to_string(),
                 },
                 Assertion::ToolArgContains {
                     tool: "shell".to_string(),
@@ -691,7 +691,7 @@ fn common_coding_ux_tasks() -> Vec<EvalTask> {
                     pattern: "{list_dir,read_file}".to_string(),
                 },
                 Assertion::ToolUsedGlob {
-                    pattern: "{apply_patch,str_replace}".to_string(),
+                    pattern: "{edit,apply_patch,str_replace}".to_string(),
                 },
                 Assertion::ToolArgContains {
                     tool: "shell".to_string(),

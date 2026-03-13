@@ -296,3 +296,30 @@ Profile guidance for the first qwen experiment:
 Stop conditions:
 - if qwen still fails before an effective write after one narrow profile pass, do not keep stacking prompt variants
 - if the failures suggest a LocalAgent-side authored-contract or edit-surface issue instead of a model-side issue, document that before considering broader PR3 or PR4 work
+
+## Narrow LocalAgent-Side Investigation Result
+
+Scope reviewed:
+- accepted edit paths and task assertions around `U5`, `U6`, and `U12`
+- how validation-required tasks are authored
+- whether `planner_error` is too coarse to usefully interpret this benchmark
+
+Concrete finding:
+- `U5` and `U6` had the same assertion mismatch that `U3` had earlier:
+  - real runs were using `edit` as the existing-file write path
+  - task assertions only accepted `{apply_patch,str_replace}`
+- this amplified some qwen failures as benchmark/task-design noise instead of pure model failure
+
+Action taken:
+- `U5` and `U6` now accept `{edit,apply_patch,str_replace}` the same way `U3` and `U12` do
+
+Read after the fix:
+- the accepted-edit-path mismatch was a real LocalAgent-side issue and is now fixed
+- no second concrete authored-contract issue was found in `U12`; its closeout contract is behaving as intended
+- `planner_error` remains coarse, but the stored run artifacts still expose the underlying error string well enough for the current benchmark loop
+- remaining qwen failures should now be treated as mostly model-side unless a new LocalAgent-side defect is reproduced
+
+Decision:
+- keep the `U3`, `U5`, and `U6` assertion parity fixes
+- stop adding more qwen prompt variants for now
+- choose the next workstream from here instead of continuing this tuning loop
