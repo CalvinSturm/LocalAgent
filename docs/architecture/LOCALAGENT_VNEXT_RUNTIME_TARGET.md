@@ -1,5 +1,25 @@
 # LocalAgent vNext Runtime Target
 
+## Progress Status
+
+Status as of commit `29a5797`:
+
+- `TaskContractV1` exists and is resolved at launch time
+- contract provenance is persisted in run artifacts
+- `ToolFactV1` and `ToolFactEnvelopeV1` exist and are persisted in artifacts/checkpoints
+- approval and operator-interrupt boundaries have explicit runtime-owned transition events
+- validation and final-answer collection now have explicit runtime transition helpers
+- `RunCheckpointV1`, execution tier, interrupt history, phase summary, and completion decisions are persisted
+- approval resume is implemented and covered by targeted tests
+- `cargo clippy -- -D warnings` passes
+
+Still incomplete:
+
+- the main loop is not yet fully executing from `RunCheckpointV1` as the canonical mutable state object
+- broader resume remains narrow and boundary-oriented rather than fully stateful
+- some runtime behavior is still split between old booleans/heuristics and the new phase/checkpoint model
+- `cargo test --quiet` is not green; there are current runtime-behavior regressions in validation / exact-final-answer / post-write paths that need a dedicated repair slice
+
 ## Goal
 
 Define a concrete target architecture for LocalAgent's agent runtime when the primary operating environment is local LLMs.
@@ -1305,6 +1325,8 @@ loop {
 
 ### Phase 1: Contract Introduction
 
+Status: complete
+
 Goal:
 
 - add `TaskContractV1`
@@ -1324,6 +1346,8 @@ Behavior:
 
 ### Phase 2: Typed Tool Facts
 
+Status: complete for v1 fact emission; still being expanded for more policy consumers
+
 Goal:
 
 - translate existing tool executions/decisions into `ToolFactV1`
@@ -1340,6 +1364,8 @@ Behavior:
 
 ### Phase 3: Checkpointed Interrupt Boundaries
 
+Status: partially complete
+
 Goal:
 
 - persist approval and operator interrupts
@@ -1355,7 +1381,17 @@ Behavior:
 - no change to user-facing trust posture
 - improved resumability/debuggability
 
+Current state:
+
+- approval checkpoints exist
+- interrupted/operator boundaries exist
+- approval resume is implemented
+- operator-interrupt live transition events now mirror approval more closely
+- checkpoint state is still not the sole live control surface for the main loop
+
 ### Phase 4: Central Completion Policy
+
+Status: partially complete
 
 Goal:
 
@@ -1377,7 +1413,17 @@ Behavior:
   - tool facts
   - final output
 
+Current state:
+
+- verified-write completion has been centralized
+- required-validation completion has been centralized
+- validation phase transitions have been centralized
+- approval/operator/final-answer transition helpers exist
+- some loop-local runtime booleans and heuristic branches still remain
+
 ### Phase 5: Explicit Phase Loop
+
+Status: in progress
 
 Goal:
 
@@ -1393,7 +1439,16 @@ Behavior:
 - same semantics where possible
 - clearer runtime ownership
 
+Current state:
+
+- `RunPhase` exists
+- approval, operator-interrupt, validation, and final-answer boundaries emit explicit phase transitions
+- artifacts/checkpoints persist phase-oriented state
+- the main loop is not yet fully rewritten around checkpoint-owned phase execution
+
 ### Phase 6: Execution Tier Integration
+
+Status: complete for v1 visibility
 
 Goal:
 
@@ -1409,6 +1464,13 @@ Behavior:
 
 - clearer sandbox/host/docker semantics
 - no need to rewrite execution targets
+
+Current state:
+
+- execution tier is resolved at launch
+- execution tier is persisted in checkpoint and run artifacts
+- execution tier is emitted in startup/runtime evidence
+- further policy consumption can be expanded later without schema changes
 
 ## What Not To Do
 
@@ -1431,6 +1493,17 @@ The vNext runtime target is achieved when:
 - event logs explain why progress was blocked or allowed
 - artifacts show contract, tier, interrupts, and completion decisions
 - `src/agent.rs` becomes materially smaller and more coordinator-like
+
+## Immediate Next Work
+
+The next repair slice should focus on runtime behavior parity, not more schema work.
+
+Recommended order:
+
+1. Fix the current failing runtime tests in validation / exact-final-answer / post-write paths.
+2. Make `RunCheckpointV1` more authoritative inside the live loop instead of parallel booleans.
+3. Expand resume from boundary replay into richer stateful continuation only after the loop is more checkpoint-driven.
+4. Remove transitional heuristic branches once fact-backed + phase-backed paths are proven by tests.
 
 ## Recommended First PR Sequence
 
