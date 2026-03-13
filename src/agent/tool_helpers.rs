@@ -479,8 +479,10 @@ impl<P: ModelProvider> Agent<P> {
         if tc.name == "str_replace" {
             if let Some(path) = normalized_tool_path_from_args(tc) {
                 let pivot_key = format!("pivot::str_replace::{path}");
-                if !failed_repeat_counts.contains_key(&pivot_key) {
-                    failed_repeat_counts.insert(pivot_key, 1);
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    failed_repeat_counts.entry(pivot_key)
+                {
+                    entry.insert(1);
                     self.emit_event(
                         &run_id,
                         step,
@@ -509,8 +511,10 @@ impl<P: ModelProvider> Agent<P> {
         if tc.name == "apply_patch" {
             if let Some(path) = normalized_tool_path_from_args(tc) {
                 let pivot_key = format!("pivot::apply_patch::{path}");
-                if !failed_repeat_counts.contains_key(&pivot_key) {
-                    failed_repeat_counts.insert(pivot_key, 1);
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    failed_repeat_counts.entry(pivot_key)
+                {
+                    entry.insert(1);
                     self.emit_event(
                         &run_id,
                         step,

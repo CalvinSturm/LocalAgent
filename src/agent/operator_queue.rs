@@ -124,7 +124,7 @@ impl<P: ModelProvider> Agent<P> {
                 step,
                 EventKind::InterruptRaised,
                 serde_json::json!({
-                    "kind": crate::agent::interrupt_kind_name(&transition.interrupt_kind),
+                    "kind": crate::agent::interrupts::interrupt_kind_name(&transition.interrupt_kind),
                     "reason": delivery.cancelled_reason.unwrap_or("operator_steer"),
                 }),
             );
@@ -133,8 +133,8 @@ impl<P: ModelProvider> Agent<P> {
                 step,
                 EventKind::PhaseExited,
                 serde_json::json!({
-                    "phase": crate::agent::run_phase_name(&transition.from_phase),
-                    "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                    "phase": crate::agent::interrupts::run_phase_name(&transition.from_phase),
+                    "next_phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                 }),
             );
             self.emit_event(
@@ -142,7 +142,7 @@ impl<P: ModelProvider> Agent<P> {
                 step,
                 EventKind::PhaseEntered,
                 serde_json::json!({
-                    "phase": crate::agent::run_phase_name(&transition.to_phase)
+                    "phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                 }),
             );
             self.emit_event(
@@ -151,7 +151,7 @@ impl<P: ModelProvider> Agent<P> {
                 EventKind::CompletionBlocked,
                 serde_json::json!({
                     "reason": transition.completion_reason,
-                    "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                    "next_phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                 }),
             );
             return (true, true);

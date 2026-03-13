@@ -59,12 +59,14 @@ pub(crate) fn interrupt_history_for_outcome(outcome: &AgentOutcome) -> Vec<Inter
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn transition_runtime_checkpoint_to_executing(
     checkpoint: &RuntimeRunCheckpointRecordV1,
 ) -> RuntimeRunCheckpointRecordV1 {
     let mut updated = checkpoint.clone();
     let now = crate::trust::now_rfc3339();
     let prior_phase = updated.runtime_state_checkpoint.phase.clone();
+    let resumed_phase = crate::agent::completion_policy::resume_phase_from_checkpoint_state(checkpoint);
 
     if let Some(last_phase) = updated
         .phase_summary
@@ -77,7 +79,7 @@ pub(crate) fn transition_runtime_checkpoint_to_executing(
     updated
         .phase_summary
         .push(crate::agent_runtime::state::PhaseSummaryEntryV1 {
-            phase: crate::agent_runtime::state::RunPhase::Executing,
+            phase: resumed_phase.clone(),
             entered_at: now.clone(),
             exited_at: None,
         });
@@ -91,10 +93,9 @@ pub(crate) fn transition_runtime_checkpoint_to_executing(
         last_interrupt.resolved_at = Some(now.clone());
     }
 
-    updated.runtime_state_checkpoint.phase = crate::agent_runtime::state::RunPhase::Executing;
+    updated.runtime_state_checkpoint.phase = resumed_phase.clone();
     updated.runtime_state_checkpoint.terminal_boundary = false;
     updated.runtime_state_checkpoint.approval_state.awaiting_approval = false;
-    updated.runtime_state_checkpoint.validation_state.collecting_final_answer = false;
     updated.runtime_state_checkpoint.step_index = updated
         .runtime_state_checkpoint
         .step_index
@@ -107,10 +108,10 @@ pub(crate) fn transition_runtime_checkpoint_to_executing(
             kind: "resume".to_string(),
             allowed: true,
             retryable: false,
-            next_phase: Some(crate::agent_runtime::state::RunPhase::Executing),
+            next_phase: Some(resumed_phase.clone()),
             reason: format!(
-                "checkpoint resume accepted from {:?} and transitioned back to executing",
-                prior_phase
+                "checkpoint resume accepted from {:?} and transitioned back to {:?}",
+                prior_phase, resumed_phase
             ),
             unmet_requirements: Vec::new(),
         },

@@ -375,8 +375,8 @@ impl ModelProvider for OpenAiCompatProvider {
                 .context("failed to parse OpenAI-compatible JSON response")?;
             trace.push_event("response_parsed", summarize_openai_response(&resp));
             return map_openai_response(resp)
-                .map(|mapped| {
-                    trace.push_event("response_mapped", summarize_generate_response(&mapped));
+                .inspect(|mapped| {
+                    trace.push_event("response_mapped", summarize_generate_response(mapped));
                     trace.finish(OpenAiCompatTraceResult {
                         outcome: "success".to_string(),
                         saw_done: true,
@@ -396,7 +396,6 @@ impl ModelProvider for OpenAiCompatProvider {
                         trailing_buffer_bytes: 0,
                         message: None,
                     });
-                    mapped
                 })
                 .map_err(|e| {
                     trace.finish(OpenAiCompatTraceResult {

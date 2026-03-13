@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+fn is_default_tool_protocol_state(state: &ToolProtocolState) -> bool {
+    state == &ToolProtocolState::default()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
@@ -31,9 +35,33 @@ pub enum ExecutionTier {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RetryState {
     #[serde(default)]
+    pub blocked_runtime_completion_count: u32,
+    #[serde(default)]
     pub required_validation_retry_count: u32,
     #[serde(default)]
+    pub exact_final_answer_retry_count: u32,
+    #[serde(default)]
+    pub post_write_guard_retry_count: u32,
+    #[serde(default)]
     pub post_write_follow_on_turn_count: u32,
+    #[serde(default)]
+    pub blocked_required_validation_phase_count: u32,
+    #[serde(default)]
+    pub blocked_validation_failure_repair_count: u32,
+    #[serde(default)]
+    pub blocked_post_validation_final_answer_count: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolProtocolState {
+    #[serde(default)]
+    pub operator_delivery_count: u32,
+    #[serde(default)]
+    pub blocked_control_envelope_count: u32,
+    #[serde(default)]
+    pub blocked_tool_only_count: u32,
+    #[serde(default)]
+    pub tool_only_phase_active: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,10 +135,12 @@ pub struct RunCheckpointV1 {
     pub execution_tier: ExecutionTier,
     pub terminal_boundary: bool,
     pub retry_state: RetryState,
+    #[serde(default, skip_serializing_if = "is_default_tool_protocol_state")]
+    pub tool_protocol_state: ToolProtocolState,
     pub validation_state: ValidationState,
     pub approval_state: ApprovalState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_plan_step_id: Option<String>,
     #[serde(default)]
-    pub last_tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
+    pub last_tool_fact_envelopes: Vec<crate::agent::tool_facts::ToolFactEnvelopeV1>,
 }

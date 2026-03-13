@@ -25,12 +25,14 @@ pub(crate) enum ValidationPhaseTransitionDecision {
     ClearRepair,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RuntimeCheckpointResumeKind {
     ApprovalGranted,
     OperatorContinue,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeCheckpointResumeDecision {
     pub(crate) kind: RuntimeCheckpointResumeKind,
@@ -81,6 +83,7 @@ fn required_validation_before_final_message(required_command: &str) -> String {
     )
 }
 
+#[allow(dead_code)]
 pub(crate) fn decide_runtime_checkpoint_resume(
     checkpoint: &crate::store::RuntimeRunCheckpointRecordV1,
 ) -> anyhow::Result<RuntimeCheckpointResumeDecision> {
@@ -141,6 +144,24 @@ pub(crate) fn decide_runtime_checkpoint_resume(
             checkpoint.runtime_state_checkpoint.phase
         ),
     }
+}
+
+pub(crate) fn resume_phase_from_checkpoint_state(
+    checkpoint: &crate::store::RuntimeRunCheckpointRecordV1,
+) -> crate::agent_runtime::state::RunPhase {
+    let state = &checkpoint.runtime_state_checkpoint;
+    if state.validation_state.collecting_final_answer && state.validation_state.satisfied {
+        return crate::agent_runtime::state::RunPhase::CollectingFinalAnswer;
+    }
+    if state.validation_state.required_command.is_some() && !state.validation_state.satisfied {
+        return crate::agent_runtime::state::RunPhase::Validating;
+    }
+    if state.retry_state.post_write_guard_retry_count > 0
+        || state.retry_state.post_write_follow_on_turn_count > 0
+    {
+        return crate::agent_runtime::state::RunPhase::VerifyingChanges;
+    }
+    crate::agent_runtime::state::RunPhase::Executing
 }
 
 pub(crate) fn approval_boundary_transition_decision() -> ApprovalBoundaryTransitionDecision {
@@ -281,7 +302,7 @@ pub(crate) fn decide_validation_phase_transition(
     if facts.repair_needed {
         return ValidationPhaseTransitionDecision::EnterRepair;
     }
-    if facts.exact_final_answer_required && facts.satisfied {
+    if facts.required_command.is_some() && facts.exact_final_answer_required && facts.satisfied {
         return ValidationPhaseTransitionDecision::EnterPostValidationFinalAnswerOnly;
     }
     if successful_write_tool_ok_this_step {
@@ -326,6 +347,7 @@ mod tests {
         decide_validation_phase_transition, decide_verified_write_completion,
         exact_final_answer_boundary_transition_decision, operator_boundary_transition_decision,
         post_validation_final_answer_transition_decision,
+        resume_phase_from_checkpoint_state,
         required_validation_boundary_transition_decision,
         validation_resume_execution_transition_decision, RequiredValidationCompletionDecision,
         RuntimeCheckpointResumeKind, ValidationFacts, ValidationPhaseTransitionDecision,
@@ -510,6 +532,7 @@ mod tests {
                 execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
                 terminal_boundary: true,
                 retry_state: crate::agent_runtime::state::RetryState::default(),
+                tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
                 validation_state: crate::agent_runtime::state::ValidationState::default(),
                 approval_state: crate::agent_runtime::state::ApprovalState {
                     approval_id: Some("approval-1".to_string()),
@@ -533,6 +556,108 @@ mod tests {
         let decision = decide_runtime_checkpoint_resume(&checkpoint).expect("resumable");
         assert_eq!(decision.kind, RuntimeCheckpointResumeKind::ApprovalGranted);
         assert_eq!(decision.approval_id.as_deref(), Some("approval-1"));
+    }
+
+    #[test]
+    fn resume_phase_prefers_validating_when_required_validation_is_still_unsatisfied() {
+        let checkpoint = crate::store::RuntimeRunCheckpointRecordV1 {
+            schema_version: "openagent.runtime_checkpoint.v1".to_string(),
+            runtime_run_id: "run-1".to_string(),
+            prompt: "continue".to_string(),
+            resume_argv: Vec::new(),
+            checkpoint: Some(crate::store::RunCheckpointV1 {
+                schema_version: "openagent.run_checkpoint.v1".to_string(),
+                phase: crate::store::RunCheckpointPhase::Interrupted,
+                terminal_boundary: true,
+                pending_interrupt: Some(crate::store::RunCheckpointInterruptV1 {
+                    kind: crate::store::RunCheckpointInterruptKind::OperatorInterrupt,
+                    reason: Some("paused".to_string()),
+                }),
+            }),
+            runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1 {
+                schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+                phase: crate::agent_runtime::state::RunPhase::WaitingForOperatorInput,
+                step_index: 2,
+                execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+                terminal_boundary: true,
+                retry_state: crate::agent_runtime::state::RetryState::default(),
+                tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
+                validation_state: crate::agent_runtime::state::ValidationState {
+                    required_command: Some("cargo test".to_string()),
+                    satisfied: false,
+                    repair_mode: false,
+                    collecting_final_answer: false,
+                },
+                approval_state: crate::agent_runtime::state::ApprovalState::default(),
+                active_plan_step_id: None,
+                last_tool_fact_envelopes: Vec::new(),
+            },
+            execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+            resume_session_messages: Vec::new(),
+            interrupt_history: Vec::new(),
+            phase_summary: Vec::new(),
+            completion_decisions: Vec::new(),
+            tool_facts: Vec::new(),
+            tool_fact_envelopes: Vec::new(),
+            pending_tool_call: None,
+            boundary_output: Some("paused".to_string()),
+        };
+
+        assert_eq!(
+            resume_phase_from_checkpoint_state(&checkpoint),
+            crate::agent_runtime::state::RunPhase::Validating
+        );
+    }
+
+    #[test]
+    fn resume_phase_prefers_collecting_final_answer_when_validation_is_already_satisfied() {
+        let checkpoint = crate::store::RuntimeRunCheckpointRecordV1 {
+            schema_version: "openagent.runtime_checkpoint.v1".to_string(),
+            runtime_run_id: "run-1".to_string(),
+            prompt: "continue".to_string(),
+            resume_argv: Vec::new(),
+            checkpoint: Some(crate::store::RunCheckpointV1 {
+                schema_version: "openagent.run_checkpoint.v1".to_string(),
+                phase: crate::store::RunCheckpointPhase::Interrupted,
+                terminal_boundary: true,
+                pending_interrupt: Some(crate::store::RunCheckpointInterruptV1 {
+                    kind: crate::store::RunCheckpointInterruptKind::OperatorInterrupt,
+                    reason: Some("paused".to_string()),
+                }),
+            }),
+            runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1 {
+                schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+                phase: crate::agent_runtime::state::RunPhase::WaitingForOperatorInput,
+                step_index: 2,
+                execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+                terminal_boundary: true,
+                retry_state: crate::agent_runtime::state::RetryState::default(),
+                tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
+                validation_state: crate::agent_runtime::state::ValidationState {
+                    required_command: Some("cargo test".to_string()),
+                    satisfied: true,
+                    repair_mode: false,
+                    collecting_final_answer: true,
+                },
+                approval_state: crate::agent_runtime::state::ApprovalState::default(),
+                active_plan_step_id: None,
+                last_tool_fact_envelopes: Vec::new(),
+            },
+            execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+            resume_session_messages: Vec::new(),
+            interrupt_history: Vec::new(),
+            phase_summary: Vec::new(),
+            completion_decisions: Vec::new(),
+            tool_facts: Vec::new(),
+            tool_fact_envelopes: Vec::new(),
+            pending_tool_call: None,
+            boundary_output: Some("paused".to_string()),
+        };
+
+        assert_eq!(
+            resume_phase_from_checkpoint_state(&checkpoint),
+            crate::agent_runtime::state::RunPhase::CollectingFinalAnswer
+        );
     }
 
     #[test]

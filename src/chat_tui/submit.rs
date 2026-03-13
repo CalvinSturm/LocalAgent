@@ -175,6 +175,7 @@ pub(crate) async fn build_tui_normal_submit_launch(
                     Some(queue_rx),
                     None,
                     shared_chat_mcp_registry,
+                    None,
                     true,
                 )
                 .await
@@ -196,6 +197,7 @@ pub(crate) async fn build_tui_normal_submit_launch(
                     Some(queue_rx),
                     None,
                     shared_chat_mcp_registry,
+                    None,
                     true,
                 )
                 .await
@@ -214,6 +216,7 @@ pub(crate) async fn build_tui_normal_submit_launch(
                     Some(queue_rx),
                     None,
                     shared_chat_mcp_registry,
+                    None,
                     true,
                 )
                 .await

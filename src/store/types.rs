@@ -36,9 +36,9 @@ pub struct RunRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_fingerprint: Option<ConfigFingerprintV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_contract: Option<crate::agent::TaskContractV1>,
+    pub task_contract: Option<crate::agent::task_contract::TaskContractV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_contract_provenance: Option<crate::agent::TaskContractProvenanceV1>,
+    pub task_contract_provenance: Option<crate::agent::task_contract::TaskContractProvenanceV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_checkpoint: Option<RunCheckpointV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,9 +60,9 @@ pub struct RunRecord {
     #[serde(default)]
     pub tool_decisions: Vec<crate::agent::ToolDecisionRecord>,
     #[serde(default)]
-    pub tool_facts: Vec<crate::agent::ToolFactV1>,
+    pub tool_facts: Vec<crate::agent::tool_facts::ToolFactV1>,
     #[serde(default)]
-    pub tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
+    pub tool_fact_envelopes: Vec<crate::agent::tool_facts::ToolFactEnvelopeV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction: Option<RunCompactionRecord>,
     #[serde(default)]
@@ -583,9 +583,9 @@ pub struct RuntimeRunCheckpointRecordV1 {
     #[serde(default)]
     pub completion_decisions: Vec<crate::agent_runtime::state::CompletionDecisionRecordV1>,
     #[serde(default)]
-    pub tool_facts: Vec<crate::agent::ToolFactV1>,
+    pub tool_facts: Vec<crate::agent::tool_facts::ToolFactV1>,
     #[serde(default)]
-    pub tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
+    pub tool_fact_envelopes: Vec<crate::agent::tool_facts::ToolFactEnvelopeV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_tool_call: Option<PendingApprovalToolCallV1>,
     #[serde(skip_serializing_if = "Option::is_none")]

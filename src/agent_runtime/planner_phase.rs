@@ -106,8 +106,8 @@ pub(super) struct PlannerBootstrapInput<'a, P: ModelProvider> {
     pub(super) hooks_config_hash_hex: Option<String>,
     pub(super) mcp_pin_snapshot: Option<store::McpPinSnapshotRecord>,
     pub(super) instruction_resolution: &'a crate::instructions::InstructionResolution,
-    pub(super) task_contract: &'a crate::agent::TaskContractV1,
-    pub(super) task_contract_provenance: &'a crate::agent::TaskContractProvenanceV1,
+    pub(super) task_contract: &'a crate::agent::task_contract::TaskContractV1,
+    pub(super) task_contract_provenance: &'a crate::agent::task_contract::TaskContractProvenanceV1,
     pub(super) execution_tier: crate::agent_runtime::state::ExecutionTier,
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
@@ -310,7 +310,7 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                         &[],
                     )),
                     execution_tier: input.execution_tier.clone(),
-                    interrupt_history: crate::agent::interrupt_history_for_outcome(&outcome),
+                    interrupt_history: crate::agent::interrupts::interrupt_history_for_outcome(&outcome),
                     phase_summary: super::checkpoint::phase_summary_for_outcome(&outcome),
                     completion_decisions: super::checkpoint::completion_decisions_for_outcome(
                         &outcome,
@@ -484,7 +484,7 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     &[],
                 )),
                 execution_tier: input.execution_tier.clone(),
-                interrupt_history: crate::agent::interrupt_history_for_outcome(&outcome),
+                interrupt_history: crate::agent::interrupts::interrupt_history_for_outcome(&outcome),
                 phase_summary: super::checkpoint::phase_summary_for_outcome(&outcome),
                 completion_decisions: super::checkpoint::completion_decisions_for_outcome(
                     &outcome,
@@ -682,7 +682,9 @@ pub(super) async fn run_replan_resume_with_cancel<P: ModelProvider>(
         }),
     );
     tokio::select! {
-        out = input.agent.run(input.prompt, resume_session_messages, replan_injected) => out,
+        out = input
+            .agent
+            .run_with_checkpoint(input.prompt, resume_session_messages, replan_injected, None) => out,
         _ = tokio::signal::ctrl_c() => {
             cancelled_outcome(input.resolved_settings)
         },

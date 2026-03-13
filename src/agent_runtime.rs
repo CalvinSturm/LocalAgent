@@ -108,6 +108,36 @@ pub(crate) async fn run_agent<P: ModelProvider>(
         None,
         None,
         None,
+        None,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_agent_from_checkpoint<P: ModelProvider>(
+    provider: P,
+    provider_kind: ProviderKind,
+    base_url: &str,
+    default_model: &str,
+    prompt: &str,
+    args: &RunArgs,
+    paths: &store::StatePaths,
+    resume_checkpoint: store::RuntimeRunCheckpointRecordV1,
+) -> anyhow::Result<RunExecutionResult> {
+    run_agent_with_ui(
+        provider,
+        provider_kind,
+        base_url,
+        default_model,
+        prompt,
+        args,
+        paths,
+        None,
+        None,
+        None,
+        None,
+        Some(resume_checkpoint),
         false,
     )
     .await
@@ -128,6 +158,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     >,
     external_cancel_pair: Option<(watch::Sender<bool>, watch::Receiver<bool>)>,
     shared_mcp_registry: Option<std::sync::Arc<McpRegistry>>,
+    resume_checkpoint: Option<store::RuntimeRunCheckpointRecordV1>,
     suppress_stdout_stream: bool,
 ) -> anyhow::Result<RunExecutionResult> {
     let mut launch = prepare_runtime_launch(
@@ -359,34 +390,46 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         base_task_memory.clone(),
         planner_injected_message.clone(),
     );
-    let initial_runtime_checkpoint = checkpoint::initial_runtime_state_checkpoint(execution_tier.clone());
-    let initial_runtime_checkpoint_record = store::RuntimeRunCheckpointRecordV1 {
-        schema_version: "openagent.runtime_checkpoint.v1".to_string(),
-        runtime_run_id: run_id.clone(),
-        prompt: prompt.to_string(),
-        resume_argv: Vec::new(),
-        checkpoint: None,
-        runtime_state_checkpoint: initial_runtime_checkpoint.clone(),
-        execution_tier: execution_tier.clone(),
-        resume_session_messages: session_messages.clone(),
-        interrupt_history: Vec::new(),
-        phase_summary: vec![
-            store::PhaseSummaryEntryV1 {
-                phase: store::RunPhase::Setup,
-                entered_at: crate::trust::now_rfc3339(),
-                exited_at: Some(crate::trust::now_rfc3339()),
-            },
-            store::PhaseSummaryEntryV1 {
-                phase: store::RunPhase::Executing,
-                entered_at: crate::trust::now_rfc3339(),
-                exited_at: None,
-            },
-        ],
-        completion_decisions: Vec::new(),
-        tool_facts: Vec::new(),
-        tool_fact_envelopes: Vec::new(),
-        pending_tool_call: None,
-        boundary_output: None,
+    let initial_runtime_checkpoint = resume_checkpoint
+        .as_ref()
+        .map(|record| record.runtime_state_checkpoint.clone())
+        .unwrap_or_else(|| checkpoint::initial_runtime_state_checkpoint(execution_tier.clone(), prompt));
+    let initial_runtime_checkpoint_record = if let Some(mut record) = resume_checkpoint {
+        record.runtime_run_id = run_id.clone();
+        record.prompt = prompt.to_string();
+        record.execution_tier = execution_tier.clone();
+        record.resume_session_messages = session_messages.clone();
+        record.runtime_state_checkpoint = initial_runtime_checkpoint.clone();
+        record
+    } else {
+        store::RuntimeRunCheckpointRecordV1 {
+            schema_version: "openagent.runtime_checkpoint.v1".to_string(),
+            runtime_run_id: run_id.clone(),
+            prompt: prompt.to_string(),
+            resume_argv: Vec::new(),
+            checkpoint: None,
+            runtime_state_checkpoint: initial_runtime_checkpoint.clone(),
+            execution_tier: execution_tier.clone(),
+            resume_session_messages: session_messages.clone(),
+            interrupt_history: Vec::new(),
+            phase_summary: vec![
+                store::PhaseSummaryEntryV1 {
+                    phase: store::RunPhase::Setup,
+                    entered_at: crate::trust::now_rfc3339(),
+                    exited_at: Some(crate::trust::now_rfc3339()),
+                },
+                store::PhaseSummaryEntryV1 {
+                    phase: initial_runtime_checkpoint.phase.clone(),
+                    entered_at: crate::trust::now_rfc3339(),
+                    exited_at: None,
+                },
+            ],
+            completion_decisions: Vec::new(),
+            tool_facts: Vec::new(),
+            tool_fact_envelopes: Vec::new(),
+            pending_tool_call: None,
+            boundary_output: None,
+        }
     };
     let _ = store::write_runtime_checkpoint_record(paths, &initial_runtime_checkpoint_record);
     runtime_events::emit_event(
@@ -394,14 +437,17 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         &run_id,
         0,
         EventKind::PhaseEntered,
-        serde_json::json!({"phase":"executing"}),
+        serde_json::json!({
+            "phase": crate::agent::interrupts::run_phase_name(&initial_runtime_checkpoint.phase)
+        }),
     );
 
     let mut outcome = tokio::select! {
-        out = agent.run(
+        out = agent.run_with_checkpoint(
             prompt,
             session_messages.clone(),
             initial_injected_messages,
+            Some(initial_runtime_checkpoint.clone()),
         ) => out,
         _ = tokio::signal::ctrl_c() => {
             cancelled_outcome(&resolved_settings)

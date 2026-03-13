@@ -2,7 +2,7 @@
 
 ## Progress Status
 
-Status as of commit `29a5797`:
+Status as of current worktree after the behavior-repair and checkpoint-authoritative runtime slices:
 
 - `TaskContractV1` exists and is resolved at launch time
 - contract provenance is persisted in run artifacts
@@ -10,15 +10,17 @@ Status as of commit `29a5797`:
 - approval and operator-interrupt boundaries have explicit runtime-owned transition events
 - validation and final-answer collection now have explicit runtime transition helpers
 - `RunCheckpointV1`, execution tier, interrupt history, phase summary, and completion decisions are persisted
-- approval resume is implemented and covered by targeted tests
+- `cargo test --quiet` is green again after repairing validation / exact-final-answer / post-write regressions
+- validation / exact-final-answer / post-write behavior now runs on top of checkpoint-backed phase and retry state instead of parallel loop-local booleans
+- tool-protocol loop state is now carried in `RunCheckpointV1` instead of parallel loop-local counters/flags
+- resume restores richer checkpoint-backed runtime state and can resume back into validating / verifying-changes / collecting-final-answer paths
 - `cargo clippy -- -D warnings` passes
 
 Still incomplete:
 
-- the main loop is not yet fully executing from `RunCheckpointV1` as the canonical mutable state object
-- broader resume remains narrow and boundary-oriented rather than fully stateful
-- some runtime behavior is still split between old booleans/heuristics and the new phase/checkpoint model
-- `cargo test --quiet` is not green; there are current runtime-behavior regressions in validation / exact-final-answer / post-write paths that need a dedicated repair slice
+- the main loop is not yet fully decomposed into explicit per-phase handlers
+- some completion/transition logic still lives inline in `src/agent.rs` rather than entirely in checkpoint-driven phase helpers and `completion_policy.rs`
+- interrupt/checkpoint coverage is stronger, but the explicit phase loop is still only partially consolidated
 
 ## Goal
 
@@ -1364,7 +1366,7 @@ Behavior:
 
 ### Phase 3: Checkpointed Interrupt Boundaries
 
-Status: partially complete
+Status: substantially complete, with explicit phase-loop consolidation still remaining
 
 Goal:
 
@@ -1387,11 +1389,12 @@ Current state:
 - interrupted/operator boundaries exist
 - approval resume is implemented
 - operator-interrupt live transition events now mirror approval more closely
-- checkpoint state is still not the sole live control surface for the main loop
+- resume is no longer boundary-only; checkpoint-backed validation / verification / final-answer state can be restored into the live loop
+- checkpoint state now owns materially more of the live control surface, even though the main loop is not yet fully phase-dispatched
 
 ### Phase 4: Central Completion Policy
 
-Status: partially complete
+Status: substantially complete, with some inline transition logic still remaining
 
 Goal:
 
@@ -1419,7 +1422,9 @@ Current state:
 - required-validation completion has been centralized
 - validation phase transitions have been centralized
 - approval/operator/final-answer transition helpers exist
-- some loop-local runtime booleans and heuristic branches still remain
+- the validation / exact-final-answer / post-write phase family now uses checkpoint-backed state in the live loop
+- the tool-protocol loop state previously carried as separate booleans/counters now lives in `RunCheckpointV1`
+- some completion and transition logic still remains inline in `src/agent.rs`
 
 ### Phase 5: Explicit Phase Loop
 
@@ -1444,7 +1449,8 @@ Current state:
 - `RunPhase` exists
 - approval, operator-interrupt, validation, and final-answer boundaries emit explicit phase transitions
 - artifacts/checkpoints persist phase-oriented state
-- the main loop is not yet fully rewritten around checkpoint-owned phase execution
+- the live loop now uses checkpoint-backed phase/retry/protocol state for more runtime decisions
+- the main loop is not yet fully rewritten around explicit per-phase handlers
 
 ### Phase 6: Execution Tier Integration
 
@@ -1496,14 +1502,14 @@ The vNext runtime target is achieved when:
 
 ## Immediate Next Work
 
-The next repair slice should focus on runtime behavior parity, not more schema work.
+The next slice should focus on explicit phase-loop consolidation, not more schema expansion.
 
 Recommended order:
 
-1. Fix the current failing runtime tests in validation / exact-final-answer / post-write paths.
-2. Make `RunCheckpointV1` more authoritative inside the live loop instead of parallel booleans.
-3. Expand resume from boundary replay into richer stateful continuation only after the loop is more checkpoint-driven.
-4. Remove transitional heuristic branches once fact-backed + phase-backed paths are proven by tests.
+1. Extract explicit per-phase handlers from `src/agent.rs` so the main loop becomes a coordinator over `RunCheckpointV1`.
+2. Move the remaining inline completion/transition decisions into checkpoint-driven helpers and `src/agent/completion_policy.rs`.
+3. Tighten checkpoint persistence and resume handling at any remaining nonterminal phase boundaries that are still implicit.
+4. Keep behavior parity green while shrinking `src/agent.rs` and making the phase loop more directly match the target pseudocode.
 
 ## Recommended First PR Sequence
 

@@ -23,6 +23,7 @@ pub use types::{
     RunCheckpointV1, RunCliConfig, RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths,
     ToolCatalogEntry, ToolReliabilityRecord, WorkerRunRecord,
 };
+#[allow(unused_imports)]
 pub use crate::agent_runtime::state::{
     ApprovalState, CompletionDecisionRecordV1, ExecutionTier, InterruptHistoryEntryV1,
     InterruptKindV1, PhaseSummaryEntryV1, RetryState, RunCheckpointV1 as RuntimeStateCheckpointV1,
@@ -548,6 +549,7 @@ mod tests {
                 execution_tier: crate::agent_runtime::state::ExecutionTier::ReadOnlyHost,
                 terminal_boundary: true,
                 retry_state: crate::agent_runtime::state::RetryState::default(),
+                tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
                 validation_state: crate::agent_runtime::state::ValidationState::default(),
                 approval_state: crate::agent_runtime::state::ApprovalState::default(),
                 active_plan_step_id: None,

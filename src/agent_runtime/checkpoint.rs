@@ -39,6 +39,7 @@ pub(super) fn checkpoint_for_outcome(
 
 pub(super) fn initial_runtime_state_checkpoint(
     execution_tier: ExecutionTier,
+    prompt: &str,
 ) -> RuntimeStateCheckpointV1 {
     RuntimeStateCheckpointV1 {
         schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
@@ -47,7 +48,15 @@ pub(super) fn initial_runtime_state_checkpoint(
         execution_tier,
         terminal_boundary: false,
         retry_state: RetryState::default(),
-        validation_state: ValidationState::default(),
+        tool_protocol_state: crate::agent_runtime::state::ToolProtocolState {
+            tool_only_phase_active: crate::agent_impl_guard::prompt_requires_tool_only(prompt),
+            ..Default::default()
+        },
+        validation_state: ValidationState {
+            required_command: crate::agent_impl_guard::prompt_required_validation_command(prompt)
+                .map(ToOwned::to_owned),
+            ..Default::default()
+        },
         approval_state: ApprovalState::default(),
         active_plan_step_id: None,
         last_tool_fact_envelopes: Vec::new(),
@@ -58,7 +67,7 @@ pub(super) fn runtime_state_checkpoint_for_outcome(
     outcome: &crate::agent::AgentOutcome,
     prompt: &str,
     execution_tier: ExecutionTier,
-    tool_fact_envelopes: &[crate::agent::ToolFactEnvelopeV1],
+    tool_fact_envelopes: &[crate::agent::tool_facts::ToolFactEnvelopeV1],
 ) -> RuntimeStateCheckpointV1 {
     let required_command = crate::agent_impl_guard::prompt_required_validation_command(prompt)
         .map(ToOwned::to_owned);
@@ -84,6 +93,7 @@ pub(super) fn runtime_state_checkpoint_for_outcome(
         execution_tier,
         terminal_boundary: true,
         retry_state: RetryState::default(),
+        tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
         validation_state: ValidationState {
             required_command: required_command.clone(),
             satisfied: crate::agent::required_validation_command_satisfied_from_facts(
@@ -139,7 +149,7 @@ pub(super) fn completion_decisions_for_outcome(
     outcome: &crate::agent::AgentOutcome,
     runtime_checkpoint: &RuntimeStateCheckpointV1,
 ) -> Vec<CompletionDecisionRecordV1> {
-    let validation_facts = crate::agent::collect_validation_facts_from_checkpoint(
+    let validation_facts = crate::agent::completion_policy::collect_validation_facts_from_checkpoint(
         runtime_checkpoint,
         &runtime_checkpoint.last_tool_fact_envelopes,
     );
@@ -199,15 +209,15 @@ pub(super) fn runtime_checkpoint_record_for_outcome(
     prompt: &str,
     args: &RunArgs,
     execution_tier: ExecutionTier,
-    tool_facts: &[crate::agent::ToolFactV1],
-    tool_fact_envelopes: &[crate::agent::ToolFactEnvelopeV1],
+    tool_facts: &[crate::agent::tool_facts::ToolFactV1],
+    tool_fact_envelopes: &[crate::agent::tool_facts::ToolFactEnvelopeV1],
 ) -> Option<RuntimeRunCheckpointRecordV1> {
     let checkpoint = checkpoint_for_outcome(outcome)?;
     let checkpoint_phase_name = match checkpoint.phase {
         RunCheckpointPhase::WaitingForApproval => "waiting_for_approval",
         RunCheckpointPhase::Interrupted => "interrupted",
     };
-    let interrupt_history = crate::agent::interrupt_history_for_outcome(outcome);
+    let interrupt_history = crate::agent::interrupts::interrupt_history_for_outcome(outcome);
     let phase_summary = phase_summary_for_outcome(outcome);
     let runtime_state_checkpoint =
         runtime_state_checkpoint_for_outcome(outcome, prompt, execution_tier.clone(), tool_fact_envelopes);
@@ -228,7 +238,7 @@ pub(super) fn runtime_checkpoint_record_for_outcome(
         tool_fact_envelopes: if tool_fact_envelopes.is_empty() {
             crate::agent::tool_fact_envelopes_from_facts(
                 tool_facts,
-                crate::agent::ToolFactSourceV1::Transcript,
+                crate::agent::tool_facts::ToolFactSourceV1::Transcript,
                 Some("checkpoint_boundary"),
                 Some(checkpoint_phase_name),
             )

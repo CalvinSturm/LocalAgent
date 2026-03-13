@@ -692,12 +692,9 @@ async fn stream_run_events(
         loop {
             let decision = {
                 let runs = stream_state.state.runs.lock().expect("run registry lock");
-                let Some(record) = runs
+                let record = runs
                     .iter()
-                    .find(|record| record.run_id == stream_state.run_id)
-                else {
-                    return None;
-                };
+                    .find(|record| record.run_id == stream_state.run_id)?;
                 if let Some(event) = record
                     .projected_events
                     .iter()
@@ -793,22 +790,22 @@ async fn submit_run_input_inner(
     let input_tx = {
         let runs = state.runs.lock().expect("run registry lock");
         let Some(record) = runs.iter().find(|record| record.run_id == run_id) else {
-            return Err(run_not_found_error(&state, "run not found"));
+            return Err(run_not_found_error(state, "run not found"));
         };
         if !matches!(record.status.as_str(), "created" | "running") {
-            return Err(run_not_active_error(&state, "run is not active"));
+            return Err(run_not_active_error(state, "run is not active"));
         }
         record
             .input_tx
             .clone()
-            .ok_or_else(|| run_not_active_error(&state, "run input is unavailable"))?
+            .ok_or_else(|| run_not_active_error(state, "run input is unavailable"))?
     };
     input_tx
         .send(QueueSubmitRequest {
             kind,
             content: content.to_string(),
         })
-        .map_err(|_| run_not_active_error(&state, "run input channel is closed"))?;
+        .map_err(|_| run_not_active_error(state, "run input channel is closed"))?;
     Ok((
         StatusCode::ACCEPTED,
         Json(SubmitRunInputAcceptedV1 {
@@ -963,6 +960,7 @@ fn run_not_active_error(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_backend_run(
     state: Arc<BackendState>,
     session_id: String,
@@ -1054,6 +1052,7 @@ async fn execute_backend_run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_backend_run_inner(
     state: Arc<BackendState>,
     run_id: &str,
@@ -1114,6 +1113,7 @@ async fn execute_backend_run_inner(
                 Some(operator_queue_rx),
                 Some(external_cancel_pair),
                 None,
+                None,
                 true,
             )
             .await
@@ -1135,6 +1135,7 @@ async fn execute_backend_run_inner(
                 Some(operator_queue_rx),
                 Some(external_cancel_pair),
                 None,
+                None,
                 true,
             )
             .await
@@ -1152,6 +1153,7 @@ async fn execute_backend_run_inner(
                 Some(ui_tx),
                 Some(operator_queue_rx),
                 Some(external_cancel_pair),
+                None,
                 None,
                 true,
             )
@@ -1535,6 +1537,7 @@ mod tests {
                 Some(ui_tx),
                 Some(input_rx),
                 Some((cancel_tx, cancel_rx)),
+                None,
                 None,
                 true,
             )

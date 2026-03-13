@@ -68,17 +68,34 @@ pub(crate) fn tool_facts_from_calls_and_executions(
         crate::agent_impl_guard::prompt_required_validation_command(user_prompt);
     let mut sequence = 0u32;
     let mut facts = Vec::new();
-    for (call, execution) in observed_tool_calls.iter().zip(tool_executions.iter()) {
-        if !tool_call_alignment_is_consistent(call, execution.name.as_str()) {
-            continue;
+    let mut execution_idx = 0usize;
+    for call in observed_tool_calls {
+        while let Some(execution) = tool_executions.get(execution_idx) {
+            if tool_call_alignment_is_consistent(call, execution.name.as_str()) {
+                facts.extend(facts_for_observed_tool(
+                    &mut sequence,
+                    call,
+                    execution.name.as_str(),
+                    execution.ok,
+                    normalized_path_from_execution_or_call(execution.path.as_deref(), call),
+                    execution.changed,
+                    required_validation_command,
+                ));
+                execution_idx += 1;
+                break;
+            }
+            facts.extend(facts_for_runtime_execution(
+                &mut sequence,
+                execution,
+                required_validation_command,
+            ));
+            execution_idx += 1;
         }
-        facts.extend(facts_for_observed_tool(
+    }
+    for execution in tool_executions.iter().skip(execution_idx) {
+        facts.extend(facts_for_runtime_execution(
             &mut sequence,
-            call,
-            execution.name.as_str(),
-            execution.ok,
-            normalized_path_from_execution_or_call(execution.path.as_deref(), call),
-            execution.changed,
+            execution,
             required_validation_command,
         ));
     }
@@ -217,8 +234,42 @@ fn normalized_path_from_execution_or_call(
     call: &ToolCall,
 ) -> Option<String> {
     execution_path
-        .map(ToOwned::to_owned)
+        .map(crate::agent_impl_guard::normalize_tool_path)
         .or_else(|| normalized_path_from_call(call))
+}
+
+fn facts_for_runtime_execution(
+    sequence: &mut u32,
+    execution: &ToolExecutionRecord,
+    required_validation_command: Option<&'static str>,
+) -> Vec<ToolFactV1> {
+    let synthetic_tool_call_id = format!("runtime_execution_{}", *sequence);
+    let normalized_path = execution
+        .path
+        .as_deref()
+        .map(crate::agent_impl_guard::normalize_tool_path);
+    match execution.name.as_str() {
+        "read_file" | "apply_patch" | "edit" | "write_file" | "str_replace" => {
+            let Some(path) = normalized_path else {
+                return Vec::new();
+            };
+            let tool_name = execution.name.as_str();
+            facts_for_observed_tool(
+                sequence,
+                &ToolCall {
+                    id: synthetic_tool_call_id,
+                    name: tool_name.to_string(),
+                    arguments: serde_json::json!({ "path": path }),
+                },
+                tool_name,
+                execution.ok,
+                Some(path),
+                execution.changed,
+                required_validation_command,
+            )
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn normalized_path_from_call(call: &ToolCall) -> Option<String> {

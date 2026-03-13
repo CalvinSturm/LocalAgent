@@ -508,8 +508,8 @@ impl<P: ModelProvider> Agent<P> {
                             step,
                             crate::events::EventKind::PhaseExited,
                             serde_json::json!({
-                                "phase": crate::agent::run_phase_name(&transition.from_phase),
-                                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                                "phase": crate::agent::interrupts::run_phase_name(&transition.from_phase),
+                                "next_phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                             }),
                         );
                         self.emit_event(
@@ -517,7 +517,7 @@ impl<P: ModelProvider> Agent<P> {
                             step,
                             crate::events::EventKind::PhaseEntered,
                             serde_json::json!({
-                                "phase": crate::agent::run_phase_name(&transition.to_phase)
+                                "phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                             }),
                         );
                         self.emit_event(
@@ -526,7 +526,7 @@ impl<P: ModelProvider> Agent<P> {
                             crate::events::EventKind::CompletionBlocked,
                             serde_json::json!({
                                 "reason": transition.completion_reason,
-                                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                                "next_phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                             }),
                         );
                         messages.push(Message {
@@ -618,8 +618,8 @@ impl<P: ModelProvider> Agent<P> {
                             step,
                             crate::events::EventKind::PhaseExited,
                             serde_json::json!({
-                                "phase": crate::agent::run_phase_name(&transition.from_phase),
-                                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                                "phase": crate::agent::interrupts::run_phase_name(&transition.from_phase),
+                                "next_phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                             }),
                         );
                         self.emit_event(
@@ -627,7 +627,7 @@ impl<P: ModelProvider> Agent<P> {
                             step,
                             crate::events::EventKind::PhaseEntered,
                             serde_json::json!({
-                                "phase": crate::agent::run_phase_name(&transition.to_phase)
+                                "phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                             }),
                         );
                         self.emit_event(
@@ -636,7 +636,7 @@ impl<P: ModelProvider> Agent<P> {
                             crate::events::EventKind::CompletionBlocked,
                             serde_json::json!({
                                 "reason": transition.completion_reason,
-                                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                                "next_phase": crate::agent::interrupts::run_phase_name(&transition.to_phase)
                             }),
                         );
                         messages.push(Message {

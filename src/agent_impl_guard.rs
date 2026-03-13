@@ -85,6 +85,7 @@ pub(crate) fn normalize_tool_path(path: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
     let p = prompt.to_ascii_lowercase();
     p.contains("apply_patch")
@@ -148,6 +149,7 @@ pub(crate) fn prompt_required_validation_command(prompt: &str) -> Option<&'stati
         .find(|needle| p.contains(needle))
 }
 
+#[allow(dead_code)]
 pub(crate) fn required_validation_command_satisfied(
     prompt: &str,
     observed_tool_calls: &[ToolCall],
@@ -158,6 +160,7 @@ pub(crate) fn required_validation_command_satisfied(
     crate::agent::required_validation_command_satisfied_from_facts(prompt, &tool_facts)
 }
 
+#[allow(dead_code)]
 pub(crate) fn required_validation_failure_needs_repair(
     prompt: &str,
     observed_tool_calls: &[ToolCall],

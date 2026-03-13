@@ -39,10 +39,10 @@ pub(super) struct RunArtifactWriteInput {
     pub(super) worker_record: Option<WorkerRunRecord>,
     pub(super) tool_schema_hash_hex_map: std::collections::BTreeMap<String, String>,
     pub(super) hooks_config_hash_hex: Option<String>,
-    pub(super) task_contract: crate::agent::TaskContractV1,
-    pub(super) task_contract_provenance: crate::agent::TaskContractProvenanceV1,
-    pub(super) tool_facts: Vec<crate::agent::ToolFactV1>,
-    pub(super) tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
+    pub(super) task_contract: crate::agent::task_contract::TaskContractV1,
+    pub(super) task_contract_provenance: crate::agent::task_contract::TaskContractProvenanceV1,
+    pub(super) tool_facts: Vec<crate::agent::tool_facts::ToolFactV1>,
+    pub(super) tool_fact_envelopes: Vec<crate::agent::tool_facts::ToolFactEnvelopeV1>,
     pub(super) run_checkpoint: Option<store::RunCheckpointV1>,
     pub(super) final_checkpoint: Option<crate::agent_runtime::state::RunCheckpointV1>,
     pub(super) execution_tier: crate::agent_runtime::state::ExecutionTier,
@@ -110,8 +110,8 @@ pub(super) struct FinalizeRunArtifactsInput<'a> {
     pub(super) tool_schema_hash_hex_map: std::collections::BTreeMap<String, String>,
     pub(super) hooks_config_hash_hex: Option<String>,
     pub(super) instruction_resolution: &'a crate::instructions::InstructionResolution,
-    pub(super) task_contract: &'a crate::agent::TaskContractV1,
-    pub(super) task_contract_provenance: &'a crate::agent::TaskContractProvenanceV1,
+    pub(super) task_contract: &'a crate::agent::task_contract::TaskContractV1,
+    pub(super) task_contract_provenance: &'a crate::agent::task_contract::TaskContractProvenanceV1,
     pub(super) execution_tier: crate::agent_runtime::state::ExecutionTier,
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
@@ -413,7 +413,7 @@ pub(super) fn finalize_run_artifacts(
         crate::agent::tool_facts_from_transcript(input.prompt, &input.outcome.tool_calls, &input.outcome.messages);
     let tool_fact_envelopes = crate::agent::tool_fact_envelopes_from_facts(
         &tool_facts,
-        crate::agent::ToolFactSourceV1::Transcript,
+        crate::agent::tool_facts::ToolFactSourceV1::Transcript,
         Some("finalize"),
         run_checkpoint
             .as_ref()
@@ -425,7 +425,7 @@ pub(super) fn finalize_run_artifacts(
         input.execution_tier.clone(),
         &tool_fact_envelopes,
     );
-    let interrupt_history = crate::agent::interrupt_history_for_outcome(input.outcome);
+    let interrupt_history = crate::agent::interrupts::interrupt_history_for_outcome(input.outcome);
     let phase_summary = super::checkpoint::phase_summary_for_outcome(input.outcome);
     let completion_decisions =
         super::checkpoint::completion_decisions_for_outcome(input.outcome, &final_checkpoint);

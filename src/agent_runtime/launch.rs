@@ -47,8 +47,8 @@ pub(super) struct RuntimeLaunch {
     pub(super) session_messages: Vec<Message>,
     pub(super) task_memory: Option<Message>,
     pub(super) instruction_resolution: crate::instructions::InstructionResolution,
-    pub(super) task_contract: crate::agent::TaskContractV1,
-    pub(super) task_contract_provenance: crate::agent::TaskContractProvenanceV1,
+    pub(super) task_contract: crate::agent::task_contract::TaskContractV1,
+    pub(super) task_contract_provenance: crate::agent::task_contract::TaskContractProvenanceV1,
     pub(super) execution_tier: crate::agent_runtime::state::ExecutionTier,
     pub(super) project_guidance_resolution:
         Option<crate::project_guidance::ResolvedProjectGuidance>,
@@ -198,7 +198,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         hook_manager,
         tool_catalog,
     } = build_hook_and_tool_setup(&args, paths, &resolved_settings, &prep.all_tools)?;
-    let task_contract_resolution = crate::agent::resolve_task_contract(
+    let task_contract_resolution = crate::agent::task_contract::resolve_task_contract(
         &args,
         prompt,
         instruction_resolution.selected_task_profile.as_deref(),
@@ -417,7 +417,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::prepare_runtime_launch;
-    use crate::agent::{
+    use crate::agent::task_contract::{
         AllowedToolsSemantics, ContractValueSource, FinalAnswerMode, ValidationRequirement,
         WriteRequirement,
     };

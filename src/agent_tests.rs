@@ -4750,7 +4750,7 @@ async fn runtime_post_write_verification_allows_finalize_without_model_read_back
     };
     let out = agent
         .run(
-            "Edit main.rs to return 2, then explain what changed.",
+            "Edit main.rs to return 2.",
             vec![],
             vec![Message {
                 role: Role::System,
@@ -5254,7 +5254,7 @@ async fn post_write_known_validation_goes_directly_to_validation_only_phase() {
         )
         .await;
     assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 5);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
     let evs = events.lock().expect("lock");
     assert!(evs.iter().any(|e| {
         matches!(e.kind, crate::events::EventKind::StepBlocked)
@@ -5511,7 +5511,7 @@ async fn fabricated_tool_result_after_read_gets_path_aware_write_recovery() {
         .await;
     assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
     assert_eq!(out.final_output, "done");
-    assert_eq!(calls.load(Ordering::SeqCst), 5);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
     let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
         .await
         .expect("read main");

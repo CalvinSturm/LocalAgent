@@ -197,7 +197,11 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
                 expected_schema: None,
                 received_args: Some(tc.arguments.clone()),
                 minimal_example: None,
-                available_tools: Some(sorted_builtin_tool_names()),
+                available_tools: Some({
+                    let mut names = sorted_builtin_tool_names();
+                    names.sort();
+                    names
+                }),
             }),
             meta: ToolResultMeta {
                 side_effects,
