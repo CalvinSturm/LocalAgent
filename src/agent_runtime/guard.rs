@@ -21,6 +21,12 @@ pub(super) fn should_enable_implementation_guard(
     if args.disable_implementation_guard {
         return false;
     }
+    if args.task_kind.is_some() || selected_task_profile.is_some() {
+        return task_kind_enforces_implementation_guard(
+            args.task_kind.as_deref(),
+            selected_task_profile,
+        );
+    }
     if matches!(args.agent_mode, crate::AgentMode::Build) {
         return true;
     }

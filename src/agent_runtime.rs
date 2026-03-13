@@ -616,6 +616,28 @@ mod tests {
     }
 
     #[test]
+    fn explicit_non_coding_task_kind_disables_build_mode_guard() {
+        let args = crate::RunArgs::parse_from([
+            "localagent",
+            "--agent-mode",
+            "build",
+            "--task-kind",
+            "analysis",
+        ]);
+        assert!(!task_kind_enforces_implementation_guard(
+            args.task_kind.as_deref(),
+            None
+        ));
+        assert!(!should_enable_implementation_guard(&args, None));
+    }
+
+    #[test]
+    fn explicit_non_coding_task_profile_disables_build_mode_guard() {
+        let args = crate::RunArgs::parse_from(["localagent", "--agent-mode", "build"]);
+        assert!(!should_enable_implementation_guard(&args, Some("analysis")));
+    }
+
+    #[test]
     fn explicit_opt_out_disables_implementation_guard() {
         let args = crate::RunArgs::parse_from([
             "localagent",
@@ -662,6 +684,27 @@ mod tests {
             Some("coding"),
         );
         assert!(!disabled_msgs.iter().any(|m| {
+            m.content
+                .as_deref()
+                .is_some_and(|c| c == crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG)
+        }));
+
+        let mut analysis_msgs = vec![Message {
+            role: Role::System,
+            content: Some("base".to_string()),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }];
+        let analysis_args = crate::RunArgs::parse_from([
+            "localagent",
+            "--agent-mode",
+            "build",
+            "--task-kind",
+            "analysis",
+        ]);
+        maybe_append_implementation_guard_message(&mut analysis_msgs, &analysis_args, None);
+        assert!(!analysis_msgs.iter().any(|m| {
             m.content
                 .as_deref()
                 .is_some_and(|c| c == crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG)
