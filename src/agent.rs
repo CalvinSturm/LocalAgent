@@ -270,6 +270,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn handle_required_validation_phase_response(
         &mut self,
         user_prompt: &str,
@@ -395,6 +396,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn handle_post_response_phase_guards(
         &mut self,
         user_prompt: &str,
@@ -499,6 +501,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn handle_planner_control_envelope(
         &mut self,
         assistant: &Message,
@@ -1336,6 +1339,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn run_setup_phase_step(
         &mut self,
         run_id: &str,
@@ -1372,6 +1376,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn run_planning_phase_step(
         &mut self,
         run_id: &str,
@@ -1408,6 +1413,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn run_finalizing_phase_step(
         &mut self,
         run_id: &str,
@@ -1444,6 +1450,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn run_terminal_phase_step(
         &mut self,
         run_id: &str,
@@ -1481,6 +1488,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn run_interrupt_phase_step(
         &mut self,
         run_id: &str,
@@ -1518,6 +1526,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn run_non_active_phase_step(
         &mut self,
         run_id: &str,
@@ -2145,6 +2154,7 @@ impl<P: ModelProvider> Agent<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     fn process_normalized_model_response(
         &mut self,
         user_prompt: &str,

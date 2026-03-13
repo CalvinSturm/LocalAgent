@@ -24,6 +24,7 @@ pub(crate) struct VerifiedWriteFollowOnUpdate {
     pub(crate) developer_message: String,
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) fn apply_runtime_completion_action_to_checkpoint(
     user_prompt: &str,
     action: RuntimeCompletionAction,
