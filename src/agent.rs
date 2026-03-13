@@ -315,19 +315,15 @@ impl<P: ModelProvider> Agent<P> {
                 resp.assistant.content = Some(String::new());
             }
         }
-        match decide_required_validation_phase_response(
+        let decision = decide_required_validation_phase_response(
             user_prompt,
             self.validation_shell_available(),
             runtime_checkpoint,
             &resp.assistant,
             &resp.tool_calls,
             self.required_validation_phase_message(user_prompt),
-        ) {
-            decision => match apply_required_validation_guard_decision(
-                decision,
-                &resp.assistant,
-                messages,
-            ) {
+        );
+        match apply_required_validation_guard_decision(decision, &resp.assistant, messages) {
                 GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
                 GuardEffect::EmitPhaseTransition(transition) => {
                     self.emit_phase_transition(run_id, step, &transition);
@@ -395,7 +391,6 @@ impl<P: ModelProvider> Agent<P> {
                         taint_state,
                     ))
                 }
-            },
         }
     }
 
@@ -423,7 +418,7 @@ impl<P: ModelProvider> Agent<P> {
         taint_state: &TaintState,
         tool_calls: &[ToolCall],
     ) -> Result<PhaseLoopControl, AgentOutcome> {
-        match decide_post_response_phase_guard(
+        let decision = decide_post_response_phase_guard(
             runtime_checkpoint,
             assistant,
             has_actionable_tool_calls,
@@ -431,8 +426,8 @@ impl<P: ModelProvider> Agent<P> {
             tool_calls,
             self.post_validation_final_answer_only_message(user_prompt),
             self.tool_only_reminder_message(),
-        ) {
-            decision => match apply_post_response_guard_decision(decision, assistant, messages) {
+        );
+        match apply_post_response_guard_decision(decision, assistant, messages) {
                 GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
                 GuardEffect::EmitPhaseTransition(transition) => {
                     self.emit_phase_transition(run_id, step, &transition);
@@ -500,7 +495,6 @@ impl<P: ModelProvider> Agent<P> {
                         taint_state,
                     ))
                 }
-            },
         }
     }
 
@@ -530,16 +524,18 @@ impl<P: ModelProvider> Agent<P> {
         step_retry_counts: &mut std::collections::BTreeMap<String, u32>,
     ) -> Result<PlannerEnvelopeControl, AgentOutcome> {
         let worker_step_status = self.parse_worker_step_status_if_enforced(assistant);
-        match evaluate_planner_response(
-            self.plan_enforcement_active(),
+        match evaluate_planner_response(crate::agent::planner_phase::PlannerResponseContext {
+            plan_enforcement_active: self.plan_enforcement_active(),
             has_actionable_tool_calls,
             model_signaled_finalize,
-            worker_step_status.as_ref(),
-            runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count,
-            *active_plan_step_idx,
-            &self.plan_step_constraints,
+            worker_step_status: worker_step_status.as_ref(),
+            blocked_control_envelope_count: runtime_checkpoint
+                .tool_protocol_state
+                .blocked_control_envelope_count,
+            active_plan_step_idx: *active_plan_step_idx,
+            plan_step_constraints: &self.plan_step_constraints,
             step_retry_counts,
-        ) {
+        }) {
             PlannerResponseDecision::Proceed => {}
             PlannerResponseDecision::RemindControlEnvelope { blocked_count } => {
                 runtime_checkpoint.tool_protocol_state.blocked_control_envelope_count =

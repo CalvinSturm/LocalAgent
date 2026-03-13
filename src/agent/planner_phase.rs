@@ -48,22 +48,26 @@ pub(super) enum PlannerResponseDecision {
     },
 }
 
+pub(super) struct PlannerResponseContext<'a> {
+    pub(super) plan_enforcement_active: bool,
+    pub(super) has_actionable_tool_calls: bool,
+    pub(super) model_signaled_finalize: bool,
+    pub(super) worker_step_status: Option<&'a WorkerStepStatus>,
+    pub(super) blocked_control_envelope_count: u32,
+    pub(super) active_plan_step_idx: usize,
+    pub(super) plan_step_constraints: &'a [PlanStepConstraint],
+    pub(super) step_retry_counts: &'a BTreeMap<String, u32>,
+}
+
 pub(super) fn evaluate_planner_response(
-    plan_enforcement_active: bool,
-    has_actionable_tool_calls: bool,
-    model_signaled_finalize: bool,
-    worker_step_status: Option<&WorkerStepStatus>,
-    blocked_control_envelope_count: u32,
-    active_plan_step_idx: usize,
-    plan_step_constraints: &[PlanStepConstraint],
-    step_retry_counts: &BTreeMap<String, u32>,
+    context: PlannerResponseContext<'_>,
 ) -> PlannerResponseDecision {
-    if plan_enforcement_active
-        && !has_actionable_tool_calls
-        && worker_step_status.is_none()
-        && model_signaled_finalize
+    if context.plan_enforcement_active
+        && !context.has_actionable_tool_calls
+        && context.worker_step_status.is_none()
+        && context.model_signaled_finalize
     {
-        let blocked_count = blocked_control_envelope_count.saturating_add(1);
+        let blocked_count = context.blocked_control_envelope_count.saturating_add(1);
         return if blocked_count >= 2 {
             PlannerResponseDecision::MissingControlEnvelopeFatal { blocked_count }
         } else {
@@ -71,7 +75,7 @@ pub(super) fn evaluate_planner_response(
         };
     }
 
-    let Some(step_status) = worker_step_status else {
+    let Some(step_status) = context.worker_step_status else {
         return PlannerResponseDecision::Proceed;
     };
 
@@ -81,8 +85,9 @@ pub(super) fn evaluate_planner_response(
         .map(str::trim)
         .filter(|content| !content.is_empty())
         .map(ToOwned::to_owned);
-    let current_step_id = plan_step_constraints
-        .get(active_plan_step_idx)
+    let current_step_id = context
+        .plan_step_constraints
+        .get(context.active_plan_step_idx)
         .map(|constraint| constraint.step_id.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -95,9 +100,10 @@ pub(super) fn evaluate_planner_response(
                 };
             }
             let next_active_plan_step_idx = match step_status.next_step_id.as_deref() {
-                Some("final") => plan_step_constraints.len(),
+                Some("final") => context.plan_step_constraints.len(),
                 Some(next_step_id) => {
-                    let Some(next_idx) = plan_step_constraints
+                    let Some(next_idx) = context
+                        .plan_step_constraints
                         .iter()
                         .position(|constraint| constraint.step_id == next_step_id)
                     else {
@@ -108,10 +114,10 @@ pub(super) fn evaluate_planner_response(
                     };
                     next_idx
                 }
-                None if active_plan_step_idx < plan_step_constraints.len() => {
-                    active_plan_step_idx.saturating_add(1)
+                None if context.active_plan_step_idx < context.plan_step_constraints.len() => {
+                    context.active_plan_step_idx.saturating_add(1)
                 }
-                None => active_plan_step_idx,
+                None => context.active_plan_step_idx,
             };
 
             PlannerResponseDecision::StepDone {
@@ -128,7 +134,8 @@ pub(super) fn evaluate_planner_response(
                     expected_step_id: current_step_id,
                 };
             }
-            let retry_count = step_retry_counts
+            let retry_count = context
+                .step_retry_counts
                 .get(&step_status.step_id)
                 .copied()
                 .unwrap_or(0)
@@ -159,7 +166,7 @@ pub(super) fn evaluate_planner_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{evaluate_planner_response, PlannerResponseDecision};
+    use super::{evaluate_planner_response, PlannerResponseContext, PlannerResponseDecision};
     use crate::agent::{PlanStepConstraint, WorkerStepStatus};
     use std::collections::BTreeMap;
 
@@ -179,14 +186,16 @@ mod tests {
     #[test]
     fn planner_response_requires_control_envelope_before_failing() {
         let decision = evaluate_planner_response(
-            true,
-            false,
-            true,
-            None,
-            0,
-            0,
-            &constraints(),
-            &BTreeMap::new(),
+            PlannerResponseContext {
+                plan_enforcement_active: true,
+                has_actionable_tool_calls: false,
+                model_signaled_finalize: true,
+                worker_step_status: None,
+                blocked_control_envelope_count: 0,
+                active_plan_step_idx: 0,
+                plan_step_constraints: &constraints(),
+                step_retry_counts: &BTreeMap::new(),
+            },
         );
         assert!(matches!(
             decision,
@@ -197,19 +206,21 @@ mod tests {
     #[test]
     fn planner_response_advances_to_explicit_next_step() {
         let decision = evaluate_planner_response(
-            true,
-            false,
-            true,
-            Some(&WorkerStepStatus {
-                step_id: "S1".to_string(),
-                status: "done".to_string(),
-                next_step_id: Some("S2".to_string()),
-                user_output: Some("  ready  ".to_string()),
-            }),
-            1,
-            0,
-            &constraints(),
-            &BTreeMap::new(),
+            PlannerResponseContext {
+                plan_enforcement_active: true,
+                has_actionable_tool_calls: false,
+                model_signaled_finalize: true,
+                worker_step_status: Some(&WorkerStepStatus {
+                    step_id: "S1".to_string(),
+                    status: "done".to_string(),
+                    next_step_id: Some("S2".to_string()),
+                    user_output: Some("  ready  ".to_string()),
+                }),
+                blocked_control_envelope_count: 1,
+                active_plan_step_idx: 0,
+                plan_step_constraints: &constraints(),
+                step_retry_counts: &BTreeMap::new(),
+            },
         );
         assert!(matches!(
             decision,
@@ -225,19 +236,21 @@ mod tests {
         let mut retry_counts = BTreeMap::new();
         retry_counts.insert("S1".to_string(), 2);
         let decision = evaluate_planner_response(
-            true,
-            false,
-            true,
-            Some(&WorkerStepStatus {
-                step_id: "S1".to_string(),
-                status: "retry".to_string(),
-                next_step_id: None,
-                user_output: None,
-            }),
-            0,
-            0,
-            &constraints(),
-            &retry_counts,
+            PlannerResponseContext {
+                plan_enforcement_active: true,
+                has_actionable_tool_calls: false,
+                model_signaled_finalize: true,
+                worker_step_status: Some(&WorkerStepStatus {
+                    step_id: "S1".to_string(),
+                    status: "retry".to_string(),
+                    next_step_id: None,
+                    user_output: None,
+                }),
+                blocked_control_envelope_count: 0,
+                active_plan_step_idx: 0,
+                plan_step_constraints: &constraints(),
+                step_retry_counts: &retry_counts,
+            },
         );
         assert!(matches!(
             decision,
