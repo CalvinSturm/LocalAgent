@@ -105,6 +105,7 @@ impl<P: ModelProvider> Agent<P> {
             tool_calls: None,
         });
         if delivery.cancelled_remaining_work {
+            let transition = crate::agent::operator_boundary_transition_decision();
             self.emit_event(
                 run_id,
                 step,
@@ -116,6 +117,41 @@ impl<P: ModelProvider> Agent<P> {
                     "delivery_boundary": delivery.delivery_boundary,
                     "cancelled_remaining_work": true,
                     "cancelled_reason": delivery.cancelled_reason.unwrap_or("operator_steer"),
+                }),
+            );
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::InterruptRaised,
+                serde_json::json!({
+                    "kind": crate::agent::interrupt_kind_name(&transition.interrupt_kind),
+                    "reason": delivery.cancelled_reason.unwrap_or("operator_steer"),
+                }),
+            );
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::PhaseExited,
+                serde_json::json!({
+                    "phase": crate::agent::run_phase_name(&transition.from_phase),
+                    "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                }),
+            );
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::PhaseEntered,
+                serde_json::json!({
+                    "phase": crate::agent::run_phase_name(&transition.to_phase)
+                }),
+            );
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::CompletionBlocked,
+                serde_json::json!({
+                    "reason": transition.completion_reason,
+                    "next_phase": crate::agent::run_phase_name(&transition.to_phase)
                 }),
             );
             return (true, true);

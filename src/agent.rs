@@ -23,6 +23,7 @@ mod agent_types;
 mod budget_guard;
 mod completion_policy;
 mod gate_paths;
+mod interrupts;
 mod mcp_drift;
 mod model_io;
 mod operator_queue;
@@ -57,6 +58,15 @@ pub(crate) use tool_facts::{
     required_validation_failure_needs_repair_from_facts, tool_fact_envelopes_from_facts,
     tool_facts_from_calls_and_executions, tool_facts_from_transcript,
 };
+pub(crate) use completion_policy::collect_validation_facts_from_checkpoint;
+pub(crate) use completion_policy::{
+    approval_boundary_transition_decision, decide_runtime_checkpoint_resume,
+    exact_final_answer_boundary_transition_decision, operator_boundary_transition_decision,
+    post_validation_final_answer_transition_decision,
+    required_validation_boundary_transition_decision,
+    validation_resume_execution_transition_decision, RuntimeCheckpointResumeKind,
+};
+pub(crate) use interrupts::{interrupt_history_for_outcome, interrupt_kind_name, run_phase_name};
 
 pub(crate) use agent_types::WorkerStepStatus;
 use gate_paths::{AllowToolCallDecision, GateNonAllowDecision, PlanConstraintDecision};
@@ -72,6 +82,11 @@ use tool_helpers::injected_messages_enforce_implementation_integrity_guard;
 use tool_helpers::{FailedRepeatGuardDecision, MalformedToolCallDecision};
 pub fn sanitize_user_visible_output(raw: &str) -> String {
     sanitize_user_visible_output_impl(raw)
+}
+pub(crate) fn transition_runtime_checkpoint_to_executing(
+    checkpoint: &crate::store::RuntimeRunCheckpointRecordV1,
+) -> crate::store::RuntimeRunCheckpointRecordV1 {
+    interrupts::transition_runtime_checkpoint_to_executing(checkpoint)
 }
 #[cfg(test)]
 fn contains_tool_wrapper_markers(text: &str) -> bool {
@@ -677,6 +692,24 @@ impl<P: ModelProvider> Agent<P> {
                 }
                 required_validation_phase_active = false;
                 blocked_required_validation_phase_count = 0;
+                let transition = crate::agent::validation_resume_execution_transition_decision();
+                self.emit_event(
+                    &run_id,
+                    step as u32,
+                    EventKind::PhaseExited,
+                    serde_json::json!({
+                        "phase": crate::agent::run_phase_name(&transition.from_phase),
+                        "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                    }),
+                );
+                self.emit_event(
+                    &run_id,
+                    step as u32,
+                    EventKind::PhaseEntered,
+                    serde_json::json!({
+                        "phase": crate::agent::run_phase_name(&transition.to_phase)
+                    }),
+                );
             }
             let has_actionable_tool_calls = !resp.tool_calls.is_empty();
             let model_signaled_finalize = !has_actionable_tool_calls;
@@ -1464,11 +1497,67 @@ impl<P: ModelProvider> Agent<P> {
                     validation_failure_repair_phase_active = true;
                     required_validation_phase_active = false;
                     post_validation_final_answer_only_phase_active = false;
+                    let transition =
+                        crate::agent::validation_resume_execution_transition_decision();
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::PhaseExited,
+                        serde_json::json!({
+                            "phase": crate::agent::run_phase_name(&transition.from_phase),
+                            "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::PhaseEntered,
+                        serde_json::json!({
+                            "phase": crate::agent::run_phase_name(&transition.to_phase)
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::CompletionBlocked,
+                        serde_json::json!({
+                            "reason": "validation failed and runtime requires a code-fix repair step",
+                            "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                        }),
+                    );
                 }
                 crate::agent::completion_policy::ValidationPhaseTransitionDecision::EnterPostValidationFinalAnswerOnly => {
                     post_validation_final_answer_only_phase_active = true;
                     blocked_post_validation_final_answer_count = 0;
                     required_validation_phase_active = false;
+                    let transition =
+                        crate::agent::post_validation_final_answer_transition_decision();
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::PhaseExited,
+                        serde_json::json!({
+                            "phase": crate::agent::run_phase_name(&transition.from_phase),
+                            "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::PhaseEntered,
+                        serde_json::json!({
+                            "phase": crate::agent::run_phase_name(&transition.to_phase)
+                        }),
+                    );
+                    self.emit_event(
+                        &run_id,
+                        step as u32,
+                        EventKind::CompletionBlocked,
+                        serde_json::json!({
+                            "reason": transition.completion_reason,
+                            "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                        }),
+                    );
                 }
                 crate::agent::completion_policy::ValidationPhaseTransitionDecision::ClearRepair => {
                     validation_failure_repair_phase_active = false;

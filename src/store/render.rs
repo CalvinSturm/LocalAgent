@@ -80,6 +80,15 @@ fn push_task_contract_section(out: &mut String, record: &RunRecord) {
             out.push_str(&format!("  interrupt: {:?}\n", interrupt.kind));
         }
     }
+    if let Some(checkpoint) = &record.final_checkpoint {
+        out.push_str("final_checkpoint:\n");
+        out.push_str(&format!("  phase: {:?}\n", checkpoint.phase));
+        out.push_str(&format!("  execution_tier: {:?}\n", checkpoint.execution_tier));
+        out.push_str(&format!("  step_index: {}\n", checkpoint.step_index));
+    }
+    if let Some(execution_tier) = &record.execution_tier {
+        out.push_str(&format!("execution_tier: {:?}\n", execution_tier));
+    }
 }
 
 fn push_tool_facts_section(out: &mut String, record: &RunRecord) {
@@ -108,6 +117,58 @@ fn push_tool_fact_envelopes_section(out: &mut String, record: &RunRecord) {
                 .as_deref()
                 .unwrap_or("-"),
             envelope.fact
+        ));
+    }
+}
+
+fn push_interrupt_history_section(out: &mut String, record: &RunRecord) {
+    if record.interrupt_history.is_empty() {
+        return;
+    }
+    out.push_str("interrupt_history:\n");
+    for interrupt in &record.interrupt_history {
+        out.push_str(&format!(
+            "  - kind={:?} created_at={} approval_id={} tool_call_id={}\n",
+            interrupt.kind,
+            interrupt.created_at,
+            interrupt.approval_id.as_deref().unwrap_or("-"),
+            interrupt.tool_call_id.as_deref().unwrap_or("-"),
+        ));
+    }
+}
+
+fn push_phase_summary_section(out: &mut String, record: &RunRecord) {
+    if record.phase_summary.is_empty() {
+        return;
+    }
+    out.push_str("phase_summary:\n");
+    for phase in &record.phase_summary {
+        out.push_str(&format!(
+            "  - phase={:?} entered_at={} exited_at={}\n",
+            phase.phase,
+            phase.entered_at,
+            phase.exited_at.as_deref().unwrap_or("-"),
+        ));
+    }
+}
+
+fn push_completion_decisions_section(out: &mut String, record: &RunRecord) {
+    if record.completion_decisions.is_empty() {
+        return;
+    }
+    out.push_str("completion_decisions:\n");
+    for decision in &record.completion_decisions {
+        out.push_str(&format!(
+            "  - kind={} allowed={} retryable={} next_phase={} reason={}\n",
+            decision.kind,
+            decision.allowed,
+            decision.retryable,
+            decision
+                .next_phase
+                .as_ref()
+                .map(|phase| format!("{phase:?}"))
+                .unwrap_or_else(|| "-".to_string()),
+            decision.reason,
         ));
     }
 }
@@ -160,6 +221,9 @@ pub fn render_replay(record: &RunRecord) -> String {
     push_task_contract_section(&mut out, record);
     push_tool_facts_section(&mut out, record);
     push_tool_fact_envelopes_section(&mut out, record);
+    push_interrupt_history_section(&mut out, record);
+    push_phase_summary_section(&mut out, record);
+    push_completion_decisions_section(&mut out, record);
     for m in &record.transcript {
         let content = m.content.clone().unwrap_or_default();
         match m.role {
@@ -445,6 +509,11 @@ mod tests {
                 final_answer_mode: ContractValueSource::Defaulted,
             }),
             run_checkpoint: None,
+            final_checkpoint: None,
+            execution_tier: None,
+            interrupt_history: Vec::new(),
+            phase_summary: Vec::new(),
+            completion_decisions: Vec::new(),
             tool_schema_hash_hex_map: Default::default(),
             hooks_config_hash_hex: None,
             transcript: Vec::new(),

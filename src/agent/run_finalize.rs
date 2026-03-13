@@ -250,6 +250,48 @@ impl<P: ModelProvider> Agent<P> {
         total_token_usage: &TokenUsage,
         taint_state: &TaintState,
     ) -> AgentOutcome {
+        let transition = crate::agent::approval_boundary_transition_decision();
+        let approval = tool_decisions
+            .iter()
+            .rev()
+            .find(|decision| decision.decision == "require_approval");
+        self.emit_event(
+            &run_id,
+            step,
+            EventKind::InterruptRaised,
+            serde_json::json!({
+                "kind": crate::agent::interrupt_kind_name(&transition.interrupt_kind),
+                "approval_id": approval.and_then(|decision| decision.approval_id.clone()),
+                "tool_call_id": approval.map(|decision| decision.tool_call_id.clone()),
+                "reason": approval.and_then(|decision| decision.reason.clone())
+            }),
+        );
+        self.emit_event(
+            &run_id,
+            step,
+            EventKind::PhaseExited,
+            serde_json::json!({
+                "phase": crate::agent::run_phase_name(&transition.from_phase),
+                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+            }),
+        );
+        self.emit_event(
+            &run_id,
+            step,
+            EventKind::PhaseEntered,
+            serde_json::json!({
+                "phase": crate::agent::run_phase_name(&transition.to_phase)
+            }),
+        );
+        self.emit_event(
+            &run_id,
+            step,
+            EventKind::CompletionBlocked,
+            serde_json::json!({
+                "reason": transition.completion_reason,
+                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+            }),
+        );
         self.finalize_run_outcome_with_end(
             step,
             AgentOutcomeBuilderInput {

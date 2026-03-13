@@ -18,7 +18,7 @@ use crate::session::{self, SessionStore};
 use crate::store;
 use crate::target::{ExecTarget, ExecTargetKind};
 use crate::trust::policy::Policy;
-use crate::types::Message;
+use crate::types::{Message, SideEffects};
 use crate::RunArgs;
 
 use super::guard::{should_enable_implementation_guard, validate_runtime_owned_http_timeouts};
@@ -49,6 +49,7 @@ pub(super) struct RuntimeLaunch {
     pub(super) instruction_resolution: crate::instructions::InstructionResolution,
     pub(super) task_contract: crate::agent::TaskContractV1,
     pub(super) task_contract_provenance: crate::agent::TaskContractProvenanceV1,
+    pub(super) execution_tier: crate::agent_runtime::state::ExecutionTier,
     pub(super) project_guidance_resolution:
         Option<crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<crate::repo_map::ResolvedRepoMap>,
@@ -204,6 +205,12 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         implementation_guard_enabled,
         &prep.all_tools,
     );
+    let execution_tier = resolve_execution_tier(
+        resolved_target_kind,
+        args.allow_shell,
+        args.allow_write || args.enable_write_tools,
+        &prep.all_tools,
+    );
     gate_ctx.tool_schema_hashes = tool_schema_hash_hex_map.clone();
     gate_ctx.hooks_config_hash_hex = hooks_config_hash_hex.clone();
 
@@ -247,6 +254,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         instruction_resolution,
         task_contract: task_contract_resolution.contract,
         task_contract_provenance: task_contract_resolution.provenance,
+        execution_tier,
         project_guidance_resolution,
         repo_map_resolution,
         lsp_context_resolution,
@@ -272,6 +280,44 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
         cancel_rx,
         ui_join,
     })
+}
+
+fn resolve_execution_tier(
+    resolved_target_kind: ExecTargetKind,
+    allow_shell: bool,
+    allow_write: bool,
+    all_tools: &[crate::types::ToolDef],
+) -> crate::agent_runtime::state::ExecutionTier {
+    if matches!(resolved_target_kind, ExecTargetKind::Docker) {
+        return crate::agent_runtime::state::ExecutionTier::DockerIsolated;
+    }
+    if allow_shell {
+        return crate::agent_runtime::state::ExecutionTier::ScopedHostShell;
+    }
+    if allow_write {
+        return crate::agent_runtime::state::ExecutionTier::ScopedHostWrite;
+    }
+    let has_only_mcp_tools = !all_tools.is_empty()
+        && all_tools.iter().all(|tool| {
+            !matches!(
+                tool.side_effects,
+                SideEffects::FilesystemRead
+                    | SideEffects::FilesystemWrite
+                    | SideEffects::ShellExec
+                    | SideEffects::Browser
+            )
+        })
+        && all_tools.iter().any(|tool| matches!(tool.side_effects, SideEffects::Network));
+    if has_only_mcp_tools {
+        return crate::agent_runtime::state::ExecutionTier::McpOnly;
+    }
+    let has_no_side_effects = all_tools
+        .iter()
+        .all(|tool| matches!(tool.side_effects, SideEffects::None));
+    if has_no_side_effects {
+        return crate::agent_runtime::state::ExecutionTier::NoSideEffects;
+    }
+    crate::agent_runtime::state::ExecutionTier::ReadOnlyHost
 }
 
 pub(super) fn build_mcp_pin_snapshot(
@@ -300,6 +346,27 @@ pub(super) fn build_mcp_pin_snapshot(
 }
 
 pub(super) fn emit_startup_runtime_events(launch: &mut RuntimeLaunch, run_id: &str) {
+    runtime_events::emit_event(
+        &mut launch.event_sink,
+        run_id,
+        0,
+        EventKind::ExecutionTierSelected,
+        serde_json::json!({
+            "execution_tier": launch.execution_tier
+        }),
+    );
+    runtime_events::emit_event(
+        &mut launch.event_sink,
+        run_id,
+        0,
+        EventKind::TaskContractResolved,
+        serde_json::json!({
+            "task_kind": launch.task_contract.task_kind,
+            "validation_requirement": launch.task_contract.validation_requirement,
+            "allowed_tools_semantics": launch.task_contract.allowed_tools_semantics,
+            "task_kind_source": launch.task_contract_provenance.task_kind
+        }),
+    );
     runtime_events::emit_event(
         &mut launch.event_sink,
         run_id,
@@ -456,6 +523,20 @@ mod tests {
         assert_eq!(
             launch.task_contract_provenance.final_answer_mode,
             ContractValueSource::Inferred
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_resolves_execution_tier_for_host_read_only_mode() {
+        let launch = launch_for_args(
+            &["localagent", "--agent-mode", "build"],
+            "Explain the repository.",
+        )
+        .await
+        .expect("launch");
+        assert_eq!(
+            launch.execution_tier,
+            crate::agent_runtime::state::ExecutionTier::ReadOnlyHost
         );
     }
 }

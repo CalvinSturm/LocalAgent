@@ -108,6 +108,7 @@ pub(super) struct PlannerBootstrapInput<'a, P: ModelProvider> {
     pub(super) instruction_resolution: &'a crate::instructions::InstructionResolution,
     pub(super) task_contract: &'a crate::agent::TaskContractV1,
     pub(super) task_contract_provenance: &'a crate::agent::TaskContractProvenanceV1,
+    pub(super) execution_tier: crate::agent_runtime::state::ExecutionTier,
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<&'a crate::repo_map::ResolvedRepoMap>,
@@ -195,7 +196,7 @@ pub(super) async fn run_replanner_phase_with_start_event<P: ModelProvider>(
 pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
     input: PlannerBootstrapInput<'_, P>,
 ) -> anyhow::Result<Option<RunExecutionResult>> {
-    let planner_out = run_planner_phase_with_start_event(
+    let planner_out: anyhow::Result<_> = run_planner_phase_with_start_event(
         input.provider,
         PlannerPhaseLaunch {
             run_id: input.run_id,
@@ -302,6 +303,24 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                     tool_facts: Vec::new(),
                     tool_fact_envelopes: Vec::new(),
                     run_checkpoint: super::checkpoint::checkpoint_for_outcome(&outcome),
+                    final_checkpoint: Some(super::checkpoint::runtime_state_checkpoint_for_outcome(
+                        &outcome,
+                        input.prompt,
+                        input.execution_tier.clone(),
+                        &[],
+                    )),
+                    execution_tier: input.execution_tier.clone(),
+                    interrupt_history: crate::agent::interrupt_history_for_outcome(&outcome),
+                    phase_summary: super::checkpoint::phase_summary_for_outcome(&outcome),
+                    completion_decisions: super::checkpoint::completion_decisions_for_outcome(
+                        &outcome,
+                        &super::checkpoint::runtime_state_checkpoint_for_outcome(
+                            &outcome,
+                            input.prompt,
+                            input.execution_tier.clone(),
+                            &[],
+                        ),
+                    ),
                     config_fingerprint: Some(config_fingerprint.clone()),
                     repro_record: None,
                     mcp_runtime_trace: Vec::new(),
@@ -458,6 +477,24 @@ pub(super) async fn bootstrap_planner_phase<P: ModelProvider>(
                 tool_facts: Vec::new(),
                 tool_fact_envelopes: Vec::new(),
                 run_checkpoint: super::checkpoint::checkpoint_for_outcome(&outcome),
+                final_checkpoint: Some(super::checkpoint::runtime_state_checkpoint_for_outcome(
+                    &outcome,
+                    input.prompt,
+                    input.execution_tier.clone(),
+                    &[],
+                )),
+                execution_tier: input.execution_tier.clone(),
+                interrupt_history: crate::agent::interrupt_history_for_outcome(&outcome),
+                phase_summary: super::checkpoint::phase_summary_for_outcome(&outcome),
+                completion_decisions: super::checkpoint::completion_decisions_for_outcome(
+                    &outcome,
+                    &super::checkpoint::runtime_state_checkpoint_for_outcome(
+                        &outcome,
+                        input.prompt,
+                        input.execution_tier.clone(),
+                        &[],
+                    ),
+                ),
                 config_fingerprint: Some(config_fingerprint.clone()),
                 repro_record: None,
                 mcp_runtime_trace: Vec::new(),

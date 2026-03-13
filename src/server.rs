@@ -1008,7 +1008,13 @@ async fn execute_backend_run(
             let runtime_checkpoint_phase = exec.runtime_checkpoint_path.as_ref().and_then(|_| {
                 crate::store::load_runtime_checkpoint_record(&state.paths, &exec.outcome.run_id)
                     .ok()
-                    .map(|record| format!("{:?}", record.checkpoint.phase))
+                    .map(|record| {
+                        record
+                            .checkpoint
+                            .as_ref()
+                            .map(|checkpoint| format!("{:?}", checkpoint.phase))
+                            .unwrap_or_else(|| "-".to_string())
+                    })
             });
             update_run_record(&state, &run_id, |record| {
                 record.status = terminal_status.clone();
@@ -1555,7 +1561,13 @@ mod tests {
                                 &exec.outcome.run_id,
                             )
                             .ok()
-                            .map(|record| format!("{:?}", record.checkpoint.phase))
+                            .map(|record| {
+                                record
+                                    .checkpoint
+                                    .as_ref()
+                                    .map(|checkpoint| format!("{:?}", checkpoint.phase))
+                                    .unwrap_or_else(|| "-".to_string())
+                            })
                         });
                     update_run_record(&state_for_task, &run_id_for_task, |record| {
                         record.status = terminal_status.clone();

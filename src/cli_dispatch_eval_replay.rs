@@ -161,24 +161,7 @@ fn load_resume_run_args(checkpoint: &store::RuntimeRunCheckpointRecordV1) -> any
 fn ensure_resumable_checkpoint(
     checkpoint: &store::RuntimeRunCheckpointRecordV1,
 ) -> anyhow::Result<()> {
-    match checkpoint.checkpoint.phase {
-        store::RunCheckpointPhase::WaitingForApproval => {}
-        store::RunCheckpointPhase::Interrupted => return Ok(()),
-    }
-    if checkpoint
-        .checkpoint
-        .pending_interrupt
-        .as_ref()
-        .map(|it| it.kind != store::RunCheckpointInterruptKind::ApprovalRequired)
-        .unwrap_or(true)
-    {
-        return Err(anyhow!(
-            "runtime checkpoint '{}' is not resumable: phase is {:?}",
-            checkpoint.runtime_run_id,
-            checkpoint.checkpoint.phase
-        ));
-    }
-    Ok(())
+    crate::agent::decide_runtime_checkpoint_resume(checkpoint).map(|_| ())
 }
 
 async fn resume_from_runtime_checkpoint_with_provider<P: ModelProvider>(
@@ -193,6 +176,9 @@ async fn resume_from_runtime_checkpoint_with_provider<P: ModelProvider>(
     ensure_resumable_checkpoint(checkpoint)?;
     approve_checkpoint_boundary_if_present(checkpoint, paths)?;
     seed_resume_session(checkpoint, paths, &run_args)?;
+    let resumed_checkpoint = crate::agent::transition_runtime_checkpoint_to_executing(checkpoint);
+    store::write_runtime_checkpoint_record(paths, &resumed_checkpoint)
+        .with_context(|| "failed to update runtime checkpoint for resume")?;
     let resume_prompt = checkpoint_resume_prompt(checkpoint);
     crate::agent_runtime::run_agent(
         provider,
@@ -210,14 +196,11 @@ fn approve_checkpoint_boundary_if_present(
     checkpoint: &store::RuntimeRunCheckpointRecordV1,
     paths: &store::StatePaths,
 ) -> anyhow::Result<()> {
-    if checkpoint.checkpoint.phase != store::RunCheckpointPhase::WaitingForApproval {
+    let decision = crate::agent::decide_runtime_checkpoint_resume(checkpoint)?;
+    if !matches!(decision.kind, crate::agent::RuntimeCheckpointResumeKind::ApprovalGranted) {
         return Ok(());
     }
-    let Some(approval_id) = checkpoint
-        .pending_tool_call
-        .as_ref()
-        .and_then(|tool| tool.approval_id.as_deref())
-    else {
+    let Some(approval_id) = decision.approval_id.as_deref() else {
         return Ok(());
     };
     let approvals = crate::trust::approvals::ApprovalsStore::new(paths.approvals_path.clone());
@@ -272,17 +255,22 @@ fn resume_boundary_message(checkpoint: &store::RuntimeRunCheckpointRecordV1) -> 
         .boundary_output
         .as_deref()
         .unwrap_or("interrupted");
-    let phase = match checkpoint.checkpoint.phase {
-        store::RunCheckpointPhase::WaitingForApproval => "waiting_for_approval",
-        store::RunCheckpointPhase::Interrupted => "interrupted",
+    let phase = match checkpoint.runtime_state_checkpoint.phase {
+        store::RunPhase::WaitingForApproval => "waiting_for_approval",
+        store::RunPhase::WaitingForOperatorInput => "waiting_for_operator_input",
+        store::RunPhase::Executing => "executing",
+        store::RunPhase::Validating => "validating",
+        store::RunPhase::CollectingFinalAnswer => "collecting_final_answer",
+        _ => "interrupted",
     };
-    let phase_note = match checkpoint.checkpoint.phase {
-        store::RunCheckpointPhase::WaitingForApproval => {
+    let phase_note = match checkpoint.runtime_state_checkpoint.phase {
+        store::RunPhase::WaitingForApproval => {
             "Approval has been granted for the stored pending tool call."
         }
-        store::RunCheckpointPhase::Interrupted => {
+        store::RunPhase::WaitingForOperatorInput => {
             "Resume from the stored interrupted boundary and continue the prior run."
         }
+        _ => "Resume from the stored runtime boundary and continue the prior run.",
     };
     crate::types::Message {
         role: crate::types::Role::Developer,
@@ -301,7 +289,10 @@ Continue from this boundary without re-planning from scratch."
 }
 
 fn checkpoint_resume_prompt(checkpoint: &store::RuntimeRunCheckpointRecordV1) -> String {
-    if checkpoint.checkpoint.phase == store::RunCheckpointPhase::WaitingForApproval {
+    if matches!(
+        crate::agent::decide_runtime_checkpoint_resume(checkpoint).map(|decision| decision.kind),
+        Ok(crate::agent::RuntimeCheckpointResumeKind::ApprovalGranted)
+    ) {
         if let Some(tool) = &checkpoint.pending_tool_call {
             return format!(
                 "Resume the interrupted run. Approval has been granted for the pending tool call. \
@@ -408,7 +399,7 @@ mod tests {
                 "--approval-mode".to_string(),
                 "interrupt".to_string(),
             ],
-            checkpoint: RunCheckpointV1 {
+            checkpoint: Some(RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: RunCheckpointPhase::WaitingForApproval,
                 terminal_boundary: true,
@@ -416,7 +407,24 @@ mod tests {
                     kind: RunCheckpointInterruptKind::ApprovalRequired,
                     reason: Some("approval required".to_string()),
                 }),
+            }),
+            runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1 {
+                schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+                phase: crate::agent_runtime::state::RunPhase::WaitingForApproval,
+                step_index: 0,
+                execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+                terminal_boundary: true,
+                retry_state: crate::agent_runtime::state::RetryState::default(),
+                validation_state: crate::agent_runtime::state::ValidationState::default(),
+                approval_state: crate::agent_runtime::state::ApprovalState {
+                    approval_id: Some(approval_id.to_string()),
+                    tool_call_id: Some("resume_tc_1".to_string()),
+                    awaiting_approval: true,
+                },
+                active_plan_step_id: None,
+                last_tool_fact_envelopes: Vec::new(),
             },
+            execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
             resume_session_messages: vec![Message {
                 role: Role::User,
                 content: Some("continue".to_string()),
@@ -424,6 +432,9 @@ mod tests {
                 tool_name: None,
                 tool_calls: None,
             }],
+            interrupt_history: Vec::new(),
+            phase_summary: Vec::new(),
+            completion_decisions: Vec::new(),
             tool_facts: Vec::new(),
             tool_fact_envelopes: Vec::new(),
             pending_tool_call: Some(PendingApprovalToolCallV1 {
@@ -454,7 +465,7 @@ mod tests {
                 "--trust".to_string(),
                 "on".to_string(),
             ],
-            checkpoint: RunCheckpointV1 {
+            checkpoint: Some(RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: RunCheckpointPhase::Interrupted,
                 terminal_boundary: true,
@@ -462,7 +473,20 @@ mod tests {
                     kind: RunCheckpointInterruptKind::OperatorInterrupt,
                     reason: Some("operator paused run".to_string()),
                 }),
+            }),
+            runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1 {
+                schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+                phase: crate::agent_runtime::state::RunPhase::WaitingForOperatorInput,
+                step_index: 0,
+                execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+                terminal_boundary: true,
+                retry_state: crate::agent_runtime::state::RetryState::default(),
+                validation_state: crate::agent_runtime::state::ValidationState::default(),
+                approval_state: crate::agent_runtime::state::ApprovalState::default(),
+                active_plan_step_id: None,
+                last_tool_fact_envelopes: Vec::new(),
             },
+            execution_tier: crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
             resume_session_messages: vec![Message {
                 role: Role::User,
                 content: Some("continue".to_string()),
@@ -470,6 +494,9 @@ mod tests {
                 tool_name: None,
                 tool_calls: None,
             }],
+            interrupt_history: Vec::new(),
+            phase_summary: Vec::new(),
+            completion_decisions: Vec::new(),
             tool_facts: Vec::new(),
             tool_fact_envelopes: Vec::new(),
             pending_tool_call: None,
@@ -550,6 +577,25 @@ mod tests {
                         .is_some_and(|content| content.contains("RUNTIME CHECKPOINT RESUME HANDOFF"))
             })
         }));
+
+        let resumed_checkpoint =
+            crate::store::load_runtime_checkpoint_record(&paths, "checkpoint-run-1")
+                .expect("resumed checkpoint persisted");
+        assert_eq!(
+            resumed_checkpoint.runtime_state_checkpoint.phase,
+            crate::agent_runtime::state::RunPhase::Executing
+        );
+        assert!(!resumed_checkpoint.runtime_state_checkpoint.approval_state.awaiting_approval);
+        assert!(resumed_checkpoint.checkpoint.is_none());
+        assert!(resumed_checkpoint.pending_tool_call.is_none());
+        assert!(resumed_checkpoint.interrupt_history.iter().all(|entry| entry
+            .resolved_at
+            .as_deref()
+            .is_some()));
+        assert!(resumed_checkpoint.phase_summary.iter().any(|entry| {
+            entry.phase == crate::agent_runtime::state::RunPhase::Executing
+                && entry.exited_at.is_none()
+        }));
     }
 
     #[test]
@@ -563,8 +609,27 @@ mod tests {
 
         let message = resume_boundary_message(&checkpoint);
         let body = message.content.expect("boundary message");
-        assert!(body.contains("Boundary phase: interrupted"));
+        assert!(body.contains("Boundary phase: waiting_for_operator_input"));
         assert!(body.contains("run interrupted by operator"));
+    }
+
+    #[test]
+    fn interrupted_checkpoint_transitions_to_executing_on_resume() {
+        let checkpoint = interrupted_checkpoint_record();
+        let resumed = crate::agent::transition_runtime_checkpoint_to_executing(&checkpoint);
+        assert_eq!(
+            resumed.runtime_state_checkpoint.phase,
+            crate::agent_runtime::state::RunPhase::Executing
+        );
+        assert!(resumed.checkpoint.is_none());
+        assert!(resumed
+            .completion_decisions
+            .iter()
+            .any(|decision| decision.kind == "resume" && decision.allowed));
+        assert!(resumed.phase_summary.iter().any(|entry| {
+            entry.phase == crate::agent_runtime::state::RunPhase::Executing
+                && entry.exited_at.is_none()
+        }));
     }
 
     #[test]

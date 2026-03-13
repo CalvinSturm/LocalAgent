@@ -978,6 +978,11 @@ rules:
         None,
         None,
         Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        Vec::new(),
         None,
     )
     .expect("write run artifact");

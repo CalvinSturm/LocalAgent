@@ -311,6 +311,11 @@ fn run_artifact_schema_and_layout_golden_is_stable() {
         None,
         None,
         Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        Vec::new(),
         None,
     )
     .expect("write run record");

@@ -1,6 +1,10 @@
 use clap::ValueEnum;
 
 use crate::agent::AgentExitReason;
+use crate::agent_runtime::state::{
+    ApprovalState, CompletionDecisionRecordV1, ExecutionTier, PhaseSummaryEntryV1, RetryState,
+    RunCheckpointV1 as RuntimeStateCheckpointV1, RunPhase, ValidationState,
+};
 use crate::store::{
     extract_session_messages, PendingApprovalToolCallV1, RunCheckpointInterruptKind,
     RunCheckpointInterruptV1, RunCheckpointPhase, RunCheckpointV1, RuntimeRunCheckpointRecordV1,
@@ -33,31 +37,204 @@ pub(super) fn checkpoint_for_outcome(
     }
 }
 
+pub(super) fn initial_runtime_state_checkpoint(
+    execution_tier: ExecutionTier,
+) -> RuntimeStateCheckpointV1 {
+    RuntimeStateCheckpointV1 {
+        schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+        phase: RunPhase::Executing,
+        step_index: 0,
+        execution_tier,
+        terminal_boundary: false,
+        retry_state: RetryState::default(),
+        validation_state: ValidationState::default(),
+        approval_state: ApprovalState::default(),
+        active_plan_step_id: None,
+        last_tool_fact_envelopes: Vec::new(),
+    }
+}
+
+pub(super) fn runtime_state_checkpoint_for_outcome(
+    outcome: &crate::agent::AgentOutcome,
+    prompt: &str,
+    execution_tier: ExecutionTier,
+    tool_fact_envelopes: &[crate::agent::ToolFactEnvelopeV1],
+) -> RuntimeStateCheckpointV1 {
+    let required_command = crate::agent_impl_guard::prompt_required_validation_command(prompt)
+        .map(ToOwned::to_owned);
+    let approval = outcome
+        .tool_decisions
+        .iter()
+        .rev()
+        .find(|decision| decision.decision == "require_approval");
+    RuntimeStateCheckpointV1 {
+        schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+        phase: match outcome.exit_reason {
+            AgentExitReason::ApprovalRequired => RunPhase::WaitingForApproval,
+            AgentExitReason::Cancelled => RunPhase::Cancelled,
+            AgentExitReason::Ok => RunPhase::Done,
+            _ => RunPhase::Failed,
+        },
+        step_index: outcome
+            .tool_decisions
+            .iter()
+            .map(|decision| decision.step)
+            .max()
+            .unwrap_or(0),
+        execution_tier,
+        terminal_boundary: true,
+        retry_state: RetryState::default(),
+        validation_state: ValidationState {
+            required_command: required_command.clone(),
+            satisfied: crate::agent::required_validation_command_satisfied_from_facts(
+                prompt,
+                &tool_fact_envelopes
+                    .iter()
+                    .map(|envelope| envelope.fact.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            repair_mode: false,
+            collecting_final_answer:
+                crate::agent_impl_guard::prompt_required_exact_final_answer(prompt).is_some(),
+        },
+        approval_state: ApprovalState {
+            approval_id: approval.and_then(|decision| decision.approval_id.clone()),
+            tool_call_id: approval.map(|decision| decision.tool_call_id.clone()),
+            awaiting_approval: matches!(outcome.exit_reason, AgentExitReason::ApprovalRequired),
+        },
+        active_plan_step_id: None,
+        last_tool_fact_envelopes: tool_fact_envelopes.to_vec(),
+    }
+}
+
+pub(super) fn phase_summary_for_outcome(
+    outcome: &crate::agent::AgentOutcome,
+) -> Vec<PhaseSummaryEntryV1> {
+    let final_phase = match outcome.exit_reason {
+        AgentExitReason::ApprovalRequired => RunPhase::WaitingForApproval,
+        AgentExitReason::Cancelled => RunPhase::Cancelled,
+        AgentExitReason::Ok => RunPhase::Done,
+        _ => RunPhase::Failed,
+    };
+    vec![
+        PhaseSummaryEntryV1 {
+            phase: RunPhase::Setup,
+            entered_at: outcome.started_at.clone(),
+            exited_at: Some(outcome.started_at.clone()),
+        },
+        PhaseSummaryEntryV1 {
+            phase: RunPhase::Executing,
+            entered_at: outcome.started_at.clone(),
+            exited_at: Some(outcome.finished_at.clone()),
+        },
+        PhaseSummaryEntryV1 {
+            phase: final_phase,
+            entered_at: outcome.finished_at.clone(),
+            exited_at: None,
+        },
+    ]
+}
+
+pub(super) fn completion_decisions_for_outcome(
+    outcome: &crate::agent::AgentOutcome,
+    runtime_checkpoint: &RuntimeStateCheckpointV1,
+) -> Vec<CompletionDecisionRecordV1> {
+    let validation_facts = crate::agent::collect_validation_facts_from_checkpoint(
+        runtime_checkpoint,
+        &runtime_checkpoint.last_tool_fact_envelopes,
+    );
+    let (allowed, retryable, reason, next_phase, unmet_requirements) = match outcome.exit_reason {
+        AgentExitReason::Ok => (
+            validation_facts.satisfied,
+            false,
+            if validation_facts.satisfied {
+                "run finalized successfully".to_string()
+            } else {
+                "run finalized without satisfying required validation evidence".to_string()
+            },
+            Some(RunPhase::Done),
+            if validation_facts.satisfied {
+                Vec::new()
+            } else {
+                vec!["required_validation".to_string()]
+            },
+        ),
+        AgentExitReason::ApprovalRequired => (
+            false,
+            true,
+            "run blocked pending operator approval".to_string(),
+            Some(RunPhase::WaitingForApproval),
+            vec!["approval_required".to_string()],
+        ),
+        AgentExitReason::Cancelled => (
+            false,
+            true,
+            "run interrupted before completion".to_string(),
+            Some(RunPhase::WaitingForOperatorInput),
+            vec!["operator_interrupt".to_string()],
+        ),
+        _ => (
+            false,
+            false,
+            outcome
+                .error
+                .clone()
+                .unwrap_or_else(|| "run ended without satisfying completion policy".to_string()),
+            Some(runtime_checkpoint.phase.clone()),
+            vec!["runtime_failure".to_string()],
+        ),
+    };
+    vec![CompletionDecisionRecordV1 {
+        kind: "finalize".to_string(),
+        allowed,
+        retryable,
+        next_phase,
+        reason,
+        unmet_requirements,
+    }]
+}
+
 pub(super) fn runtime_checkpoint_record_for_outcome(
     outcome: &crate::agent::AgentOutcome,
     prompt: &str,
     args: &RunArgs,
+    execution_tier: ExecutionTier,
     tool_facts: &[crate::agent::ToolFactV1],
+    tool_fact_envelopes: &[crate::agent::ToolFactEnvelopeV1],
 ) -> Option<RuntimeRunCheckpointRecordV1> {
     let checkpoint = checkpoint_for_outcome(outcome)?;
     let checkpoint_phase_name = match checkpoint.phase {
         RunCheckpointPhase::WaitingForApproval => "waiting_for_approval",
         RunCheckpointPhase::Interrupted => "interrupted",
     };
+    let interrupt_history = crate::agent::interrupt_history_for_outcome(outcome);
+    let phase_summary = phase_summary_for_outcome(outcome);
+    let runtime_state_checkpoint =
+        runtime_state_checkpoint_for_outcome(outcome, prompt, execution_tier.clone(), tool_fact_envelopes);
+    let completion_decisions = completion_decisions_for_outcome(outcome, &runtime_state_checkpoint);
     Some(RuntimeRunCheckpointRecordV1 {
         schema_version: "openagent.runtime_checkpoint.v1".to_string(),
         runtime_run_id: outcome.run_id.clone(),
         prompt: prompt.to_string(),
         resume_argv: build_resume_argv(args, prompt),
-        checkpoint,
+        checkpoint: Some(checkpoint),
+        runtime_state_checkpoint,
+        execution_tier,
         resume_session_messages: extract_session_messages(&outcome.messages),
+        interrupt_history,
+        phase_summary,
+        completion_decisions,
         tool_facts: tool_facts.to_vec(),
-        tool_fact_envelopes: crate::agent::tool_fact_envelopes_from_facts(
-            tool_facts,
-            crate::agent::ToolFactSourceV1::Transcript,
-            Some("checkpoint_boundary"),
-            Some(checkpoint_phase_name),
-        ),
+        tool_fact_envelopes: if tool_fact_envelopes.is_empty() {
+            crate::agent::tool_fact_envelopes_from_facts(
+                tool_facts,
+                crate::agent::ToolFactSourceV1::Transcript,
+                Some("checkpoint_boundary"),
+                Some(checkpoint_phase_name),
+            )
+        } else {
+            tool_fact_envelopes.to_vec()
+        },
         pending_tool_call: pending_approval_tool_call(outcome),
         boundary_output: (!outcome.final_output.is_empty()).then(|| outcome.final_output.clone()),
     })
@@ -488,6 +665,8 @@ mod tests {
             &outcome(AgentExitReason::ApprovalRequired, None),
             "real prompt",
             &args,
+            crate::agent_runtime::state::ExecutionTier::ScopedHostShell,
+            &[],
             &[],
         )
         .expect("checkpoint record");

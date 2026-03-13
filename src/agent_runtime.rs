@@ -10,6 +10,7 @@ use crate::mcp::registry::McpRegistry;
 use crate::packs;
 use crate::planner;
 use crate::providers::ModelProvider;
+use crate::runtime_events;
 use crate::runtime_paths;
 use crate::store::{self, PlannerRunRecord, WorkerRunRecord};
 use crate::tools::ToolRuntime;
@@ -21,6 +22,7 @@ pub(crate) mod checkpoint;
 mod launch;
 mod planner_phase;
 mod setup;
+pub(crate) mod state;
 use finalize::{
     finalize_run_artifacts, finalize_ui_and_session_state, normalize_and_record_worker_step_result,
     FinalizeRunArtifactsInput,
@@ -166,6 +168,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         instruction_resolution,
         task_contract,
         task_contract_provenance,
+        execution_tier,
         project_guidance_resolution,
         repo_map_resolution,
         lsp_context_resolution,
@@ -238,6 +241,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             instruction_resolution: &instruction_resolution,
             task_contract: &task_contract,
             task_contract_provenance: &task_contract_provenance,
+            execution_tier: execution_tier.clone(),
             project_guidance_resolution: project_guidance_resolution.as_ref(),
             repo_map_resolution: repo_map_resolution.as_ref(),
             lsp_context_resolution: lsp_context_resolution.as_ref(),
@@ -355,6 +359,43 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         base_task_memory.clone(),
         planner_injected_message.clone(),
     );
+    let initial_runtime_checkpoint = checkpoint::initial_runtime_state_checkpoint(execution_tier.clone());
+    let initial_runtime_checkpoint_record = store::RuntimeRunCheckpointRecordV1 {
+        schema_version: "openagent.runtime_checkpoint.v1".to_string(),
+        runtime_run_id: run_id.clone(),
+        prompt: prompt.to_string(),
+        resume_argv: Vec::new(),
+        checkpoint: None,
+        runtime_state_checkpoint: initial_runtime_checkpoint.clone(),
+        execution_tier: execution_tier.clone(),
+        resume_session_messages: session_messages.clone(),
+        interrupt_history: Vec::new(),
+        phase_summary: vec![
+            store::PhaseSummaryEntryV1 {
+                phase: store::RunPhase::Setup,
+                entered_at: crate::trust::now_rfc3339(),
+                exited_at: Some(crate::trust::now_rfc3339()),
+            },
+            store::PhaseSummaryEntryV1 {
+                phase: store::RunPhase::Executing,
+                entered_at: crate::trust::now_rfc3339(),
+                exited_at: None,
+            },
+        ],
+        completion_decisions: Vec::new(),
+        tool_facts: Vec::new(),
+        tool_fact_envelopes: Vec::new(),
+        pending_tool_call: None,
+        boundary_output: None,
+    };
+    let _ = store::write_runtime_checkpoint_record(paths, &initial_runtime_checkpoint_record);
+    runtime_events::emit_event(
+        &mut agent.event_sink,
+        &run_id,
+        0,
+        EventKind::PhaseEntered,
+        serde_json::json!({"phase":"executing"}),
+    );
 
     let mut outcome = tokio::select! {
         out = agent.run(
@@ -453,6 +494,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         instruction_resolution: &instruction_resolution,
         task_contract: &task_contract,
         task_contract_provenance: &task_contract_provenance,
+        execution_tier,
         project_guidance_resolution: project_guidance_resolution.as_ref(),
         repo_map_resolution: repo_map_resolution.as_ref(),
         lsp_context_resolution: lsp_context_resolution.as_ref(),

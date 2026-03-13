@@ -23,6 +23,11 @@ pub use types::{
     RunCheckpointV1, RunCliConfig, RunCompactionRecord, RunMetadata, RunRecord, RunResolvedPaths,
     ToolCatalogEntry, ToolReliabilityRecord, WorkerRunRecord,
 };
+pub use crate::agent_runtime::state::{
+    ApprovalState, CompletionDecisionRecordV1, ExecutionTier, InterruptHistoryEntryV1,
+    InterruptKindV1, PhaseSummaryEntryV1, RetryState, RunCheckpointV1 as RuntimeStateCheckpointV1,
+    RunPhase, ValidationState,
+};
 
 #[derive(Debug, Clone)]
 pub struct StatePaths {
@@ -453,6 +458,11 @@ mod tests {
             None,
             None,
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
             None,
         )
         .expect("write run");
@@ -522,7 +532,7 @@ mod tests {
             runtime_run_id: "run_approval".to_string(),
             prompt: "fix it".to_string(),
             resume_argv: vec!["localagent".to_string(), "--prompt".to_string(), "fix it".to_string()],
-            checkpoint: RunCheckpointV1 {
+            checkpoint: Some(RunCheckpointV1 {
                 schema_version: "openagent.run_checkpoint.v1".to_string(),
                 phase: RunCheckpointPhase::WaitingForApproval,
                 terminal_boundary: true,
@@ -530,7 +540,20 @@ mod tests {
                     kind: RunCheckpointInterruptKind::ApprovalRequired,
                     reason: Some("approval required".to_string()),
                 }),
+            }),
+            runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1 {
+                schema_version: "openagent.runtime_state_checkpoint.v1".to_string(),
+                phase: crate::agent_runtime::state::RunPhase::WaitingForApproval,
+                step_index: 0,
+                execution_tier: crate::agent_runtime::state::ExecutionTier::ReadOnlyHost,
+                terminal_boundary: true,
+                retry_state: crate::agent_runtime::state::RetryState::default(),
+                validation_state: crate::agent_runtime::state::ValidationState::default(),
+                approval_state: crate::agent_runtime::state::ApprovalState::default(),
+                active_plan_step_id: None,
+                last_tool_fact_envelopes: Vec::new(),
             },
+            execution_tier: crate::agent_runtime::state::ExecutionTier::ReadOnlyHost,
             resume_session_messages: vec![Message {
                 role: Role::User,
                 content: Some("fix it".to_string()),
@@ -538,6 +561,9 @@ mod tests {
                 tool_name: None,
                 tool_calls: None,
             }],
+            interrupt_history: Vec::new(),
+            phase_summary: Vec::new(),
+            completion_decisions: Vec::new(),
             tool_facts: Vec::new(),
             tool_fact_envelopes: Vec::new(),
             pending_tool_call: None,
@@ -547,7 +573,14 @@ mod tests {
         let loaded =
             load_runtime_checkpoint_record(&paths, "run_approval").expect("load checkpoint");
         assert_eq!(loaded.runtime_run_id, "run_approval");
-        assert_eq!(loaded.checkpoint.phase, RunCheckpointPhase::WaitingForApproval);
+        assert_eq!(
+            loaded
+                .checkpoint
+                .as_ref()
+                .expect("boundary checkpoint")
+                .phase,
+            RunCheckpointPhase::WaitingForApproval
+        );
         assert_eq!(loaded.resume_session_messages.len(), 1);
     }
 
@@ -720,6 +753,11 @@ mod tests {
             task_contract: None,
             task_contract_provenance: None,
             run_checkpoint: None,
+            final_checkpoint: None,
+            execution_tier: None,
+            interrupt_history: Vec::new(),
+            phase_summary: Vec::new(),
+            completion_decisions: Vec::new(),
             tool_schema_hash_hex_map: BTreeMap::new(),
             hooks_config_hash_hex: None,
             transcript: vec![Message {

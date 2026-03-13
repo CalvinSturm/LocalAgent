@@ -44,6 +44,11 @@ pub(super) struct RunArtifactWriteInput {
     pub(super) tool_facts: Vec<crate::agent::ToolFactV1>,
     pub(super) tool_fact_envelopes: Vec<crate::agent::ToolFactEnvelopeV1>,
     pub(super) run_checkpoint: Option<store::RunCheckpointV1>,
+    pub(super) final_checkpoint: Option<crate::agent_runtime::state::RunCheckpointV1>,
+    pub(super) execution_tier: crate::agent_runtime::state::ExecutionTier,
+    pub(super) interrupt_history: Vec<crate::agent_runtime::state::InterruptHistoryEntryV1>,
+    pub(super) phase_summary: Vec<crate::agent_runtime::state::PhaseSummaryEntryV1>,
+    pub(super) completion_decisions: Vec<crate::agent_runtime::state::CompletionDecisionRecordV1>,
     pub(super) config_fingerprint: Option<store::ConfigFingerprintV1>,
     pub(super) repro_record: Option<crate::repro::RunReproRecord>,
     pub(super) mcp_runtime_trace: Vec<crate::agent::McpRuntimeTraceEntry>,
@@ -107,6 +112,7 @@ pub(super) struct FinalizeRunArtifactsInput<'a> {
     pub(super) instruction_resolution: &'a crate::instructions::InstructionResolution,
     pub(super) task_contract: &'a crate::agent::TaskContractV1,
     pub(super) task_contract_provenance: &'a crate::agent::TaskContractProvenanceV1,
+    pub(super) execution_tier: crate::agent_runtime::state::ExecutionTier,
     pub(super) project_guidance_resolution:
         Option<&'a crate::project_guidance::ResolvedProjectGuidance>,
     pub(super) repo_map_resolution: Option<&'a crate::repo_map::ResolvedRepoMap>,
@@ -138,6 +144,11 @@ pub(super) fn write_run_artifact_with_warning(
         input.tool_facts,
         input.tool_fact_envelopes,
         input.run_checkpoint,
+        input.final_checkpoint,
+        Some(input.execution_tier),
+        input.interrupt_history,
+        input.phase_summary,
+        input.completion_decisions,
         input.config_fingerprint,
         input.repro_record,
         input.mcp_runtime_trace,
@@ -408,6 +419,16 @@ pub(super) fn finalize_run_artifacts(
             .as_ref()
             .map(|checkpoint| checkpoint_phase_name(&checkpoint.phase)),
     );
+    let final_checkpoint = super::checkpoint::runtime_state_checkpoint_for_outcome(
+        input.outcome,
+        input.prompt,
+        input.execution_tier.clone(),
+        &tool_fact_envelopes,
+    );
+    let interrupt_history = crate::agent::interrupt_history_for_outcome(input.outcome);
+    let phase_summary = super::checkpoint::phase_summary_for_outcome(input.outcome);
+    let completion_decisions =
+        super::checkpoint::completion_decisions_for_outcome(input.outcome, &final_checkpoint);
     let run_artifact_path = write_run_artifact_with_warning(RunArtifactWriteInput {
         paths: input.paths.clone(),
         cli_config,
@@ -430,6 +451,11 @@ pub(super) fn finalize_run_artifacts(
         tool_facts: tool_facts.clone(),
         tool_fact_envelopes,
         run_checkpoint: run_checkpoint.clone(),
+        final_checkpoint: Some(final_checkpoint.clone()),
+        execution_tier: input.execution_tier.clone(),
+        interrupt_history,
+        phase_summary,
+        completion_decisions,
         config_fingerprint: Some(config_fingerprint),
         repro_record,
         mcp_runtime_trace: input.mcp_runtime_trace,
@@ -440,7 +466,9 @@ pub(super) fn finalize_run_artifacts(
             input.outcome,
             input.prompt,
             input.args,
+            input.execution_tier,
             &tool_facts,
+            &final_checkpoint.last_tool_fact_envelopes,
         )
     {
         match store::write_runtime_checkpoint_record(input.paths, &record) {

@@ -41,6 +41,16 @@ pub struct RunRecord {
     pub task_contract_provenance: Option<crate::agent::TaskContractProvenanceV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_checkpoint: Option<RunCheckpointV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_checkpoint: Option<crate::agent_runtime::state::RunCheckpointV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_tier: Option<crate::agent_runtime::state::ExecutionTier>,
+    #[serde(default)]
+    pub interrupt_history: Vec<crate::agent_runtime::state::InterruptHistoryEntryV1>,
+    #[serde(default)]
+    pub phase_summary: Vec<crate::agent_runtime::state::PhaseSummaryEntryV1>,
+    #[serde(default)]
+    pub completion_decisions: Vec<crate::agent_runtime::state::CompletionDecisionRecordV1>,
     #[serde(default)]
     pub tool_schema_hash_hex_map: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -561,8 +571,17 @@ pub struct RuntimeRunCheckpointRecordV1 {
     pub runtime_run_id: String,
     pub prompt: String,
     pub resume_argv: Vec<String>,
-    pub checkpoint: RunCheckpointV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<RunCheckpointV1>,
+    pub runtime_state_checkpoint: crate::agent_runtime::state::RunCheckpointV1,
+    pub execution_tier: crate::agent_runtime::state::ExecutionTier,
     pub resume_session_messages: Vec<crate::types::Message>,
+    #[serde(default)]
+    pub interrupt_history: Vec<crate::agent_runtime::state::InterruptHistoryEntryV1>,
+    #[serde(default)]
+    pub phase_summary: Vec<crate::agent_runtime::state::PhaseSummaryEntryV1>,
+    #[serde(default)]
+    pub completion_decisions: Vec<crate::agent_runtime::state::CompletionDecisionRecordV1>,
     #[serde(default)]
     pub tool_facts: Vec<crate::agent::ToolFactV1>,
     #[serde(default)]

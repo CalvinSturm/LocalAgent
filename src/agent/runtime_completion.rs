@@ -481,6 +481,8 @@ impl<P: ModelProvider> Agent<P> {
                     crate::agent::completion_policy::RequiredValidationCompletionDecision::ContinueRequiredValidation(corrective_instruction) => {
                         let blocked_runtime_completion_count =
                             blocked_runtime_completion_count.saturating_add(1);
+                        let transition =
+                            crate::agent::required_validation_boundary_transition_decision();
                         self.emit_event(
                             &run_id,
                             step,
@@ -499,6 +501,32 @@ impl<P: ModelProvider> Agent<P> {
                             serde_json::json!({
                                 "reason": "required_validation_before_final",
                                 "blocked_count": blocked_runtime_completion_count
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::PhaseExited,
+                            serde_json::json!({
+                                "phase": crate::agent::run_phase_name(&transition.from_phase),
+                                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::PhaseEntered,
+                            serde_json::json!({
+                                "phase": crate::agent::run_phase_name(&transition.to_phase)
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::CompletionBlocked,
+                            serde_json::json!({
+                                "reason": transition.completion_reason,
+                                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
                             }),
                         );
                         messages.push(Message {
@@ -563,6 +591,8 @@ impl<P: ModelProvider> Agent<P> {
                         let blocked_runtime_completion_count =
                             blocked_runtime_completion_count.saturating_add(1);
                         let corrective_instruction = "The task work is complete. Do not explain your steps. Reply now with the required final answer only, exactly matching the requested format. Do not call tools.";
+                        let transition =
+                            crate::agent::exact_final_answer_boundary_transition_decision();
                         self.emit_event(
                             &run_id,
                             step,
@@ -581,6 +611,32 @@ impl<P: ModelProvider> Agent<P> {
                             serde_json::json!({
                                 "reason": "exact_final_answer_required",
                                 "blocked_count": blocked_runtime_completion_count
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::PhaseExited,
+                            serde_json::json!({
+                                "phase": crate::agent::run_phase_name(&transition.from_phase),
+                                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::PhaseEntered,
+                            serde_json::json!({
+                                "phase": crate::agent::run_phase_name(&transition.to_phase)
+                            }),
+                        );
+                        self.emit_event(
+                            &run_id,
+                            step,
+                            crate::events::EventKind::CompletionBlocked,
+                            serde_json::json!({
+                                "reason": transition.completion_reason,
+                                "next_phase": crate::agent::run_phase_name(&transition.to_phase)
                             }),
                         );
                         messages.push(Message {
