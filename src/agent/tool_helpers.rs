@@ -506,6 +506,36 @@ impl<P: ModelProvider> Agent<P> {
                 }
             }
         }
+        if tc.name == "apply_patch" {
+            if let Some(path) = normalized_tool_path_from_args(tc) {
+                let pivot_key = format!("pivot::apply_patch::{path}");
+                if !failed_repeat_counts.contains_key(&pivot_key) {
+                    failed_repeat_counts.insert(pivot_key, 1);
+                    self.emit_event(
+                        &run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "source": "tool_repeat_guard",
+                            "reason": "apply_patch_repeat_requires_smaller_fix",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "path": path
+                        }),
+                    );
+                    messages.push(Message {
+                        role: Role::Developer,
+                        content: Some(format!(
+                            "Stop retrying near-identical apply_patch calls on `{path}`. Re-read `{path}` now, then make one smaller single-hunk fix with edit or a tightly scoped apply_patch. Do not emit another broad apply_patch on that file unless the file contents materially change."
+                        )),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    });
+                    return FailedRepeatGuardDecision::RestartAgentStep;
+                }
+            }
+        }
         let reason = format!(
             "TOOL_REPEAT_BLOCKED: repeated failed tool call for '{}' exceeded repeat limit",
             tc.name

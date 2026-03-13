@@ -1409,6 +1409,10 @@ struct ReadPatchThenExactThenBadShellRetryThenFixThenShellThenExactProvider {
     exact_answer: &'static str,
 }
 
+struct ReadThenRepeatedBadApplyPatchThenEditThenReadThenDoneProvider {
+    calls: Arc<AtomicUsize>,
+}
+
 struct ReadPatchWithPreToolPlanThenDoneProvider {
     calls: Arc<AtomicUsize>,
 }
@@ -2344,6 +2348,93 @@ impl ModelProvider for ReadPatchThenExactThenBadShellRetryThenFixThenShellThenEx
                 assistant: Message {
                     role: Role::Assistant,
                     content: Some(self.exact_answer.to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProvider for ReadThenRepeatedBadApplyPatchThenEditThenReadThenDoneProvider {
+    async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        match n {
+            0 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_read".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path":"main.rs"}),
+                }],
+                usage: None,
+            }),
+            1 | 2 | 3 | 4 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: format!("tc_bad_patch_{n}"),
+                    name: "apply_patch".to_string(),
+                    arguments: serde_json::json!({
+                        "path":"main.rs",
+                        "patch":"@@ -1,3 +1,3 @@\n fn answer() -> i32 {\n-    return 999;\n+    return 2;\n }\n"
+                    }),
+                }],
+                usage: None,
+            }),
+            5 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_small_edit".to_string(),
+                    name: "edit".to_string(),
+                    arguments: serde_json::json!({
+                        "path":"main.rs",
+                        "old_string":"return 1;",
+                        "new_string":"return 2;"
+                    }),
+                }],
+                usage: None,
+            }),
+            6 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_verify".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path":"main.rs"}),
+                }],
+                usage: None,
+            }),
+            _ => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("done".to_string()),
                     tool_call_id: None,
                     tool_name: None,
                     tool_calls: None,
@@ -8175,6 +8266,165 @@ async fn repeated_failed_str_replace_forces_pivot_before_repeat_block() {
                 .get("reason")
                 .and_then(|v| v.as_str())
                 .is_some_and(|s| s == "str_replace_repeat_requires_pivot")
+    }));
+    assert!(!out.final_output.contains("TOOL_REPEAT_BLOCKED"));
+}
+
+#[tokio::test]
+async fn repeated_failed_apply_patch_forces_smaller_fix_pivot_before_repeat_block() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut agent = Agent {
+        provider: ReadThenRepeatedBadApplyPatchThenEditThenReadThenDoneProvider {
+            calls: calls.clone(),
+        },
+        model: "m".to_string(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        tools: vec![
+            crate::types::ToolDef {
+                name: "read_file".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "properties":{"path":{"type":"string"}},
+                    "required":["path"]
+                }),
+                side_effects: crate::types::SideEffects::FilesystemRead,
+            },
+            crate::types::ToolDef {
+                name: "apply_patch".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "properties":{"path":{"type":"string"},"patch":{"type":"string"}},
+                    "required":["path","patch"]
+                }),
+                side_effects: crate::types::SideEffects::FilesystemWrite,
+            },
+            crate::types::ToolDef {
+                name: "edit".to_string(),
+                description: "d".to_string(),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "properties":{
+                        "path":{"type":"string"},
+                        "old_string":{"type":"string"},
+                        "new_string":{"type":"string"}
+                    },
+                    "required":["path","old_string","new_string"]
+                }),
+                side_effects: crate::types::SideEffects::FilesystemWrite,
+            },
+        ],
+        max_steps: 10,
+        tool_rt: ToolRuntime {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target: std::sync::Arc::new(HostTarget),
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir: tmp.path().to_path_buf(),
+            allow_shell: false,
+            allow_write: true,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Ollama,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        mcp_registry: None,
+        stream: false,
+        event_sink: Some(Box::new(EventCaptureSink {
+            events: events.clone(),
+        })),
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        plan_step_constraints: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    };
+    let out = agent
+        .run(
+            "Edit main.rs to return 2. Verify by reading the file after the change.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    assert_eq!(out.final_output, "done");
+    let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
+        .await
+        .expect("read main");
+    assert!(main.contains("return 2;"), "{main}");
+    let evs = events.lock().expect("lock");
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::StepBlocked)
+            && e.data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "apply_patch_repeat_requires_smaller_fix")
     }));
     assert!(!out.final_output.contains("TOOL_REPEAT_BLOCKED"));
 }

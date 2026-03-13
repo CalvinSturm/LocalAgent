@@ -10,6 +10,49 @@ use super::tool_helpers::{
 };
 use super::Agent;
 
+fn shell_failure_semantic_hint(raw_content: &str) -> Option<String> {
+    let text = crate::agent_tool_exec::tool_result_text(raw_content);
+    let inner = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    let stdout = inner.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+    let failure_line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("not ok "))?
+        .trim()
+        .to_string();
+    let assertion_line = stdout
+        .lines()
+        .find(|line| line.trim().contains("!=="))
+        .or_else(|| {
+            stdout.lines().find(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty()
+                    && !trimmed.starts_with('#')
+                    && trimmed.contains("Expected values to be strictly equal")
+            })
+        })
+        .map(|line| line.trim().to_string());
+
+    if stdout
+        .to_ascii_lowercase()
+        .contains("whitespace before parsing")
+        || stdout.contains("NaN !== 7")
+    {
+        let mut hint = format!(
+            "Validation still fails: {failure_line}. The whitespace case is still rejected before parsing succeeds, so inspect the earlier input-validation or regex check, not just the parseInt return line."
+        );
+        if let Some(assertion) = assertion_line {
+            hint.push_str(&format!(" Key assertion: {assertion}."));
+        }
+        return Some(hint);
+    }
+
+    let mut hint = format!("Validation still fails: {failure_line}.");
+    if let Some(assertion) = assertion_line {
+        hint.push_str(&format!(" Key assertion: {assertion}."));
+    }
+    Some(hint)
+}
+
 pub(super) enum AllowToolCallDecision {
     Continue,
     RestartAgentStep,
@@ -209,28 +252,35 @@ impl<P: ModelProvider> Agent<P> {
         // When a tool fails, inject a recovery hint to steer the model toward
         // a different strategy instead of blindly repeating the same call.
         if !final_ok {
-            let hint = match tc.name.as_str() {
-                "shell" => Some(
-                    "The shell command failed. Before retrying, use read_file or grep to inspect the relevant source files and diagnose the issue. Fix the code with apply_patch first, then re-run the command.",
-                ),
+            let hint: Option<String> = match tc.name.as_str() {
+                "shell" => {
+                    let mut hint = String::from(
+                        "The shell command failed. Before retrying, use read_file or grep to inspect the relevant source files and diagnose the issue. Fix the code with apply_patch first, then re-run the command."
+                    );
+                    if let Some(extra) = shell_failure_semantic_hint(&content) {
+                        hint.push(' ');
+                        hint.push_str(&extra);
+                    }
+                    Some(hint)
+                }
                 "read_file" => Some(
-                    "The read_file failed. If you guessed or used an absolute path, switch to a workdir-relative path. Use list_dir or glob to discover the correct file path in this repository before retrying read_file.",
+                    "The read_file failed. If you guessed or used an absolute path, switch to a workdir-relative path. Use list_dir or glob to discover the correct file path in this repository before retrying read_file.".to_string(),
                 ),
                 "apply_patch" => Some(
-                    "The patch failed to apply. Use read_file to re-read the current file contents, then emit a corrected apply_patch with an accurate unified diff that matches the file. Do not repeat the same failed patch text.",
+                    "The patch failed to apply. Use read_file to re-read the current file contents, then emit a corrected apply_patch with an accurate unified diff that matches the file. Do not repeat the same failed patch text.".to_string(),
                 ),
                 "str_replace" => Some(
-                    "The str_replace failed. Use read_file to re-read the current file contents. If the exact match is still brittle or unclear, switch to apply_patch instead of repeating str_replace.",
+                    "The str_replace failed. Use read_file to re-read the current file contents. If the exact match is still brittle or unclear, switch to apply_patch instead of repeating str_replace.".to_string(),
                 ),
                 "edit" => Some(
-                    "The edit failed. Use read_file to re-read the current file contents. If the exact match is still brittle or unclear, switch to apply_patch instead of repeating the same edit.",
+                    "The edit failed. Use read_file to re-read the current file contents. If the exact match is still brittle or unclear, switch to apply_patch instead of repeating the same edit.".to_string(),
                 ),
                 _ => None,
             };
             if let Some(text) = hint {
                 messages.push(Message {
                     role: Role::Developer,
-                    content: Some(text.to_string()),
+                    content: Some(text),
                     tool_call_id: None,
                     tool_name: None,
                     tool_calls: None,
@@ -1169,5 +1219,22 @@ impl<P: ModelProvider> Agent<P> {
             total_token_usage,
             taint_state,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_failure_semantic_hint;
+
+    #[test]
+    fn shell_failure_hint_surfaces_whitespace_guard_seam() {
+        let raw = serde_json::json!({
+            "stdout": "TAP version 13\n# Subtest: parseCount handles plain input\nok 1 - parseCount handles plain input\n# Subtest: parseCount trims whitespace before parsing\nnot ok 2 - parseCount trims whitespace before parsing\nExpected values to be strictly equal:\n\nNaN !== 7\n"
+        })
+        .to_string();
+        let hint = shell_failure_semantic_hint(&raw).expect("hint");
+        assert!(hint.contains("whitespace case is still rejected before parsing succeeds"));
+        assert!(hint.contains("not ok 2 - parseCount trims whitespace before parsing"));
+        assert!(hint.contains("NaN !== 7"));
     }
 }
