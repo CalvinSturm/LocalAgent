@@ -74,6 +74,7 @@ Root-level redirect stubs in `docs/` are compatibility shims only. They should n
 - Status: Non-normative; for contributor roadmap/design context only.
 - [Learn Research Brief](research/LEARN_RESEARCH_BRIEF.md)
 - [Learn Research (Merged)](research/LEARN_RESEARCH_MERGED.md)
+- [Coding Eval Closeout Observation (2026-03)](research/CODING_EVAL_CLOSEOUT_OBSERVATION_2026-03.md)
 
 ## ADR
 

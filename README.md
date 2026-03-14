@@ -16,15 +16,19 @@ People are curious about local models, tool calling, MCP, coding workflows, and 
 
 LocalAgent narrows that gap with a guided local-first runtime that keeps side effects explicit, runtime behavior visible, and persistent runs inspectable, while still supporting serious MCP-based workflows.
 
+As of `v0.5.0`, the core runtime is materially stronger for coding workflows: completion and validation behavior are more runtime-owned, one-shot runs default to isolated ephemeral state unless you opt into persistence, and the repo includes broader eval and local-model investigation surfaces for measuring coding-task reliability.
+
 What you get:
 
 - guided startup with provider auto-detection
 - interactive TUI chat for local agent workflows
 - MCP stdio integration for custom tool workflows
+- stronger coding-task runtime contracts, validation handling, and recovery paths
+- TypeScript/LSP-assisted coding support for richer code investigation workflows
 - safe defaults with shell and write access disabled unless explicitly enabled
 - explicit trust controls with policy, approvals, and audit trails
 - replayable artifacts and inspectable event logs for persistent workflows
-- built-in eval workflows and reviewable run outputs
+- built-in eval workflows, coding benchmarks, and reviewable run outputs
 - a clear beginner path without hiding advanced controls
 
 ## First success
