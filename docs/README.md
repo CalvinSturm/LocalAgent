@@ -68,6 +68,7 @@ Root-level redirect stubs in `docs/` are compatibility shims only. They should n
 
 - [Runtime Loop Policy](policy/AGENT_RUNTIME_PRINCIPLES_2026.md)
 - [Runtime Change Review Template](policy/AGENT_RUNTIME_CHANGE_REVIEW_TEMPLATE.md)
+- [Runtime Heuristic Governance](policy/RUNTIME_HEURISTIC_GOVERNANCE_2026-03.md)
 
 ## Research
 
