@@ -150,32 +150,17 @@ fn normalize_task_kind(value: &str) -> String {
     }
 }
 
-fn prompt_suggests_coding_task(prompt: &str) -> bool {
-    let p = prompt.to_ascii_lowercase();
-    crate::agent::tool_facts::prompt_requires_effective_write(prompt)
-        || crate::agent_impl_guard::prompt_required_validation_command(prompt).is_some()
-        || p.contains("landing page")
-        || p.contains("index.html")
-        || p.contains("html file")
-        || p.contains("current directory")
-        || p.contains("src/")
-        || p.contains("cargo.toml")
-        || p.contains("package.json")
-}
-
 pub(crate) fn resolve_task_contract(
     args: &RunArgs,
     prompt: &str,
     selected_task_kind: Option<&str>,
-    implementation_guard_enabled: bool,
+    _implementation_guard_enabled: bool,
     exposed_tools: &[crate::types::ToolDef],
 ) -> TaskContractResolution {
     let (task_kind, task_kind_source) = if let Some(value) = args.task_kind.as_deref() {
         (normalize_task_kind(value), ContractValueSource::Explicit)
     } else if let Some(value) = selected_task_kind {
         (normalize_task_kind(value), ContractValueSource::Explicit)
-    } else if implementation_guard_enabled && prompt_suggests_coding_task(prompt) {
-        ("coding".to_string(), ContractValueSource::Inferred)
     } else {
         ("general".to_string(), ContractValueSource::Defaulted)
     };
@@ -389,19 +374,19 @@ mod tests {
     }
 
     #[test]
-    fn build_mode_still_infers_coding_for_landing_page_prompt() {
+    fn build_mode_does_not_infer_coding_from_prompt_wording() {
         let args = RunArgs::parse_from(["localagent"]);
         let resolution = resolve_task_contract(
             &args,
-            "Create a landing page in the current directory.",
+            "Fix the parser bug in src/main.rs.",
             None,
             true,
             &tool_defs(&["write_file"]),
         );
-        assert_eq!(resolution.contract.task_kind, "coding");
+        assert_eq!(resolution.contract.task_kind, "general");
         assert_eq!(
             resolution.provenance.task_kind,
-            ContractValueSource::Inferred
+            ContractValueSource::Defaulted
         );
     }
 

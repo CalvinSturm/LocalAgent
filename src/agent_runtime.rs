@@ -594,9 +594,21 @@ mod tests {
     use crate::types::{Message, Role};
 
     #[test]
-    fn build_mode_enables_implementation_guard_by_default() {
+    fn build_mode_without_write_capability_disables_implementation_guard() {
         let args = crate::RunArgs::parse_from(["localagent", "--agent-mode", "build"]);
-        assert!(should_enable_implementation_guard(&args, None));
+        assert!(!should_enable_implementation_guard(&args, None));
+    }
+
+    #[test]
+    fn build_mode_with_write_capability_does_not_enable_implementation_guard_without_task_kind() {
+        let args = crate::RunArgs::parse_from([
+            "localagent",
+            "--agent-mode",
+            "build",
+            "--enable-write-tools",
+            "--allow-write",
+        ]);
+        assert!(!should_enable_implementation_guard(&args, None));
     }
 
     #[test]
@@ -607,6 +619,8 @@ mod tests {
             "plan",
             "--task-kind",
             "coding",
+            "--enable-write-tools",
+            "--allow-write",
         ]);
         assert!(task_kind_enforces_implementation_guard(
             args.task_kind.as_deref(),
@@ -657,7 +671,15 @@ mod tests {
             tool_name: None,
             tool_calls: None,
         }];
-        let enabled_args = crate::RunArgs::parse_from(["localagent", "--agent-mode", "build"]);
+        let enabled_args = crate::RunArgs::parse_from([
+            "localagent",
+            "--agent-mode",
+            "build",
+            "--task-kind",
+            "coding",
+            "--enable-write-tools",
+            "--allow-write",
+        ]);
         maybe_append_implementation_guard_message(&mut enabled_msgs, &enabled_args, None);
         assert!(enabled_msgs.iter().any(|m| {
             m.content
@@ -717,6 +739,10 @@ mod tests {
             "localagent",
             "--agent-mode",
             "build",
+            "--task-kind",
+            "coding",
+            "--enable-write-tools",
+            "--allow-write",
             "--http-timeout-ms",
             "0",
             "--http-stream-idle-timeout-ms",
@@ -732,6 +758,10 @@ mod tests {
             "localagent",
             "--agent-mode",
             "build",
+            "--task-kind",
+            "coding",
+            "--enable-write-tools",
+            "--allow-write",
             "--http-timeout-ms",
             "60000",
             "--http-stream-idle-timeout-ms",
@@ -746,6 +776,10 @@ mod tests {
             "localagent",
             "--agent-mode",
             "build",
+            "--task-kind",
+            "coding",
+            "--enable-write-tools",
+            "--allow-write",
             "--disable-implementation-guard",
             "--http-timeout-ms",
             "0",
@@ -777,7 +811,15 @@ mod tests {
     async fn run_agent_rejects_zero_http_timeouts_in_runtime_owned_mode() {
         let tmp = tempdir().expect("tempdir");
         let paths = crate::store::resolve_state_paths(tmp.path(), None, None, None, None);
-        let mut args = crate::RunArgs::parse_from(["localagent", "--agent-mode", "build"]);
+        let mut args = crate::RunArgs::parse_from([
+            "localagent",
+            "--agent-mode",
+            "build",
+            "--task-kind",
+            "coding",
+        ]);
+        args.enable_write_tools = true;
+        args.allow_write = true;
         args.http_timeout_ms = 0;
         args.http_stream_idle_timeout_ms = 0;
         args.workdir = tmp.path().to_path_buf();
@@ -803,6 +845,8 @@ mod tests {
             "localagent",
             "--agent-mode",
             "build",
+            "--enable-write-tools",
+            "--allow-write",
             "--disable-implementation-guard",
         ]);
         args.http_timeout_ms = 0;

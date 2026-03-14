@@ -1,7 +1,7 @@
 pub(crate) enum VerifiedWriteCompletionDecision {
     FinalizeNow,
+    StartFinalAnswerPhase(String),
     StartRequiredValidationPhase(String),
-    FollowOnTurn(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,26 +55,19 @@ pub(crate) struct RuntimePhaseTransitionDecision {
     pub(crate) completion_reason: &'static str,
 }
 
-fn format_verified_paths(verified_paths: &[String]) -> String {
-    verified_paths.join(", ")
-}
-
 fn required_validation_phase_message(required_command: &str) -> String {
     format!(
         "Validation required now. Return exactly one shell tool call and no prose. Run `{required_command}`. Example arguments: {{\"command\":\"{required_command}\"}}. After it succeeds, reply with the final answer only."
     )
 }
 
-fn follow_on_turn_message(verified_paths: &[String]) -> String {
-    if verified_paths.is_empty() {
-        "Post-write verification succeeded. One required step remains. If the prompt requires validation or tests, your next turn must be exactly one shell tool call for that command and no prose. Do not give the final answer yet. Do not call another write tool unless validation proves another code change is required."
-            .to_string()
-    } else {
-        format!(
-            "Post-write verification succeeded for {}. One required step remains. If the prompt requires validation or tests, your next turn must be exactly one shell tool call for that command and no prose. Do not give the final answer yet. Do not call another write tool for those paths unless validation proves another code change is required.",
-            format_verified_paths(verified_paths)
-        )
-    }
+fn exact_final_answer_phase_message() -> String {
+    "Task work is complete. Do not call more tools. Reply now with the required final answer only, exactly matching the requested format.".to_string()
+}
+
+fn final_answer_phase_message() -> String {
+    "Task work is complete. Do not call more tools. Reply now with the final answer only."
+        .to_string()
 }
 
 fn required_validation_before_final_message(required_command: &str) -> String {
@@ -309,11 +302,11 @@ pub(crate) fn decide_validation_phase_transition(
 }
 
 pub(crate) fn decide_verified_write_completion(
-    user_prompt: &str,
     required_validation_command: Option<&str>,
-    verified_paths: &[String],
+    exact_final_answer_required: bool,
+    _verified_paths: &[String],
     has_post_tool_assistant_closeout: bool,
-    post_write_follow_on_turn_count: u32,
+    _post_write_follow_on_turn_count: u32,
 ) -> VerifiedWriteCompletionDecision {
     if required_validation_command.is_some() && !has_post_tool_assistant_closeout {
         return VerifiedWriteCompletionDecision::StartRequiredValidationPhase(
@@ -322,14 +315,14 @@ pub(crate) fn decide_verified_write_completion(
             ),
         );
     }
-
-    let needs_follow_on_turn =
-        crate::agent_impl_guard::prompt_requires_post_write_follow_on(user_prompt)
-            && !has_post_tool_assistant_closeout;
-    if needs_follow_on_turn && post_write_follow_on_turn_count < 1 {
-        return VerifiedWriteCompletionDecision::FollowOnTurn(follow_on_turn_message(
-            verified_paths,
-        ));
+    if !has_post_tool_assistant_closeout {
+        return VerifiedWriteCompletionDecision::StartFinalAnswerPhase(
+            if exact_final_answer_required {
+                exact_final_answer_phase_message()
+            } else {
+                final_answer_phase_message()
+            },
+        );
     }
 
     VerifiedWriteCompletionDecision::FinalizeNow
@@ -352,13 +345,7 @@ mod tests {
 
     #[test]
     fn verified_write_policy_starts_validation_when_prompt_requires_it() {
-        let decision = decide_verified_write_completion(
-            "Before finishing, run cargo test successfully.",
-            Some("cargo test"),
-            &[],
-            false,
-            0,
-        );
+        let decision = decide_verified_write_completion(Some("cargo test"), false, &[], false, 0);
         match decision {
             VerifiedWriteCompletionDecision::StartRequiredValidationPhase(message) => {
                 assert!(message.contains("cargo test"));
@@ -368,19 +355,34 @@ mod tests {
     }
 
     #[test]
-    fn verified_write_policy_requests_follow_on_when_closeout_missing() {
-        let decision = decide_verified_write_completion(
-            "Summarize what changed after the fix.",
-            None,
-            &["src/main.rs".to_string()],
-            false,
-            0,
-        );
+    fn verified_write_policy_collects_final_answer_when_closeout_is_missing() {
+        let decision =
+            decide_verified_write_completion(None, false, &["src/main.rs".to_string()], false, 0);
+        assert!(matches!(
+            decision,
+            VerifiedWriteCompletionDecision::StartFinalAnswerPhase(_)
+        ));
+    }
+
+    #[test]
+    fn verified_write_policy_collects_exact_final_answer_when_contract_requires_it() {
+        let decision = decide_verified_write_completion(None, true, &[], false, 0);
         match decision {
-            VerifiedWriteCompletionDecision::FollowOnTurn(message) => {
-                assert!(message.contains("src/main.rs"));
+            VerifiedWriteCompletionDecision::StartFinalAnswerPhase(message) => {
+                assert!(message.contains("required final answer only"));
             }
-            _ => panic!("expected follow-on turn"),
+            _ => panic!("expected exact-final-answer phase"),
+        }
+    }
+
+    #[test]
+    fn verified_write_policy_collects_general_final_answer_when_closeout_is_missing() {
+        let decision = decide_verified_write_completion(None, false, &[], false, 0);
+        match decision {
+            VerifiedWriteCompletionDecision::StartFinalAnswerPhase(message) => {
+                assert!(message.contains("Reply now with the final answer only"));
+            }
+            _ => panic!("expected final-answer phase"),
         }
     }
 

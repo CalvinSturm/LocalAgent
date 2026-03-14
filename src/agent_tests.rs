@@ -1095,13 +1095,6 @@ fn wrapper_marker_detection_works() {
 }
 
 #[test]
-fn prompt_requires_effective_write_for_fix_prompt() {
-    assert!(crate::agent::tool_facts::prompt_requires_effective_write(
-        "Fix src/lib.rs so the parser handles empty input."
-    ));
-}
-
-#[test]
 fn inline_tool_call_json_is_parsed() {
     let raw = "{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}";
     let mut allowed = std::collections::BTreeSet::new();
@@ -4997,13 +4990,13 @@ async fn runtime_post_write_verification_allows_finalize_without_model_read_back
     assert_eq!(verify_starts, 1, "expected one runtime verify start");
     assert_eq!(verify_ends, 1, "expected one runtime verify end");
     assert_eq!(
-        model_requests, 2,
-        "runtime should finalize after verified write without another model turn"
+        model_requests, 3,
+        "runtime should collect one bounded final-answer turn after verified write"
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "provider should not be called again after successful verified write"
+        3,
+        "provider should be called once more to provide the final answer"
     );
     let end_ok = evs
         .iter()
@@ -5015,7 +5008,7 @@ async fn runtime_post_write_verification_allows_finalize_without_model_read_back
 }
 
 #[tokio::test]
-async fn runtime_post_write_follow_on_turn_allows_explicit_summary_request() {
+async fn runtime_post_write_missing_closeout_gets_one_bounded_final_answer_turn() {
     let tmp = tempfile::tempdir().expect("tmp");
     tokio::fs::write(
         tmp.path().join("main.rs"),
@@ -5169,27 +5162,27 @@ async fn runtime_post_write_follow_on_turn_allows_explicit_summary_request() {
             && e.data
                 .get("reason")
                 .and_then(|v| v.as_str())
-                .is_some_and(|reason| reason == "post_write_follow_on_required")
+                .is_some_and(|reason| reason == "post_write_final_answer_only_phase")
     });
     assert_eq!(verify_starts, 1, "expected one runtime verify start");
     assert_eq!(verify_ends, 1, "expected one runtime verify end");
     assert_eq!(
         model_requests, 3,
-        "runtime should request one bounded follow-on turn after verified write"
+        "runtime should request one bounded final-answer turn after verified write without a closeout"
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
         3,
-        "provider should be called once more for the explicit follow-on turn"
+        "provider should be called once more to collect the final answer"
     );
     assert!(
         follow_on_blocked,
-        "expected explicit post-write follow-on classification event"
+        "expected post-write final-answer boundary event"
     );
 }
 
 #[tokio::test]
-async fn runtime_post_write_follow_on_ignores_pre_tool_plan_text() {
+async fn runtime_pre_tool_plan_text_does_not_count_as_post_tool_closeout() {
     let tmp = tempfile::tempdir().expect("tmp");
     tokio::fs::write(
         tmp.path().join("main.rs"),
@@ -5328,7 +5321,7 @@ async fn runtime_post_write_follow_on_ignores_pre_tool_plan_text() {
             && e.data
                 .get("reason")
                 .and_then(|v| v.as_str())
-                .is_some_and(|reason| reason == "post_write_follow_on_required")
+                .is_some_and(|reason| reason == "post_write_final_answer_only_phase")
     }));
 }
 
@@ -8854,11 +8847,11 @@ async fn repeated_failed_str_replace_forces_pivot_before_repeat_block() {
         )
         .await;
     assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
-    assert_eq!(out.final_output, "");
+    assert_eq!(out.final_output, "done");
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        6,
-        "runtime should finalize directly after successful verified write"
+        8,
+        "runtime should allow one final-answer turn after successful verified write"
     );
     let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
         .await
@@ -9020,11 +9013,11 @@ async fn repeated_failed_apply_patch_forces_smaller_fix_pivot_before_repeat_bloc
         )
         .await;
     assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
-    assert_eq!(out.final_output, "");
+    assert_eq!(out.final_output, "done");
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        6,
-        "runtime should finalize directly after successful verified write"
+        8,
+        "runtime should allow one final-answer turn after successful verified write"
     );
     let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
         .await

@@ -15,6 +15,7 @@ pub(crate) mod agent_worker_protocol;
 pub mod checks;
 #[allow(dead_code)]
 pub(crate) mod cli_args;
+#[allow(unused_imports)]
 pub(crate) use cli_args::{AgentMode, Cli, DockerNetwork, RunArgs, RunOutputMode};
 pub mod compaction;
 pub mod diagnostics;

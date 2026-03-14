@@ -823,6 +823,6 @@ impl<P: ModelProvider> Agent<P> {
 pub(super) enum VerifiedWriteResult {
     Done(Box<super::agent_types::AgentOutcome>),
     GuardRetry(String),
-    FollowOnTurn(String),
+    StartFinalAnswerPhase(String),
     StartRequiredValidationPhase(String),
 }

@@ -140,12 +140,24 @@ impl<P: ModelProvider> Agent<P> {
         let has_post_tool_assistant_closeout =
             self.has_user_facing_assistant_closeout_after_last_tool(&messages);
         match crate::agent::completion_policy::decide_verified_write_completion(
-            user_prompt,
             self.required_validation_command(user_prompt),
+            self.exact_final_answer_required(user_prompt),
             &verified_paths,
             has_post_tool_assistant_closeout,
             post_write_follow_on_turn_count,
         ) {
+            crate::agent::completion_policy::VerifiedWriteCompletionDecision::StartFinalAnswerPhase(message) => {
+                self.emit_event(
+                    &run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": "post_write_final_answer_only_phase",
+                        "source": "runtime_post_write_follow_on"
+                    }),
+                );
+                return VerifiedWriteResult::StartFinalAnswerPhase(message);
+            }
             crate::agent::completion_policy::VerifiedWriteCompletionDecision::StartRequiredValidationPhase(message) => {
                 self.emit_event(
                     &run_id,
@@ -157,19 +169,6 @@ impl<P: ModelProvider> Agent<P> {
                     }),
                 );
                 return VerifiedWriteResult::StartRequiredValidationPhase(message);
-            }
-            crate::agent::completion_policy::VerifiedWriteCompletionDecision::FollowOnTurn(message) => {
-                self.emit_event(
-                    &run_id,
-                    step,
-                    EventKind::StepBlocked,
-                    serde_json::json!({
-                        "reason": "post_write_follow_on_required",
-                        "source": "runtime_post_write_follow_on",
-                        "follow_on_turn_count": post_write_follow_on_turn_count
-                    }),
-                );
-                return VerifiedWriteResult::FollowOnTurn(message);
             }
             crate::agent::completion_policy::VerifiedWriteCompletionDecision::FinalizeNow => {}
         }

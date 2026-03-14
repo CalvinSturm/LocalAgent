@@ -394,9 +394,7 @@ pub(crate) fn implementation_integrity_violation_from_facts(
             "implementation guard: post-write verification missing read_file on '{path}'"
         ));
     }
-    if prompt_requires_effective_write(user_prompt)
-        && !tool_facts.iter().any(ToolFactV1::is_effective_write)
-    {
+    if !tool_facts.iter().any(ToolFactV1::is_effective_write) {
         return Some(
             "implementation guard: file-edit task finalized without an effective write (writes failed or write tool changed:false)".to_string(),
         );
@@ -405,11 +403,10 @@ pub(crate) fn implementation_integrity_violation_from_facts(
 }
 
 pub(crate) fn read_before_edit_violation_from_facts(
-    user_prompt: &str,
+    _user_prompt: &str,
     tool_facts: &[ToolFactV1],
 ) -> Option<String> {
     let mut successful_read_paths = BTreeSet::<String>::new();
-    let allow_new_file_without_read = prompt_allows_new_file_without_read(user_prompt);
     let mut ordered = tool_facts.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|fact| fact.sequence());
     for fact in ordered {
@@ -423,9 +420,7 @@ pub(crate) fn read_before_edit_violation_from_facts(
                 if !ok {
                     continue;
                 }
-                if (tool != "write_file" || !allow_new_file_without_read)
-                    && !successful_read_paths.contains(path)
-                {
+                if tool != "write_file" && !successful_read_paths.contains(path) {
                     return Some(format!(
                         "implementation guard: {} on '{path}' requires prior read_file on the same path",
                         tool
@@ -458,33 +453,6 @@ impl ToolFactV1 {
             } if changed.unwrap_or(true)
         )
     }
-}
-
-fn prompt_allows_new_file_without_read(prompt: &str) -> bool {
-    let p = prompt.to_ascii_lowercase();
-    p.contains("create a new file")
-        || p.contains("create new file")
-        || p.contains("new file at")
-        || p.contains("add new file")
-        || p.contains("create `")
-        || p.contains("create the file")
-        || p.contains("landing page")
-        || p.contains("web page")
-        || p.contains("homepage")
-        || p.contains("index.html")
-        || p.contains("html file")
-        || (p.contains("create ") && p.contains("current directory"))
-}
-
-pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
-    let p = prompt.to_ascii_lowercase();
-    p.contains("apply_patch")
-        || p.contains("write_file")
-        || p.contains("edit ")
-        || p.contains("fix ")
-        || p.contains("modify ")
-        || p.contains("update ")
-        || p.contains("change ")
 }
 
 fn output_has_placeholder_artifacts(text: &str) -> bool {
@@ -690,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn landing_page_prompt_allows_new_file_without_read() {
+    fn write_file_allows_new_file_without_prior_read() {
         let facts = vec![ToolFactV1::Write {
             sequence: 0,
             tool_call_id: "tc1".to_string(),
@@ -699,10 +667,7 @@ mod tests {
             ok: true,
             changed: Some(true),
         }];
-        let err = read_before_edit_violation_from_facts(
-            "Create a landing page in the current directory",
-            &facts,
-        );
+        let err = read_before_edit_violation_from_facts("any prompt", &facts);
         assert!(err.is_none(), "{err:?}");
     }
 

@@ -101,25 +101,6 @@ pub(crate) fn prompt_requires_tool_only(prompt: &str) -> bool {
             || p.contains("do not explain"))
 }
 
-pub(crate) fn prompt_requires_post_write_follow_on(prompt: &str) -> bool {
-    let p = prompt.to_ascii_lowercase();
-    [
-        "final answer",
-        "final response",
-        "reply with exactly",
-        "summarize what changed",
-        "summarise what changed",
-        "summary of changes",
-        "change summary",
-        "explain what changed",
-        "tell me what changed",
-        "describe what changed",
-        "what changed",
-    ]
-    .iter()
-    .any(|needle| p.contains(needle))
-}
-
 pub(crate) fn prompt_required_validation_command(prompt: &str) -> Option<&'static str> {
     let p = prompt.to_ascii_lowercase();
     ["node --test", "cargo test", "npm test", "pnpm test"]
@@ -203,19 +184,6 @@ mod tests {
             prompt_required_exact_final_answer(prompt).as_deref(),
             Some("fixed: src/math.rs")
         );
-    }
-
-    #[test]
-    fn post_write_follow_on_is_only_for_explicit_closeout_requests() {
-        assert!(super::prompt_requires_post_write_follow_on(
-            "Fix the bug and summarize what changed."
-        ));
-        assert!(super::prompt_requires_post_write_follow_on(
-            "Fix the bug and reply with exactly `fixed: src/math.rs`."
-        ));
-        assert!(!super::prompt_requires_post_write_follow_on(
-            "Fix the bug. Before finishing, run cargo test successfully."
-        ));
     }
 
     #[test]

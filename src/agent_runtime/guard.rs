@@ -5,6 +5,10 @@ use crate::planner;
 use crate::types::{Message, Role};
 use crate::RunArgs;
 
+fn write_capability_available(args: &RunArgs) -> bool {
+    (args.enable_write_tools && args.allow_write) || args.unsafe_bypass_allow_flags
+}
+
 pub(super) fn task_kind_enforces_implementation_guard(
     task_kind: Option<&str>,
     selected_task_kind: Option<&str>,
@@ -21,14 +25,14 @@ pub(super) fn should_enable_implementation_guard(
     if args.disable_implementation_guard {
         return false;
     }
+    if !write_capability_available(args) {
+        return false;
+    }
     if args.task_kind.is_some() || selected_task_kind.is_some() {
         return task_kind_enforces_implementation_guard(
             args.task_kind.as_deref(),
             selected_task_kind,
         );
-    }
-    if matches!(args.agent_mode, crate::AgentMode::Build) {
-        return true;
     }
     task_kind_enforces_implementation_guard(args.task_kind.as_deref(), selected_task_kind)
 }

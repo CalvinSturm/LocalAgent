@@ -187,15 +187,13 @@ pub(crate) fn apply_verified_write_follow_on(
                 developer_message: message.clone(),
             })
         }
-        VerifiedWriteResult::FollowOnTurn(message) => {
-            runtime_checkpoint
-                .retry_state
-                .post_write_follow_on_turn_count += 1;
+        VerifiedWriteResult::StartFinalAnswerPhase(message) => {
             runtime_checkpoint.retry_state.post_write_guard_retry_count = 0;
             runtime_checkpoint
                 .retry_state
                 .blocked_runtime_completion_count = 0;
-            runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::VerifyingChanges;
+            runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::CollectingFinalAnswer;
+            runtime_checkpoint.validation_state.collecting_final_answer = true;
             Some(VerifiedWriteFollowOnUpdate {
                 control: PhaseLoopControl::ContinueAgentStep,
                 developer_message: message.clone(),
