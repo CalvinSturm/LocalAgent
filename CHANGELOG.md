@@ -11,30 +11,68 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
 
 ## v0.5.0 - 2026-03-14
 
+`v0.5.0` is a major runtime and architecture hardening release. It refactors large parts of the agent/runtime/tooling codebase into smaller focused modules, strengthens runtime-owned completion and validation behavior for coding tasks, and expands LocalAgent's coding/eval workflow with broader benchmark coverage, local-model investigation assets, and new tooling integrations.
+
 ### Added
 
-- `common_coding_ux` benchmark expansion on the eval path, including broader task coverage, frozen baseline artifacts, helper runbooks, and focused comparison harnesses for closeout and validation-discipline follow-up work.
-- TypeScript LSP context provider support and supporting server/runtime harness coverage for tool-assisted coding workflows.
+- Checkpoint-backed runtime state and artifact hardening across multi-phase agent execution, including explicit runtime phase/state tracking, resumable checkpoints, and stricter terminal-artifact validation.
+- Expanded coding-task runtime contracts:
+  - explicit validation-command handling
+  - explicit exact-final-answer/output contracts
+  - fact-backed write/read/validation tracking
+  - runtime-owned post-write verification lifecycle
+- New tool/edit-path support for local coding workflows:
+  - `str_replace` for small-model-friendly file edits
+  - `edit`-path acceptance and related runtime/tool normalization
+  - malformed wrapped tool-call recovery improvements
+- TypeScript LSP context provider support, TypeScript diagnostics harness coverage, and supporting stub/integration tests.
+- Server runtime foundation and backend/session/run harness coverage for LocalAgent’s server-facing execution path.
+- `common_coding_ux` benchmark expansion on the eval path, including broader task coverage, UX metric rows, frozen baseline artifacts, helper runbooks, and focused comparison harnesses for closeout and validation-discipline follow-up work.
+- Manual evaluation/testing assets for local-model investigation, including canonical `T`/`D` packs, runbooks, result logs, and export/verification scripts.
 
 ### Changed
 
-- Runtime completion policy and coding-task contracts are stricter and more explicit:
-  - required validation commands and exact final-answer contracts now flow through clearer runtime-owned paths
+- Large parts of the codebase were refactored into smaller focused modules, including the agent runtime, tool execution, eval runner, learning surfaces, and TUI/runtime coordination code, while preserving the shared runtime-loop semantics and making behavior more explicit and testable.
+- Runtime completion policy is now more deterministic for coding tasks:
+  - verified writes, validation phases, and exact-closeout phases are coordinated through runtime-owned control flow rather than loose prompt heuristics
+  - one tool call per model step is enforced
+  - blind shell retries after failed validation are blocked
   - validation-only shell handoff is more resilient when the model emits prose-only or wrong-tool turns after a successful edit
   - inline `reply with exactly \`...\`` closeout contracts are inferred more reliably in one-shot `run` prompts
 - One-shot `run` / `exec` behavior now defaults to isolated ephemeral state plus sessionless execution unless state/session settings are explicitly requested.
+- Runtime-owned modes now enforce safer nonzero HTTP timeout defaults and stricter timeout handling for provider calls, tool execution, and verification paths.
+- TUI/chat behavior improved for longer-form and tool-heavy sessions:
+  - multiline input mode landed
+  - tool-row reconciliation and verified-write rendering became more robust
+  - failure/status handling is clearer for interrupted and post-run reconciliation cases
 - Common coding UX benchmark work is now treated as the active decision surface for later local-model/runtime improvement branches.
+- Documentation was reorganized around current architecture/reference/policy/operations surfaces, with older planning/audit material archived under `docs/archive/`.
 
 ### Fixed
 
-- Recovered malformed single wrapped tool calls more consistently.
+- Fixed runtime correctness issues that were blocking eval completion and causing premature or incorrect finalize behavior.
+- Fixed post-write follow-on and closeout detection issues in validation-required coding flows.
+- Recovered malformed single wrapped tool calls more consistently and improved LM Studio/OpenAI-compatible tool-call normalization.
+- Improved shell-tool compatibility and validation-turn repair behavior for local models with weak tool protocol discipline.
+- Fixed TUI/tool-event drift issues around reused tool ids, missing exec ids, lingering running rows, and verified-write projection.
 - Tightened tool-repair helpers and clippy cleanliness around runtime/tool protocol paths.
 - Sanitized stray `</think>` closers from visible output.
 
 ### Docs
 
+- Reorganized the repo docs layout, aligned AGENTS/contributor guidance with the current doc map, and expanded runtime architecture/policy/reference coverage.
+- Added and updated operational documentation for runtime heuristics, local-model evaluation, coding UX benchmarking, and manual control packs.
 - Aligned release metadata, release-notes indexing, and README release links for the `v0.5.0` release cut.
-- Updated coding UX benchmark documentation to preserve current baseline and follow-up evidence as explicit artifacts instead of ad hoc notes.
+
+### Release Scope
+
+- This release covers `239` commits since `v0.4.0`.
+- The `v0.4.0..v0.5.0` diff touches `257` files with about `64k` insertions and `20k` deletions.
+- The dominant themes are:
+  - runtime/architecture hardening and modularization
+  - coding-task contract enforcement and validation recovery
+  - coding/eval benchmark expansion
+  - local-model investigation and tooling integration
 
 ### Schema Notes
 
