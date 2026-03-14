@@ -14,6 +14,21 @@ use crate::taskgraph;
 use crate::trust;
 use crate::{run_agent, ProviderKind, RunArgs, TasksRunArgs};
 
+const TASKGRAPH_CODING_REPOMAP_MAX_BYTES: usize = 12 * 1024;
+
+fn apply_taskgraph_context_budget(node_args: &mut RunArgs) {
+    let is_coding = node_args
+        .task_kind
+        .as_deref()
+        .map(crate::agent::task_contract::canonicalize_task_kind)
+        .as_deref()
+        == Some("coding");
+    if node_args.use_repomap && is_coding {
+        node_args.repomap_max_bytes =
+            node_args.repomap_max_bytes.min(TASKGRAPH_CODING_REPOMAP_MAX_BYTES);
+    }
+}
+
 fn build_node_run_args(
     base_run: &RunArgs,
     taskfile: &taskgraph::TaskFile,
@@ -40,6 +55,7 @@ fn build_node_run_args(
             node.prompt.clone()
         },
     );
+    apply_taskgraph_context_budget(&mut node_args);
     Ok(node_args)
 }
 
@@ -474,5 +490,62 @@ mod tests {
                 required_text: "validated".to_string()
             }
         );
+    }
+
+    #[test]
+    fn taskgraph_coding_nodes_cap_repomap_budget() {
+        let mut base = base_run_args();
+        base.use_repomap = true;
+        base.repomap_max_bytes = 32 * 1024;
+        let taskfile = TaskFile {
+            schema_version: "openagent.taskfile.v1".to_string(),
+            name: "x".to_string(),
+            defaults: TaskDefaults {
+                task_kind: Some("coding".to_string()),
+                ..TaskDefaults::default()
+            },
+            workdir: TaskWorkdir::default(),
+            nodes: vec![TaskNode {
+                id: "fix-parser".to_string(),
+                depends_on: vec![],
+                prompt: "Fix the parser bug.".to_string(),
+                settings: TaskNodeSettings::default(),
+            }],
+        };
+        let node = &taskfile.nodes[0];
+        let node_args = build_node_run_args(&base, &taskfile, node, &node.id, &tasks_run_args(), &[])
+            .expect("node args");
+
+        assert_eq!(
+            node_args.repomap_max_bytes,
+            super::TASKGRAPH_CODING_REPOMAP_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn taskgraph_non_coding_nodes_keep_repomap_budget() {
+        let mut base = base_run_args();
+        base.use_repomap = true;
+        base.repomap_max_bytes = 32 * 1024;
+        let taskfile = TaskFile {
+            schema_version: "openagent.taskfile.v1".to_string(),
+            name: "x".to_string(),
+            defaults: TaskDefaults {
+                task_kind: Some("analysis".to_string()),
+                ..TaskDefaults::default()
+            },
+            workdir: TaskWorkdir::default(),
+            nodes: vec![TaskNode {
+                id: "inspect".to_string(),
+                depends_on: vec![],
+                prompt: "Summarize the repo.".to_string(),
+                settings: TaskNodeSettings::default(),
+            }],
+        };
+        let node = &taskfile.nodes[0];
+        let node_args = build_node_run_args(&base, &taskfile, node, &node.id, &tasks_run_args(), &[])
+            .expect("node args");
+
+        assert_eq!(node_args.repomap_max_bytes, 32 * 1024);
     }
 }
