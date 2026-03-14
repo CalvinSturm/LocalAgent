@@ -64,6 +64,13 @@ impl InstructionResolution {
     }
 }
 
+pub type ResolvedMessages = (
+    Vec<Message>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 pub fn default_config_path(state_dir: &Path) -> PathBuf {
     state_dir.join("instructions.yaml")
 }
@@ -89,7 +96,7 @@ pub fn resolve_messages(
     task: Option<&str>,
     model_profile: Option<&str>,
     task_profile: Option<&str>,
-) -> anyhow::Result<(Vec<Message>, Option<String>, Option<String>, Option<String>)> {
+) -> anyhow::Result<ResolvedMessages> {
     let mut out = Vec::new();
     out.extend(to_messages(&cfg.base));
 

@@ -442,7 +442,7 @@ fn extract_recoverable_single_wrapped_tool_call(
     extract_named_arguments_tool_call(body, step, allowed_tool_names, "recovered_wrapped_named_tc")
 }
 
-fn recoverable_wrapped_tool_call_body<'a>(raw: &'a str) -> Option<&'a str> {
+fn recoverable_wrapped_tool_call_body(raw: &str) -> Option<&str> {
     let trimmed = raw.trim();
     let upper = trimmed.to_ascii_uppercase();
     let start_tag = "[TOOL_CALL]";
