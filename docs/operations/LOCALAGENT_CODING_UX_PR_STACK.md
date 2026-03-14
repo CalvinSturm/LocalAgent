@@ -302,7 +302,56 @@ The heuristic reconciliation closeout explicitly calls out manual-pack/task meta
 * observed read from that workflow:
   * qwen improved from an immediate no-tool-call failure to later task progression under the authored contract
   * omnicoder did not improve because both variants failed earlier on the same denied `grep` choice
-* do not switch to PR4a or planner/routing work until the next workstream decision explicitly accounts for that mixed but real PR4b result
+* PR4b has now also been exercised on the harder `D5` recovery fixture:
+  * qwen prompt inference outperformed the authored-contract variant
+  * omnicoder showed more activity under the authored contract, but not a better repair outcome
+* current closeout read after `D3 + D5`:
+  * explicit authored contracts are useful, real, and worth keeping
+  * they are not broad enough to be the next dominant reliability lever on harder coding tasks
+  * the harder remaining failures now justify moving to `PR4a`
+
+**Next workstream decision**
+
+* the next formal workstream is now `PR4a`, not more `PR4b`
+* reason:
+  * `PR4b` produced a real improvement signal on `D3`, so the authored-contract surface is validated
+  * `D5` shows that authored contracts alone do not generalize cleanly to the harder recovery/edit case
+  * the next repeated blocker is better framed as bounded repo/file grounding and recovery support than as more contract authoring
+* keep `PR4b` in place as a retained improvement surface
+* do not jump to `PR5` planner/routing until `PR4a` is tried against the same harder task shapes
+
+**PR4a current read**
+
+* the current PR4a grounding slices are worth keeping:
+  * stale `.tmp/...` likely-target pollution was removed
+  * generic `.github/...` fallback targets were eliminated for coding-task likely-target selection
+  * clean `D5` reruns now fall back to no likely-target block rather than a misleading one
+* the qualification investigation also showed that grounding is no longer the immediate blocker on this workflow:
+  * `qwen2.5-coder-7b-instruct@q8_0` can pass qualification on a sequential rerun and then fails later on ineffective write
+  * `omnicoder-9b@q8_0` can also pass qualification, but the task-graph run then fails before tool use with LM Studio `HTTP 400` context overflow
+  * this does not justify a LocalAgent-side qualification or runtime-gating change
+* the context-budget reduction also landed and changed the failure shape on `D5`:
+  * task-graph coding nodes now cap repo-map injection more aggressively
+  * `omnicoder-9b@q8_0` moved past provider overflow into a real `read_file -> glob -> read_file -> read_file -> edit` trace
+  * the new omnicoder blocker is validation-phase protocol discipline after a successful edit, not prompt-size overflow
+  * `qwen3.5-9b-uncensored-hauhaucs-aggressive` also moved past provider overflow, but still fell back to read-only and then failed on write denial
+
+**Immediate next step**
+
+* keep the landed PR4a grounding slices
+* treat the task-graph context-budget branch as successful and closed
+* the `omnicoder-9b@q8_0` validation-phase discipline investigation on `D5` is now complete:
+  * a narrow local follow-up profile changed the write path slightly and reduced one tool call
+  * it did not change the failure boundary
+  * both baseline and shaped runs still failed with `required validation phase requires exactly one shell tool call and no prose`
+* stop further omnicoder profile tuning on this `D5` branch for now
+* keep `qwen3.5-9b-uncensored-hauhaucs-aggressive` as secondary evidence for qualification/provider instability, not as the main next branch
+* a narrow authored-contract audit on `D5` is also complete:
+  * the taskfile contract is already minimal and explicit
+  * `task_kind = coding`, `validation_command = cargo test`, and `exact_final_answer = verified fix` are not the current blocker
+  * no new LocalAgent-side authored-contract change is justified from this branch
+* move off the `D5` tuning branch and return to benchmark expansion rather than continuing ad hoc model tuning here
+* do not jump to `PR5` planner/routing based on qualification-fallback, provider-overflow, or model-protocol artifacts alone
 
 ---
 
