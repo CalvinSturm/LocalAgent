@@ -115,7 +115,16 @@ pub(crate) fn wrapped_line_count(text: &str, width: usize) -> usize {
 }
 
 pub(crate) fn compact_status_detail(s: &str, max_chars: usize) -> String {
-    let compact = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = s
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !is_debug_status_line(line))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.is_empty() {
+        return String::new();
+    }
     if compact.chars().count() <= max_chars {
         return compact;
     }
@@ -123,6 +132,16 @@ pub(crate) fn compact_status_detail(s: &str, max_chars: usize) -> String {
     out.truncate(max_chars.saturating_sub(3));
     out.push_str("...");
     out
+}
+
+fn is_debug_status_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    (line.starts_with('[') && line.contains(']'))
+        || lower.contains("tool_exec_start:")
+        || lower.contains("tool_exec_end:")
+        || lower.contains("model_delta:")
+        || lower.contains("provider_retry:")
+        || lower.contains("post_write_verify")
 }
 
 pub(crate) fn centered_multiline(text: &str, width: u16, top_pad: usize) -> String {
@@ -189,7 +208,7 @@ pub(crate) fn rotating_status_word<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::styled_chat_text;
+    use super::{compact_status_detail, styled_chat_text};
     use ratatui::style::Style;
 
     #[test]
@@ -207,5 +226,11 @@ mod tests {
         let (_styled, plain) = styled_chat_text(input, Style::default());
         assert!(plain.contains("   1 | -old"));
         assert!(plain.contains("   2 | +new"));
+    }
+
+    #[test]
+    fn compact_status_detail_strips_debug_log_lines() {
+        let input = "[DEBUG] tool_exec_start: step=0 name=read_file id=565594452\nprovider error";
+        assert_eq!(compact_status_detail(input, 120), "provider error");
     }
 }

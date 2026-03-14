@@ -49,7 +49,6 @@ pub(crate) struct TuiNormalSubmitPrepInput<'a> {
     pub(crate) line: &'a str,
     pub(crate) prompt_history: &'a mut Vec<String>,
     pub(crate) transcript: &'a mut Vec<(String, String)>,
-    pub(crate) show_thinking_panel: &'a mut bool,
     pub(crate) show_logs: &'a mut bool,
     pub(crate) follow_output: &'a mut bool,
     pub(crate) transcript_scroll: &'a mut usize,
@@ -62,7 +61,6 @@ pub(crate) struct TuiNormalSubmitPrepInput<'a> {
 pub(crate) fn prepare_tui_normal_submit_state(
     input: TuiNormalSubmitPrepInput<'_>,
 ) -> TuiNormalSubmitPrepOutcome {
-    let first_prompt = input.transcript.is_empty();
     input.prompt_history.push(input.line.to_string());
     *input.follow_output = true;
     *input.transcript_scroll = usize::MAX;
@@ -77,9 +75,6 @@ pub(crate) fn prepare_tui_normal_submit_state(
     input.status_detail.clear();
     input.streaming_assistant.clear();
     *input.think_tick = 0;
-    if first_prompt {
-        *input.show_thinking_panel = true;
-    }
     TuiNormalSubmitPrepOutcome::ContinueToRun
 }
 
@@ -449,7 +444,6 @@ pub(crate) async fn handle_tui_enter_submit(
         line: &line,
         prompt_history,
         transcript,
-        show_thinking_panel,
         show_logs,
         follow_output,
         transcript_scroll,

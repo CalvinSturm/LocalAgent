@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Cell, Clear, Paragraph, Row, Table, Wrap};
 use std::collections::BTreeMap;
 
 mod overlay;
@@ -347,6 +347,15 @@ pub(crate) fn draw_chat_frame(
             Style::default().fg(Color::Red),
         ));
     }
+    let used_chars = status_spans
+        .iter()
+        .map(|span| span.content.chars().count())
+        .sum::<usize>();
+    let row_width = outer[3].width as usize;
+    if row_width > used_chars {
+        status_spans.push(Span::raw(" ".repeat(row_width - used_chars)));
+    }
+    f.render_widget(Clear, outer[3]);
     f.render_widget(Paragraph::new(Line::from(status_spans)), outer[3]);
 
     let input_box = Layout::default()
@@ -457,17 +466,8 @@ fn draw_tools_pane(
     let row_count = if compact_tools { 20 } else { 12 };
     let rows: Vec<&ToolRow> = ui_state.tool_calls.iter().rev().take(row_count).collect();
     let selected = rows.get(tools_selected).copied();
-    let summary = format!(
-        "Tools {}  rows:{}  selected:{}/{}",
-        if focused { "[focused]" } else { "" },
-        rows.len(),
-        if rows.is_empty() {
-            0
-        } else {
-            tools_selected + 1
-        },
-        rows.len()
-    );
+    let _ = focused;
+    let summary = format!("Tools  rows:{}", rows.len());
 
     let layout = if show_details && selected.is_some() {
         Layout::default()
@@ -578,11 +578,14 @@ fn draw_approvals_pane(
     approvals_selected: usize,
     focused: bool,
 ) {
-    let summary = format!(
-        "Approvals {}  pending:{}",
-        if focused { "[focused]" } else { "" },
-        ui_state.pending_approvals.len()
-    );
+    let summary = if focused {
+        format!(
+            "Approvals  pending:{}  focus",
+            ui_state.pending_approvals.len()
+        )
+    } else {
+        format!("Approvals  pending:{}", ui_state.pending_approvals.len())
+    };
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(3)])
@@ -644,7 +647,7 @@ fn draw_reasoning_pane(
     };
     let body = panel_thinking
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or("(no reasoning captured yet)");
+        .unwrap_or("(provider/model did not emit captured reasoning for this turn)");
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
@@ -692,4 +695,108 @@ fn is_protocol_badge_row(t: &ToolRow) -> bool {
         || sr.contains("repeated malformed tool calls")
         || sr.contains("repeated invalid patch format")
         || sr.contains("tool-only phase")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::draw_chat_frame;
+    use crate::tui::state::UiState;
+    use ratatui::{backend::TestBackend, Terminal};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn status_row_clears_stale_tail_from_previous_frame() {
+        let backend = TestBackend::new(100, 28);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let transcript = vec![("user".to_string(), "hello".to_string())];
+        let ui_state = UiState::new(16);
+
+        terminal
+            .draw(|f| {
+                draw_chat_frame(
+                    f,
+                    "Code",
+                    "lmstudio",
+                    true,
+                    "model",
+                    "running",
+                    "leftover-status-tail-278",
+                    &transcript,
+                    &BTreeMap::new(),
+                    true,
+                    "",
+                    &ui_state,
+                    0,
+                    true,
+                    false,
+                    0,
+                    "C:\\demo",
+                    "",
+                    0,
+                    false,
+                    &[],
+                    0,
+                    100,
+                    true,
+                    false,
+                    false,
+                    0,
+                    false,
+                    false,
+                    0,
+                    None,
+                    None,
+                );
+            })
+            .expect("first draw");
+
+        terminal
+            .draw(|f| {
+                draw_chat_frame(
+                    f,
+                    "Code",
+                    "lmstudio",
+                    true,
+                    "model",
+                    "running",
+                    "",
+                    &transcript,
+                    &BTreeMap::new(),
+                    true,
+                    "",
+                    &ui_state,
+                    0,
+                    true,
+                    false,
+                    0,
+                    "C:\\demo",
+                    "",
+                    0,
+                    false,
+                    &[],
+                    1,
+                    100,
+                    true,
+                    false,
+                    false,
+                    0,
+                    false,
+                    false,
+                    0,
+                    None,
+                    None,
+                );
+            })
+            .expect("second draw");
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(!rendered.contains("leftover-status-tail-278"));
+        assert!(!rendered.contains("278"));
+    }
 }

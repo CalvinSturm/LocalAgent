@@ -33,6 +33,19 @@ fn should_render_final_assistant_entry(exit_reason: AgentExitReason, final_text:
     matches!(exit_reason, AgentExitReason::Ok) && !final_text.trim().is_empty()
 }
 
+fn successful_run_closeout_line(ui_state: &UiState) -> String {
+    if let Some(tool) = ui_state
+        .tool_calls
+        .iter()
+        .rev()
+        .find(|row| row.ok == Some(true))
+    {
+        format!("Completed via {}.", tool.tool_name)
+    } else {
+        "Completed.".to_string()
+    }
+}
+
 pub(crate) struct TuiActiveTurnLoopInput<'a> {
     pub(crate) terminal: &'a mut Terminal<CrosstermBackend<std::io::Stdout>>,
     pub(crate) fut: TuiRunFuture,
@@ -764,6 +777,9 @@ pub(crate) async fn drive_tui_active_turn_loop(
                             transcript_thinking,
                             &final_text,
                         );
+                    } else if matches!(exit_reason, AgentExitReason::Ok) {
+                        transcript
+                            .push(("system".to_string(), successful_run_closeout_line(ui_state)));
                     }
                     if *follow_output {
                         *transcript_scroll = usize::MAX;

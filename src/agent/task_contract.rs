@@ -150,6 +150,19 @@ fn normalize_task_kind(value: &str) -> String {
     }
 }
 
+fn prompt_suggests_coding_task(prompt: &str) -> bool {
+    let p = prompt.to_ascii_lowercase();
+    crate::agent::tool_facts::prompt_requires_effective_write(prompt)
+        || crate::agent_impl_guard::prompt_required_validation_command(prompt).is_some()
+        || p.contains("landing page")
+        || p.contains("index.html")
+        || p.contains("html file")
+        || p.contains("current directory")
+        || p.contains("src/")
+        || p.contains("cargo.toml")
+        || p.contains("package.json")
+}
+
 pub(crate) fn resolve_task_contract(
     args: &RunArgs,
     prompt: &str,
@@ -161,7 +174,7 @@ pub(crate) fn resolve_task_contract(
         (normalize_task_kind(value), ContractValueSource::Explicit)
     } else if let Some(value) = selected_task_kind {
         (normalize_task_kind(value), ContractValueSource::Explicit)
-    } else if implementation_guard_enabled {
+    } else if implementation_guard_enabled && prompt_suggests_coding_task(prompt) {
         ("coding".to_string(), ContractValueSource::Inferred)
     } else {
         ("general".to_string(), ContractValueSource::Defaulted)
@@ -345,6 +358,50 @@ mod tests {
         assert_eq!(
             resolution.provenance.completion_policy,
             ContractValueSource::Explicit
+        );
+    }
+
+    #[test]
+    fn build_mode_does_not_force_coding_for_general_chat_prompt() {
+        let args = RunArgs::parse_from(["localagent"]);
+        let resolution = resolve_task_contract(
+            &args,
+            "Explain what this project does at a high level.",
+            None,
+            true,
+            &tool_defs(&["read_file"]),
+        );
+        assert_eq!(resolution.contract.task_kind, "general");
+        assert_eq!(
+            resolution.provenance.task_kind,
+            ContractValueSource::Defaulted
+        );
+        assert_eq!(
+            resolution.contract.write_requirement,
+            WriteRequirement::Optional
+        );
+        assert!(
+            !resolution
+                .contract
+                .completion_policy
+                .require_effective_write
+        );
+    }
+
+    #[test]
+    fn build_mode_still_infers_coding_for_landing_page_prompt() {
+        let args = RunArgs::parse_from(["localagent"]);
+        let resolution = resolve_task_contract(
+            &args,
+            "Create a landing page in the current directory.",
+            None,
+            true,
+            &tool_defs(&["write_file"]),
+        );
+        assert_eq!(resolution.contract.task_kind, "coding");
+        assert_eq!(
+            resolution.provenance.task_kind,
+            ContractValueSource::Inferred
         );
     }
 

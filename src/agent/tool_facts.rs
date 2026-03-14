@@ -468,6 +468,12 @@ fn prompt_allows_new_file_without_read(prompt: &str) -> bool {
         || p.contains("add new file")
         || p.contains("create `")
         || p.contains("create the file")
+        || p.contains("landing page")
+        || p.contains("web page")
+        || p.contains("homepage")
+        || p.contains("index.html")
+        || p.contains("html file")
+        || (p.contains("create ") && p.contains("current directory"))
 }
 
 pub(crate) fn prompt_requires_effective_write(prompt: &str) -> bool {
@@ -681,6 +687,23 @@ mod tests {
         let err = read_before_edit_violation_from_facts("fix src/main.rs", &facts)
             .expect("expected violation");
         assert!(err.contains("requires prior read_file"));
+    }
+
+    #[test]
+    fn landing_page_prompt_allows_new_file_without_read() {
+        let facts = vec![ToolFactV1::Write {
+            sequence: 0,
+            tool_call_id: "tc1".to_string(),
+            tool: "write_file".to_string(),
+            path: "index.html".to_string(),
+            ok: true,
+            changed: Some(true),
+        }];
+        let err = read_before_edit_violation_from_facts(
+            "Create a landing page in the current directory",
+            &facts,
+        );
+        assert!(err.is_none(), "{err:?}");
     }
 
     #[test]
