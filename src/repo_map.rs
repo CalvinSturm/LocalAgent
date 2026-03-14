@@ -284,7 +284,7 @@ fn prompt_terms(prompt: &str) -> Vec<String> {
 }
 
 fn score_path(path: &str, terms: &[String]) -> i32 {
-    let lower = path.to_ascii_lowercase();
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
     let mut score = 0;
     for term in terms {
         if lower.contains(term) {
@@ -298,7 +298,59 @@ fn score_path(path: &str, terms: &[String]) -> i32 {
             };
         }
     }
+    score += code_surface_score(&lower);
     score
+}
+
+fn code_surface_score(path: &str) -> i32 {
+    let mut score = 0;
+
+    if path.starts_with("src/")
+        || path.starts_with("tests/")
+        || path.starts_with("test/")
+        || path.contains("/src/")
+        || path.contains("/tests/")
+        || path.contains("/test/")
+    {
+        score += 12;
+    }
+
+    if matches_code_extension(path) {
+        score += 8;
+    }
+
+    if path.starts_with(".github/") || path.starts_with("docs/") || path.contains("/docs/") {
+        score -= 18;
+    }
+
+    if path.ends_with(".md")
+        || path.ends_with(".json")
+        || path.ends_with(".yaml")
+        || path.ends_with(".yml")
+        || path.ends_with(".toml")
+        || path.ends_with("cargo.lock")
+        || path.ends_with(".lock")
+    {
+        score -= 12;
+    }
+
+    score
+}
+
+fn matches_code_extension(path: &str) -> bool {
+    path.ends_with(".rs")
+        || path.ends_with(".py")
+        || path.ends_with(".js")
+        || path.ends_with(".ts")
+        || path.ends_with(".tsx")
+        || path.ends_with(".jsx")
+        || path.ends_with(".go")
+        || path.ends_with(".java")
+        || path.ends_with(".c")
+        || path.ends_with(".cc")
+        || path.ends_with(".cpp")
+        || path.ends_with(".h")
+        || path.ends_with(".hpp")
 }
 
 fn score_symbol_line(line: &str, terms: &[String]) -> i32 {
@@ -882,6 +934,50 @@ mod tests {
             "transient .tmp paths should not survive likely-target filtering"
         );
         assert_eq!(grounded.likely_target_files, vec!["src/parser.rs"]);
+    }
+
+    #[test]
+    fn likely_target_files_prefer_code_surfaces_over_generic_prompt_matches() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::create_dir_all(root.join(".github/ISSUE_TEMPLATE")).expect("github");
+        fs::write(root.join(".git"), "gitdir: x").expect("git marker");
+        fs::write(
+            root.join("src").join("parser.rs"),
+            "pub fn parse_number() {}\n",
+        )
+        .expect("parser");
+        fs::write(
+            root.join(".github/ISSUE_TEMPLATE").join("bug_report.md"),
+            "parser bug template\n",
+        )
+        .expect("bug report");
+
+        let map = resolve_repo_map(
+            &root,
+            RepoMapLimits {
+                max_files: 32,
+                max_scan_bytes: 128 * 1024,
+                max_out_bytes: 100_000,
+                ..RepoMapLimits::default()
+            },
+        )
+        .expect("map");
+        let grounded = with_likely_targets(
+            &map,
+            "Fix the parser bug and update the parser implementation.",
+            &root,
+            2,
+        );
+
+        assert_eq!(grounded.likely_target_files[0], "src/parser.rs");
+        assert!(
+            grounded.likely_target_files
+                .iter()
+                .all(|path| path != ".github/ISSUE_TEMPLATE/bug_report.md"),
+            "generic docs/config matches should not outrank coding files"
+        );
     }
 
     #[cfg(unix)]
