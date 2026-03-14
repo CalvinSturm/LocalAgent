@@ -218,6 +218,13 @@ Broader-pack frozen baseline:
     - the current qwen baseline remains weak overall, but it is explicit and stable enough to compare future changes against
     - future benchmark claims should compare against this named baseline rather than against isolated `D5` or `U9` anecdotes
 
+Targeted follow-up evidence:
+- `2026-03-14` `U3/U4` manual closeout follow-up on `omnicoder-9b@q8_0`
+  - scope: narrow harness only, not a broad-pack comparison
+  - before runtime fix: both tasks could make the correct edit but often terminated with `exit_reason: ok` and empty `final_output` because `run`-mode prompt inference did not recognize inline `reply with exactly \`...\`` contracts
+  - after the inline exact-answer inference fix in [agent_impl_guard.rs](/C:/Users/Calvin/Software%20Projects/LocalAgent/src/agent_impl_guard.rs), both `U3` and `U4` completed with the expected exact closeout strings in baseline and shaped harness runs
+  - read: this is useful benchmark evidence because it demonstrates a real runtime contract-gap fix derived from eval artifacts, but it should not be interpreted as a new broad-pack baseline or as evidence that closeout shaping itself improved qwen
+
 Primary comparison models for early PR1 readouts:
 - [ ] `omnicoder-9b@q8_0`
 - [ ] `qwen/qwen3.5-9b` when using the previously stronger effective load/result path
