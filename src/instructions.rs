@@ -64,12 +64,7 @@ impl InstructionResolution {
     }
 }
 
-pub type ResolvedMessages = (
-    Vec<Message>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+pub type ResolvedMessages = (Vec<Message>, Option<String>, Option<String>, Option<String>);
 
 pub fn default_config_path(state_dir: &Path) -> PathBuf {
     state_dir.join("instructions.yaml")

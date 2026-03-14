@@ -84,6 +84,27 @@ For interactive investigation:
 localagent --provider <provider> --model <model> --workdir <isolated-workdir> --state-dir <isolated-state-dir> --no-session chat --tui
 ```
 
+## Common Coding UX Eval Baseline
+
+Use the helper script under `scripts/` to capture or compare against the frozen broad-pack coding baseline without rebuilding the command by hand.
+
+Frozen baseline capture:
+
+```powershell
+pwsh -File scripts/run-common-coding-ux-eval.ps1 -Model "qwen2.5-coder-7b-instruct@q8_0"
+```
+
+Later comparison run against that baseline:
+
+```powershell
+pwsh -File scripts/run-common-coding-ux-eval.ps1 `
+  -Model "qwen2.5-coder-7b-instruct@q8_0" `
+  -Label "qwen2.5-coder-7b-instruct-q8_0-candidate-a" `
+  -CompareBaseline "broad_common_coding_ux_qwen2_5_coder_7b_instruct_q8_0_2026_03_13"
+```
+
+The helper writes a single run directory containing `run.json`, `SUMMARY.md`, `junit.xml`, and `bundle.zip`, and it uses a dedicated persistent state dir so named baselines remain durable across runs.
+
 ## Related Docs
 
 - Architecture map: [../architecture/RUNTIME_ARCHITECTURE.md](../architecture/RUNTIME_ARCHITECTURE.md)
