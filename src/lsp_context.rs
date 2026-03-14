@@ -98,6 +98,8 @@ pub struct ResolvedLspContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncation_reason: Option<String>,
     pub bytes_kept: u64,
+    #[serde(default)]
+    pub likely_target_files: Vec<String>,
 }
 
 pub trait LspContextProvider {
@@ -263,6 +265,7 @@ pub fn resolve_lsp_context(
         truncated: false,
         truncation_reason: None,
         bytes_kept: 0,
+        likely_target_files: Vec::new(),
     };
     apply_render_budget(&mut ctx, limits.max_render_bytes);
     let rendered = render_lsp_context_text(&ctx);
@@ -278,6 +281,24 @@ pub fn resolve_lsp_context(
     ctx.truncated = diagnostics_truncated.is_some() || symbols_truncated.is_some();
     ctx.truncation_reason = diagnostics_truncated.or(symbols_truncated);
     Ok(Some(ctx))
+}
+
+pub fn with_likely_targets(
+    ctx: &ResolvedLspContext,
+    prompt: &str,
+    max_files: usize,
+) -> ResolvedLspContext {
+    let mut next = ctx.clone();
+    next.likely_target_files = derive_likely_target_files(ctx, prompt, max_files);
+    if !next.likely_target_files.is_empty() {
+        let original_bytes_kept = next.bytes_kept;
+        next.bytes_kept = 0;
+        next.bytes_kept = render_lsp_context_text(&next).len() as u64;
+        if original_bytes_kept > next.bytes_kept {
+            next.bytes_kept = original_bytes_kept;
+        }
+    }
+    next
 }
 
 fn build_diagnostics_snapshot(
@@ -496,6 +517,14 @@ pub fn render_lsp_context_text(ctx: &ResolvedLspContext) -> String {
         render_symbol_location_group(&mut out, "definitions", &symbols.definitions);
         render_symbol_location_group(&mut out, "references", &symbols.references);
     }
+    if !ctx.likely_target_files.is_empty() {
+        out.push_str("likely_target_files:\n");
+        for path in &ctx.likely_target_files {
+            out.push_str("  - ");
+            out.push_str(path);
+            out.push('\n');
+        }
+    }
     if out.len() > ctx.bytes_kept as usize && ctx.bytes_kept > 0 {
         out.truncate(ctx.bytes_kept as usize);
     }
@@ -575,6 +604,12 @@ pub fn compact_lsp_context_message(ctx: &ResolvedLspContext) -> Option<Message> 
     if let Some(path) = preferred_path.as_deref() {
         lines.push(format!("target_file={path}"));
     }
+    if !ctx.likely_target_files.is_empty() {
+        lines.push(format!(
+            "likely_target_files={}",
+            ctx.likely_target_files.join(", ")
+        ));
+    }
     if let Some(snapshot) = &ctx.diagnostics_snapshot {
         if let Some(item) = snapshot.items.iter().find(|item| {
             item.path
@@ -618,6 +653,78 @@ pub fn compact_lsp_context_message(ctx: &ResolvedLspContext) -> Option<Message> 
         tool_name: None,
         tool_calls: None,
     })
+}
+
+fn derive_likely_target_files(
+    ctx: &ResolvedLspContext,
+    prompt: &str,
+    max_files: usize,
+) -> Vec<String> {
+    if max_files == 0 {
+        return Vec::new();
+    }
+    let terms = prompt_terms(prompt);
+    let mut scored: Vec<(i32, String)> = Vec::new();
+    if let Some(symbols) = &ctx.symbol_context {
+        for item in symbols
+            .definitions
+            .iter()
+            .chain(symbols.symbols.iter())
+            .chain(symbols.references.iter())
+        {
+            let path = item.path.to_string_lossy().replace('\\', "/");
+            let mut score = score_path(&path, &terms);
+            let label = item.label.to_ascii_lowercase();
+            score += terms
+                .iter()
+                .filter(|term| label.contains(term.as_str()))
+                .count() as i32;
+            if score > 0 {
+                scored.push((score + 2, path));
+            }
+        }
+    }
+    if let Some(snapshot) = &ctx.diagnostics_snapshot {
+        for item in &snapshot.items {
+            if let Some(path) = &item.path {
+                let rendered = path.to_string_lossy().replace('\\', "/");
+                let score = score_path(&rendered, &terms);
+                if score > 0 {
+                    scored.push((score + 1, rendered));
+                }
+            }
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut out = Vec::new();
+    for (_, path) in scored {
+        if !out.contains(&path) {
+            out.push(path);
+        }
+        if out.len() >= max_files {
+            break;
+        }
+    }
+    out
+}
+
+fn prompt_terms(prompt: &str) -> Vec<String> {
+    let mut terms = prompt
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|part| part.len() >= 3)
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn score_path(path: &str, terms: &[String]) -> i32 {
+    let lower = path.to_ascii_lowercase();
+    terms
+        .iter()
+        .filter(|term| lower.contains(term.as_str()))
+        .count() as i32
 }
 
 fn compact_preferred_source_path(path: &Path) -> Option<String> {
@@ -937,5 +1044,39 @@ mod tests {
         assert!(body.contains("focus_symbol_query=parse_count path=src/main.rs"));
         assert!(!body.contains("BEGIN_LSP_CONTEXT"));
         assert!(!body.contains("references:"));
+    }
+
+    #[test]
+    fn likely_target_files_render_for_coding_context() {
+        let provider = StaticLspContextProvider {
+            provider: "mock_lsp",
+            workspace_root: PathBuf::from("repo"),
+            language: Some("rust".to_string()),
+            diagnostics: vec![diag("E001", "bad thing", "src/parser.rs", 7)],
+            query: Some("parse_number".to_string()),
+            symbols: vec![sym("src/parser.rs", 3, "parse_number")],
+            definitions: vec![sym("src/parser.rs", 3, "fn parse_number")],
+            references: vec![sym("tests/parser.rs", 8, "parse_number(\"12\")")],
+        };
+        let ctx = resolve_lsp_context(
+            PathBuf::from("repo").as_path(),
+            &provider,
+            LspContextLimits::default(),
+        )
+        .expect("resolve")
+        .expect("context");
+        let grounded = super::with_likely_targets(
+            &ctx,
+            "Update the parser so it trims whitespace before parsing.",
+            2,
+        );
+        assert_eq!(grounded.likely_target_files.len(), 2);
+        assert_eq!(grounded.likely_target_files[0], "src/parser.rs");
+        let rendered = render_lsp_context_text(&grounded);
+        assert!(rendered.contains("likely_target_files:"));
+        assert!(rendered.contains("  - src/parser.rs"));
+        let compact = compact_lsp_context_message(&grounded).expect("compact");
+        let body = compact.content.expect("content");
+        assert!(body.contains("likely_target_files=src/parser.rs, tests/parser.rs"));
     }
 }

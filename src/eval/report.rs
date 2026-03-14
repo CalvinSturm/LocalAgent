@@ -142,6 +142,8 @@ mod tests {
             tokens: None,
             estimated_cost_usd: Some(0.125),
             verifier: None,
+            ux: None,
+            ux_metric_rows: vec![],
         };
 
         let task_summary = TaskSummary {
@@ -185,6 +187,9 @@ mod tests {
             },
             by_model,
             runs: vec![run],
+            ux_summary_metric_rows: vec![],
+            ux_summary_metric_rows_by_model: BTreeMap::new(),
+            ux_summary_metric_rows_by_task_family: BTreeMap::new(),
             metrics: Some(EvalMetrics {
                 summary: EvalAggregateMetrics::default(),
                 per_model,

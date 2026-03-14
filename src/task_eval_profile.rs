@@ -51,6 +51,7 @@ pub(crate) fn apply_eval_profile_overrides(
             args.pack = match v.as_str() {
                 "coding" => EvalPack::Coding,
                 "browser" => EvalPack::Browser,
+                "common_coding_ux" | "common-coding-ux" => EvalPack::CommonCodingUx,
                 _ => EvalPack::All,
             };
         }

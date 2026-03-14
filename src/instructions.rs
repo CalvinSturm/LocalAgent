@@ -36,6 +36,8 @@ pub struct NamedProfile {
     pub name: String,
     pub selector: String,
     #[serde(default)]
+    pub task_kind: Option<String>,
+    #[serde(default)]
     pub messages: Vec<InstructionMessage>,
 }
 
@@ -45,6 +47,7 @@ pub struct InstructionResolution {
     pub config_hash_hex: Option<String>,
     pub selected_model_profile: Option<String>,
     pub selected_task_profile: Option<String>,
+    pub selected_task_kind: Option<String>,
     pub messages: Vec<Message>,
 }
 
@@ -55,6 +58,7 @@ impl InstructionResolution {
             config_hash_hex: None,
             selected_model_profile: None,
             selected_task_profile: None,
+            selected_task_kind: None,
             messages: Vec::new(),
         }
     }
@@ -85,7 +89,7 @@ pub fn resolve_messages(
     task: Option<&str>,
     model_profile: Option<&str>,
     task_profile: Option<&str>,
-) -> anyhow::Result<(Vec<Message>, Option<String>, Option<String>)> {
+) -> anyhow::Result<(Vec<Message>, Option<String>, Option<String>, Option<String>)> {
     let mut out = Vec::new();
     out.extend(to_messages(&cfg.base));
 
@@ -108,11 +112,15 @@ pub fn resolve_messages(
     if let Some(p) = selected_task.as_ref() {
         out.extend(to_messages(&p.messages));
     }
+    let selected_task_kind = selected_task
+        .as_ref()
+        .map(|p| p.task_kind.clone().unwrap_or_else(|| p.name.clone()));
 
     Ok((
         out,
         selected_model.map(|p| p.name.clone()),
         selected_task.map(|p| p.name.clone()),
+        selected_task_kind,
     ))
 }
 
@@ -182,6 +190,7 @@ mod tests {
             model_profiles: vec![NamedProfile {
                 name: "m".to_string(),
                 selector: "qwen*".to_string(),
+                task_kind: None,
                 messages: vec![InstructionMessage {
                     role: InstructionRole::Developer,
                     content: "model".to_string(),
@@ -190,13 +199,14 @@ mod tests {
             task_profiles: vec![NamedProfile {
                 name: "t".to_string(),
                 selector: "coding".to_string(),
+                task_kind: None,
                 messages: vec![InstructionMessage {
                     role: InstructionRole::Developer,
                     content: "task".to_string(),
                 }],
             }],
         };
-        let (msgs, m, t) =
+        let (msgs, m, t, k) =
             resolve_messages(&cfg, "qwen3:8b", Some("coding"), None, None).expect("resolve");
         let contents: Vec<String> = msgs
             .into_iter()
@@ -205,5 +215,28 @@ mod tests {
         assert_eq!(contents, vec!["base", "model", "task"]);
         assert_eq!(m.as_deref(), Some("m"));
         assert_eq!(t.as_deref(), Some("t"));
+        assert_eq!(k.as_deref(), Some("t"));
+    }
+
+    #[test]
+    fn task_profile_can_explicitly_map_canonical_task_kind() {
+        let cfg = InstructionConfig {
+            version: 1,
+            base: vec![],
+            model_profiles: vec![],
+            task_profiles: vec![NamedProfile {
+                name: "coding_orchestrator_v1".to_string(),
+                selector: "coding".to_string(),
+                task_kind: Some("coding".to_string()),
+                messages: vec![InstructionMessage {
+                    role: InstructionRole::Developer,
+                    content: "task".to_string(),
+                }],
+            }],
+        };
+        let (_msgs, _m, t, k) =
+            resolve_messages(&cfg, "qwen3:8b", Some("coding"), None, None).expect("resolve");
+        assert_eq!(t.as_deref(), Some("coding_orchestrator_v1"));
+        assert_eq!(k.as_deref(), Some("coding"));
     }
 }

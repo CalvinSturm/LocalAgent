@@ -7,6 +7,28 @@ use crate::providers::ModelProvider;
 use crate::*;
 use crate::{eval, provider_runtime, store, task_eval_profile};
 
+fn resolve_explicit_eval_task_profile_task_kind(
+    args: &EvalArgs,
+    state_dir: &std::path::Path,
+) -> anyhow::Result<Option<String>> {
+    let Some(profile_name) = args.instruction_task_profile.as_deref() else {
+        return Ok(None);
+    };
+    let cfg_path = args
+        .instructions_config
+        .clone()
+        .unwrap_or_else(|| crate::instructions::default_config_path(state_dir));
+    if !cfg_path.exists() {
+        return Ok(None);
+    }
+    let (cfg, _) = crate::instructions::load_config(&cfg_path)?;
+    Ok(cfg
+        .task_profiles
+        .iter()
+        .find(|p| p.name == profile_name)
+        .map(|p| p.task_kind.clone().unwrap_or_else(|| p.name.clone())))
+}
+
 pub(crate) async fn handle_replay_command(
     args: &ReplayArgs,
     paths: &store::StatePaths,
@@ -1156,6 +1178,8 @@ pub(crate) async fn handle_eval_command(
     if matches!(args.pack, EvalPack::Coding | EvalPack::All) && !args.enable_write_tools {
         enable_write_tools = true;
     }
+    let resolved_instruction_task_profile_task_kind =
+        resolve_explicit_eval_task_profile_task_kind(&args, &paths.state_dir)?;
 
     let cfg = EvalConfig {
         provider: args.provider,
@@ -1164,6 +1188,11 @@ pub(crate) async fn handle_eval_command(
             .clone()
             .unwrap_or_else(|| provider_runtime::default_base_url(args.provider).to_string()),
         api_key: args.api_key.clone(),
+        instructions_config: args.instructions_config.clone(),
+        instruction_model_profile: args.instruction_model_profile.clone(),
+        instruction_task_profile: args.instruction_task_profile.clone(),
+        resolved_instruction_task_profile_task_kind,
+        task_kind: args.task_kind.clone(),
         models,
         pack: args.pack,
         out: args.out.clone(),

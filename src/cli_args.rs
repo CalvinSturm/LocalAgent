@@ -878,6 +878,18 @@ pub(crate) struct EvalArgs {
     #[arg(long, value_enum, default_value_t = ToolArgsStrict::On)]
     pub(crate) tool_args_strict: ToolArgsStrict,
 
+    #[arg(long)]
+    pub(crate) instructions_config: Option<PathBuf>,
+
+    #[arg(long)]
+    pub(crate) instruction_model_profile: Option<String>,
+
+    #[arg(long)]
+    pub(crate) instruction_task_profile: Option<String>,
+
+    #[arg(long)]
+    pub(crate) task_kind: Option<String>,
+
     #[arg(long, value_enum, default_value_t = TaintToggle::Off)]
     pub(crate) taint: TaintToggle,
 

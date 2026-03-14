@@ -228,6 +228,7 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         instructions_config_hash_hex: instructions.config_hash_hex.clone(),
         instruction_model_profile: instructions.selected_model_profile.clone(),
         instruction_task_profile: instructions.selected_task_profile.clone(),
+        instruction_task_profile_task_kind: instructions.selected_task_kind.clone(),
         instruction_message_count: instructions.messages.len(),
         project_guidance_hash_hex: project_guidance.map(|g| g.guidance_hash_hex.clone()),
         project_guidance_sources: project_guidance
@@ -244,6 +245,9 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
         repo_map_bytes_kept: repo_map.map(|m| m.bytes_kept).unwrap_or(0),
         repo_map_file_count_included: repo_map.map(|m| m.file_count_included).unwrap_or(0),
         repo_map_injected: repo_map.is_some(),
+        repo_map_likely_target_files_count: repo_map
+            .map(|m| m.likely_target_files.len() as u64)
+            .unwrap_or(0),
         lsp_context_provider: lsp_context.map(|c| c.provider.clone()),
         lsp_context_schema_version: lsp_context.map(|c| c.schema_version.clone()),
         lsp_context_truncated: lsp_context.map(|c| c.truncated).unwrap_or(false),
@@ -272,6 +276,9 @@ pub(crate) fn build_run_cli_config(input: RunCliConfigInput<'_>) -> RunCliConfig
             .and_then(|c| c.symbol_context.as_ref().map(|s| s.references.len() as u64))
             .unwrap_or(0),
         lsp_context_injected: lsp_context.is_some(),
+        lsp_context_likely_target_files_count: lsp_context
+            .map(|c| c.likely_target_files.len() as u64)
+            .unwrap_or(0),
         active_profile: args.reliability_profile.clone(),
         profile_source: args.resolved_reliability_profile_source.clone(),
         profile_hash_hex: args.resolved_reliability_profile_hash_hex.clone(),
@@ -431,6 +438,10 @@ pub(crate) fn build_config_fingerprint(
             .instruction_task_profile
             .clone()
             .unwrap_or_default(),
+        instruction_task_profile_task_kind: cli_config
+            .instruction_task_profile_task_kind
+            .clone()
+            .unwrap_or_default(),
         instruction_message_count: cli_config.instruction_message_count,
         lsp_context_provider: cli_config.lsp_context_provider.clone().unwrap_or_default(),
         lsp_context_schema_version: cli_config
@@ -452,6 +463,8 @@ pub(crate) fn build_config_fingerprint(
         lsp_context_definitions_included: cli_config.lsp_context_definitions_included,
         lsp_context_references_included: cli_config.lsp_context_references_included,
         lsp_context_injected: cli_config.lsp_context_injected,
+        repo_map_likely_target_files_count: cli_config.repo_map_likely_target_files_count,
+        lsp_context_likely_target_files_count: cli_config.lsp_context_likely_target_files_count,
     }
 }
 

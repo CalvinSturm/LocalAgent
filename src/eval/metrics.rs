@@ -229,6 +229,8 @@ mod tests {
             tokens: None,
             estimated_cost_usd: None,
             verifier: None,
+            ux: None,
+            ux_metric_rows: vec![],
         };
         let run2 = EvalRunRow {
             model: "m1".to_string(),
@@ -261,6 +263,8 @@ mod tests {
             tokens: None,
             estimated_cost_usd: None,
             verifier: None,
+            ux: None,
+            ux_metric_rows: vec![],
         };
         let run3 = EvalRunRow {
             model: "m2".to_string(),
@@ -282,6 +286,8 @@ mod tests {
             tokens: None,
             estimated_cost_usd: None,
             verifier: None,
+            ux: None,
+            ux_metric_rows: vec![],
         };
 
         model_summary.passed = 1;
@@ -316,6 +322,9 @@ mod tests {
             summary: EvalSummary::default(),
             by_model,
             runs: vec![run1, run2, run3],
+            ux_summary_metric_rows: vec![],
+            ux_summary_metric_rows_by_model: BTreeMap::new(),
+            ux_summary_metric_rows_by_task_family: BTreeMap::new(),
             metrics: None,
             baseline: None,
             regression: None,

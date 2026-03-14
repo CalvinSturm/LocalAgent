@@ -318,6 +318,8 @@ pub struct RunCliConfig {
     pub instruction_model_profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instruction_task_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_task_profile_task_kind: Option<String>,
     #[serde(default)]
     pub instruction_message_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -346,6 +348,8 @@ pub struct RunCliConfig {
     pub repo_map_file_count_included: u64,
     #[serde(default)]
     pub repo_map_injected: bool,
+    #[serde(default)]
+    pub repo_map_likely_target_files_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lsp_context_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -368,6 +372,8 @@ pub struct RunCliConfig {
     pub lsp_context_references_included: u64,
     #[serde(default)]
     pub lsp_context_injected: bool,
+    #[serde(default)]
+    pub lsp_context_likely_target_files_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -491,6 +497,7 @@ pub struct ConfigFingerprintV1 {
     pub instructions_config_hash_hex: String,
     pub instruction_model_profile: String,
     pub instruction_task_profile: String,
+    pub instruction_task_profile_task_kind: String,
     pub instruction_message_count: usize,
     #[serde(default)]
     pub lsp_context_provider: String,
@@ -514,6 +521,10 @@ pub struct ConfigFingerprintV1 {
     pub lsp_context_references_included: u64,
     #[serde(default)]
     pub lsp_context_injected: bool,
+    #[serde(default)]
+    pub repo_map_likely_target_files_count: u64,
+    #[serde(default)]
+    pub lsp_context_likely_target_files_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

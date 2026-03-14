@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::agent::{AgentExitReason, AgentOutcome};
 use crate::compaction::CompactionSettings;
 use crate::eval::types::EvalConfig;
+use crate::instructions::InstructionResolution;
 use crate::store::{
     config_hash_hex, provider_to_string, stable_path_string, ConfigFingerprintV1, RunCliConfig,
     StatePaths,
@@ -63,6 +64,7 @@ pub(crate) fn write_synthetic_error_artifact(
             includes_resolved: Vec::new(),
             mcp_allowlist: None,
         },
+        &InstructionResolution::empty(),
         BTreeMap::new(),
         None,
     );
@@ -76,6 +78,7 @@ pub(crate) fn write_run_artifact_for_eval(
     outcome: &AgentOutcome,
     tool_catalog: Vec<crate::store::ToolCatalogEntry>,
     policy: EvalPolicyMeta,
+    instructions: &InstructionResolution,
     tool_schema_hash_hex_map: BTreeMap<String, String>,
     hooks_config_hash_hex: Option<String>,
 ) -> anyhow::Result<()> {
@@ -173,11 +176,15 @@ pub(crate) fn write_run_artifact_for_eval(
         policy_version: policy.version,
         includes_resolved: policy.includes_resolved.clone(),
         mcp_allowlist: policy.mcp_allowlist.clone(),
-        instructions_config_path: None,
-        instructions_config_hash_hex: None,
-        instruction_model_profile: None,
-        instruction_task_profile: None,
-        instruction_message_count: 0,
+        instructions_config_path: instructions
+            .config_path
+            .as_ref()
+            .map(|path| stable_path_string(path)),
+        instructions_config_hash_hex: instructions.config_hash_hex.clone(),
+        instruction_model_profile: instructions.selected_model_profile.clone(),
+        instruction_task_profile: instructions.selected_task_profile.clone(),
+        instruction_task_profile_task_kind: instructions.selected_task_kind.clone(),
+        instruction_message_count: instructions.messages.len(),
         project_guidance_hash_hex: None,
         project_guidance_sources: Vec::new(),
         project_guidance_truncated: false,
@@ -191,6 +198,7 @@ pub(crate) fn write_run_artifact_for_eval(
         repo_map_bytes_kept: 0,
         repo_map_file_count_included: 0,
         repo_map_injected: false,
+        repo_map_likely_target_files_count: 0,
         lsp_context_provider: None,
         lsp_context_schema_version: None,
         lsp_context_truncated: false,
@@ -202,6 +210,7 @@ pub(crate) fn write_run_artifact_for_eval(
         lsp_context_definitions_included: 0,
         lsp_context_references_included: 0,
         lsp_context_injected: false,
+        lsp_context_likely_target_files_count: 0,
         active_profile: None,
         profile_source: None,
         profile_hash_hex: None,
@@ -309,6 +318,7 @@ pub(crate) fn write_run_artifact_for_eval(
         instructions_config_hash_hex: String::new(),
         instruction_model_profile: String::new(),
         instruction_task_profile: String::new(),
+        instruction_task_profile_task_kind: String::new(),
         instruction_message_count: 0,
         lsp_context_provider: String::new(),
         lsp_context_schema_version: String::new(),
@@ -321,6 +331,8 @@ pub(crate) fn write_run_artifact_for_eval(
         lsp_context_definitions_included: 0,
         lsp_context_references_included: 0,
         lsp_context_injected: false,
+        repo_map_likely_target_files_count: 0,
+        lsp_context_likely_target_files_count: 0,
     };
     let cfg_hash = config_hash_hex(&fingerprint)?;
     let _ = crate::store::write_run_record(

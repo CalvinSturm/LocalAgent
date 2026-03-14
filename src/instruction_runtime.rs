@@ -20,18 +20,20 @@ pub(crate) fn resolve_instruction_messages(
         return Ok(InstructionResolution::empty());
     }
     let (cfg, hash_hex) = instructions::load_config(&cfg_path)?;
-    let (messages, selected_model, selected_task) = instructions::resolve_messages(
-        &cfg,
-        model,
-        args.task_kind.as_deref(),
-        args.instruction_model_profile.as_deref(),
-        args.instruction_task_profile.as_deref(),
-    )?;
+    let (messages, selected_model, selected_task, selected_task_kind) =
+        instructions::resolve_messages(
+            &cfg,
+            model,
+            args.task_kind.as_deref(),
+            args.instruction_model_profile.as_deref(),
+            args.instruction_task_profile.as_deref(),
+        )?;
     Ok(InstructionResolution {
         config_path: Some(cfg_path),
         config_hash_hex: Some(hash_hex),
         selected_model_profile: selected_model,
         selected_task_profile: selected_task,
+        selected_task_kind,
         messages,
     })
 }

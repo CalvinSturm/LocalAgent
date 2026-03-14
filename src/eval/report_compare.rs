@@ -170,6 +170,9 @@ mod tests {
             summary: EvalSummary::default(),
             by_model: BTreeMap::new(),
             runs: Vec::new(),
+            ux_summary_metric_rows: Vec::new(),
+            ux_summary_metric_rows_by_model: BTreeMap::new(),
+            ux_summary_metric_rows_by_task_family: BTreeMap::new(),
             metrics: Some(EvalMetrics {
                 summary: EvalAggregateMetrics {
                     pass_rate: 0.8,

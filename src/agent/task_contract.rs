@@ -153,13 +153,13 @@ fn normalize_task_kind(value: &str) -> String {
 pub(crate) fn resolve_task_contract(
     args: &RunArgs,
     prompt: &str,
-    selected_task_profile: Option<&str>,
+    selected_task_kind: Option<&str>,
     implementation_guard_enabled: bool,
     exposed_tools: &[crate::types::ToolDef],
 ) -> TaskContractResolution {
     let (task_kind, task_kind_source) = if let Some(value) = args.task_kind.as_deref() {
         (normalize_task_kind(value), ContractValueSource::Explicit)
-    } else if let Some(value) = selected_task_profile {
+    } else if let Some(value) = selected_task_kind {
         (normalize_task_kind(value), ContractValueSource::Explicit)
     } else if implementation_guard_enabled {
         ("coding".to_string(), ContractValueSource::Inferred)

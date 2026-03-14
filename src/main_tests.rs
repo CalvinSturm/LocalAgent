@@ -1689,6 +1689,7 @@ fn run_cli_config_includes_lsp_context_metadata_when_present() {
         truncated: false,
         truncation_reason: None,
         bytes_kept: 123,
+        likely_target_files: vec!["src/lib.rs".to_string(), "tests/lib.rs".to_string()],
     };
     let cli = crate::runtime_paths::build_run_cli_config(crate::runtime_paths::RunCliConfigInput {
         provider_kind: crate::gate::ProviderKind::Mock,
@@ -1729,6 +1730,7 @@ fn run_cli_config_includes_lsp_context_metadata_when_present() {
     assert_eq!(cli.lsp_context_definitions_included, 1);
     assert_eq!(cli.lsp_context_references_included, 1);
     assert!(cli.lsp_context_injected);
+    assert_eq!(cli.lsp_context_likely_target_files_count, 2);
 }
 
 fn default_run_args() -> super::RunArgs {

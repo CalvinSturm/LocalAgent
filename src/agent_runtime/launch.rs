@@ -160,11 +160,11 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
     validate_runtime_owned_http_timeouts(
         &args,
         planner_strict_effective,
-        instruction_resolution.selected_task_profile.as_deref(),
+        instruction_resolution.selected_task_kind.as_deref(),
     )?;
     let implementation_guard_enabled = should_enable_implementation_guard(
         &args,
-        instruction_resolution.selected_task_profile.as_deref(),
+        instruction_resolution.selected_task_kind.as_deref(),
     );
 
     let (mcp_config_path, mcp_registry) =
@@ -201,7 +201,7 @@ pub(super) async fn prepare_runtime_launch<P: ModelProvider>(
     let task_contract_resolution = crate::agent::task_contract::resolve_task_contract(
         &args,
         prompt,
-        instruction_resolution.selected_task_profile.as_deref(),
+        instruction_resolution.selected_task_kind.as_deref(),
         implementation_guard_enabled,
         &prep.all_tools,
     );

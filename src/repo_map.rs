@@ -973,7 +973,8 @@ mod tests {
 
         assert_eq!(grounded.likely_target_files[0], "src/parser.rs");
         assert!(
-            grounded.likely_target_files
+            grounded
+                .likely_target_files
                 .iter()
                 .all(|path| path != ".github/ISSUE_TEMPLATE/bug_report.md"),
             "generic docs/config matches should not outrank coding files"

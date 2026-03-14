@@ -841,8 +841,11 @@ fn normalize_messages(
     has_tools: bool,
     compatibility: OpenAiCompatMode,
 ) -> Vec<Message> {
-    if compatibility != OpenAiCompatMode::Lmstudio {
-        return messages;
+    if compatibility == OpenAiCompatMode::Standard {
+        return messages
+            .into_iter()
+            .filter(|message| !is_semantically_empty_assistant_message(message))
+            .collect();
     }
 
     let mapped = messages
@@ -860,6 +863,25 @@ fn normalize_messages(
     }
 
     collapse_pre_user_instruction_messages(mapped)
+}
+
+fn is_semantically_empty_assistant_message(message: &Message) -> bool {
+    if !matches!(message.role, Role::Assistant) {
+        return false;
+    }
+
+    let has_content = message
+        .content
+        .as_deref()
+        .map(|content| !content.trim().is_empty())
+        .unwrap_or(false);
+    let has_tool_calls = message
+        .tool_calls
+        .as_ref()
+        .map(|calls| !calls.is_empty())
+        .unwrap_or(false);
+
+    !has_content && !has_tool_calls && message.tool_call_id.is_none() && message.tool_name.is_none()
 }
 
 fn collapse_pre_user_instruction_messages(messages: Vec<Message>) -> Vec<Message> {
@@ -1367,6 +1389,69 @@ mod tests {
 
         assert!(matches!(normalized[0].role, Role::System));
         assert_eq!(normalized[0].content.as_deref(), Some("repair instruction"));
+    }
+
+    #[test]
+    fn normalize_messages_for_standard_drops_semantically_empty_assistant_turns() {
+        let normalized = normalize_messages(
+            vec![
+                Message {
+                    role: Role::User,
+                    content: Some("task".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Some("tool result".to_string()),
+                    tool_call_id: Some("tc1".to_string()),
+                    tool_name: Some("read_file".to_string()),
+                    tool_calls: None,
+                },
+            ],
+            true,
+            OpenAiCompatMode::Standard,
+        );
+
+        assert_eq!(normalized.len(), 2);
+        assert!(matches!(normalized[0].role, Role::User));
+        assert!(matches!(normalized[1].role, Role::Tool));
+    }
+
+    #[test]
+    fn normalize_messages_for_standard_keeps_non_empty_assistant_turns() {
+        let normalized = normalize_messages(
+            vec![
+                Message {
+                    role: Role::User,
+                    content: Some("task".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Some("done".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+            ],
+            false,
+            OpenAiCompatMode::Standard,
+        );
+
+        assert_eq!(normalized.len(), 2);
+        assert!(matches!(normalized[1].role, Role::Assistant));
+        assert_eq!(normalized[1].content.as_deref(), Some("done"));
     }
 
     #[test]

@@ -371,7 +371,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
     maybe_append_implementation_guard_message(
         &mut base_instruction_messages,
         &args,
-        instruction_resolution.selected_task_profile.as_deref(),
+        instruction_resolution.selected_task_kind.as_deref(),
     );
     let (project_guidance_message, repo_map_message, lsp_context_message) =
         select_runtime_context_messages(
@@ -878,6 +878,7 @@ mod tests {
             truncated: false,
             truncation_reason: None,
             bytes_kept: 0,
+            likely_target_files: Vec::new(),
         };
         let (project_guidance_message, _repo_map_message, lsp_context_message) =
             super::select_runtime_context_messages(

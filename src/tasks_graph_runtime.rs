@@ -24,8 +24,9 @@ fn apply_taskgraph_context_budget(node_args: &mut RunArgs) {
         .as_deref()
         == Some("coding");
     if node_args.use_repomap && is_coding {
-        node_args.repomap_max_bytes =
-            node_args.repomap_max_bytes.min(TASKGRAPH_CODING_REPOMAP_MAX_BYTES);
+        node_args.repomap_max_bytes = node_args
+            .repomap_max_bytes
+            .min(TASKGRAPH_CODING_REPOMAP_MAX_BYTES);
     }
 }
 
@@ -513,8 +514,9 @@ mod tests {
             }],
         };
         let node = &taskfile.nodes[0];
-        let node_args = build_node_run_args(&base, &taskfile, node, &node.id, &tasks_run_args(), &[])
-            .expect("node args");
+        let node_args =
+            build_node_run_args(&base, &taskfile, node, &node.id, &tasks_run_args(), &[])
+                .expect("node args");
 
         assert_eq!(
             node_args.repomap_max_bytes,
@@ -543,8 +545,9 @@ mod tests {
             }],
         };
         let node = &taskfile.nodes[0];
-        let node_args = build_node_run_args(&base, &taskfile, node, &node.id, &tasks_run_args(), &[])
-            .expect("node args");
+        let node_args =
+            build_node_run_args(&base, &taskfile, node, &node.id, &tasks_run_args(), &[])
+                .expect("node args");
 
         assert_eq!(node_args.repomap_max_bytes, 32 * 1024);
     }
