@@ -211,6 +211,11 @@ pub(super) fn build_context_augmentations(
 ) -> anyhow::Result<ContextAugmentations> {
     let instruction_resolution =
         instruction_runtime::resolve_instruction_messages(args, &paths.state_dir, worker_model)?;
+    let effective_task_kind = args
+        .task_kind
+        .as_deref()
+        .or(instruction_resolution.selected_task_kind.as_deref())
+        .map(crate::agent::task_contract::canonicalize_task_kind);
     let compact_manual_context = super::use_compact_manual_repair_context(prompt, &args.workdir);
     let project_guidance_resolution = if compact_manual_context {
         None
@@ -232,13 +237,27 @@ pub(super) fn build_context_augmentations(
         )
         .ok()
         .filter(|m| !m.content.is_empty())
+        .map(|m| {
+            if matches!(effective_task_kind.as_deref(), Some("coding")) {
+                repo_map::with_likely_targets(&m, prompt, &args.workdir, 5)
+            } else {
+                m
+            }
+        })
     } else {
         None
     };
     let lsp_context_resolution = lsp_context_provider::resolve_default_lsp_context(
         args,
         lsp_context::LspContextLimits::default(),
-    )?;
+    )?
+    .map(|ctx| {
+        if matches!(effective_task_kind.as_deref(), Some("coding")) {
+            lsp_context::with_likely_targets(&ctx, prompt, 5)
+        } else {
+            ctx
+        }
+    });
     let activated_packs = if args.packs.is_empty() {
         Vec::new()
     } else {
