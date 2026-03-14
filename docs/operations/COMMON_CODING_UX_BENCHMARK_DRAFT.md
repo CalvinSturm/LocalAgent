@@ -46,9 +46,9 @@ Still open before PR1 closeout:
 - [x] document the first frozen baseline result in a stable location
 - [ ] document benchmark caveats that materially affect interpretation
 
-## Pinned Initial PR1 Baseline Artifact
+## Historical Frozen Baseline Artifact
 
-Pinned baseline candidate:
+First pinned baseline artifact:
 - model: `qwen2.5-coder-7b-instruct@q8_0`
 - date captured: `2026-03-13`
 - local eval artifact:
@@ -66,8 +66,9 @@ Pinned baseline readout:
 - pass rate: `0.00%`
 
 Interpretation:
-- this is the first pinned PR1 baseline artifact for the current four-task landing slice
+- this is the first pinned PR1 baseline artifact for the earlier four-task landing slice
 - it is useful as a frozen comparison point even though the performance is poor
+- it should be treated as a historical comparison point, not as the current broad-pack readout
 - later PR1 or PR2 comparisons should reference this artifact explicitly rather than relying on ad hoc recollection
 
 ## Current Caveats
@@ -76,7 +77,7 @@ Interpretation:
 - `common_coding_ux` now accepts `edit` as a valid existing-file edit path alongside `apply_patch` and `str_replace`; earlier task assertions were too narrow for the repo's own preferred edit workflow
 - current omnicoder instruction-profile tuning should be interpreted as PR1 benchmark evidence work, not as the formal start of PR3
 - current `validation_passed` UX reporting is verifier-oriented; it does not always distinguish "the verifier command would pass" from "the model itself correctly emitted the required validation tool call"
-- taskfile-authored contract metadata is now landed for `task_kind`, `validation_command`, and `exact_final_answer`, but it has only been verified through targeted task-graph/runtime tests so far, not yet through a benchmarked coding-task comparison
+- taskfile-authored contract metadata is now landed for `task_kind`, `validation_command`, and `exact_final_answer`, and has been exercised in real `D3` and `D5` coding-task workflows; it is still not a first-class benchmark dimension inside the core `common_coding_ux` pack
 
 ## Task Families
 
@@ -90,7 +91,6 @@ Candidate tasks:
   - prompt shape: identify the main entrypoint and summarize the runtime flow
   - success: cites the correct files/symbols and does not use write tools
   - UX focus: file targeting, evidence use, concise code-grounded answer
-- [ ] `U2` bug-location analysis without editing
 - [x] `U2` bug-location analysis without editing
   - prompt shape: inspect failing area and identify the likely bug location only
   - success: points to the correct file/function and avoids speculative edits
@@ -106,7 +106,6 @@ Candidate tasks:
   - prompt shape: fix a small bug in one file and return a simple exact answer
   - success: correct edit, no unnecessary file churn
   - UX focus: fast correct targeting, minimal edit path
-- [ ] `U4` inspect-before-edit typo/string fix
 - [x] `U4` inspect-before-edit typo/string fix
   - prompt shape: locate the source of a visible defect before editing
   - success: read-before-write, correct file only, exact closeout
@@ -133,13 +132,9 @@ Goal:
 - measure whether the agent can coordinate a small feature or refactor across more than one file
 
 Candidate tasks:
-- [ ] `U7` small feature addition touching implementation and test
 - [x] `U7` small feature addition touching implementation and test
   - prompt shape: add a narrow helper in `src/lib.rs` and update `tests/regression.rs` to cover the new behavior
   - success: both files change coherently, `cargo test` passes, exact closeout is satisfied
-  - UX focus: multi-file coordination, minimal necessary surface
-  - prompt shape: add a narrow behavior change and update/add one test
-  - success: both files changed coherently and tests pass
   - UX focus: multi-file coordination, minimal necessary surface
 - [ ] `U8` workspace-local refactor without behavior change
   - prompt shape: rename or extract a small helper across files
@@ -193,9 +188,13 @@ Why this slice:
 
 ## Baseline and Comparison Models
 
-Initial frozen baseline:
-- [ ] baseline model: `qwen2.5-coder-7b-instruct@q8_0`
-  - current benchmark readout exists, but PR1 closeout should still pin one explicit frozen result path/artifact
+Historical frozen baseline:
+- [x] `qwen2.5-coder-7b-instruct@q8_0`
+  - the first frozen artifact above is already recorded
+  - it represents the earlier four-task landing slice, not the current broader pack
+
+Broader-pack frozen baseline still to capture before PR1 closeout:
+- [ ] capture one explicit frozen artifact for the current broad `common_coding_ux` decision surface
 
 Primary comparison models for early PR1 readouts:
 - [ ] `omnicoder-9b@q8_0`
@@ -223,13 +222,11 @@ Do not add weighted composite scoring in PR1.
 
 ## Open Design Notes
 
-- [ ] decide whether the new pack should live as a new `EvalPack` variant or as additional coding tasks behind a narrower selector
-- resolved: `common_coding_ux` now exists as its own `EvalPack`
+- [x] `common_coding_ux` lives as its own `EvalPack`
 - [ ] decide whether fixtures should extend `src/eval/fixtures_repo.rs` or move into a dedicated `tests/fixtures/common_coding_ux/` tree
 - current state: the first landing slice extends `src/eval/fixtures_repo.rs`
-- [ ] decide the minimum artifact/report extension needed for raw per-run UX metrics
-- resolved for PR1 first slice: nested `ux`, flattened `ux_metric_rows`, and aggregate summary metric rows
-- resolved for first PR3 slice: `U12` is implemented as the first authored closeout-quality task
+- [x] raw per-run UX metrics use nested `ux`, flattened `ux_metric_rows`, and aggregate summary metric rows
+- [x] `U12` is implemented as the first authored closeout-quality task
 
 ## Immediate Next Step
 
@@ -420,7 +417,10 @@ Decision:
 - keep `U12` plus the new closeout metrics as benchmark infrastructure
 - do not add another `coding_closeout_quality_v*` iteration right now
 
-## Next Experiment Plan: Qwen Write Reliability
+## Historical Experiment Plan: Qwen Write Reliability
+
+This section is retained as historical context from the earlier four-task and closeout-shaping loop.
+The current benchmark decision surface is the broader pack described in the clean `U7/U9` rerun note above.
 
 Objective:
 - improve qwen on the earlier coding-task boundary where it is currently failing before successful validation or authored closeout becomes reachable

@@ -1,0 +1,27 @@
+{
+  "schema_version": "openagent.taskfile.v1",
+  "name": "pr4b-d5-prompt-contract",
+  "defaults": {
+    "mode": "single",
+    "task_kind": "coding",
+    "flags": {
+      "enable_write_tools": true,
+      "allow_write": true,
+      "allow_shell": true,
+      "stream": false
+    }
+  },
+  "workdir": {
+    "mode": "shared",
+    "path": "manual-testing/D-tests/D5",
+    "per_node_dirname": "{id}"
+  },
+  "nodes": [
+    {
+      "id": "D5",
+      "depends_on": [],
+      "prompt": "Update the parser so it trims whitespace before parsing.\n\nIf a path guess or command fails, inspect the repo and recover.\nDo not make unrelated edits.\nBefore finishing, run `cargo test` successfully.\n\nReply with exactly:\n\nverified fix\n",
+      "settings": {}
+    }
+  ]
+}
