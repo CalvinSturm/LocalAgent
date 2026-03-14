@@ -79,4 +79,20 @@ mod tests {
             AssistantResponseNormalization::MalformedWrapper
         ));
     }
+
+    #[test]
+    fn normalizes_malformed_wrapped_named_arguments_single_tool_call() {
+        let mut response = empty_response(
+            "[TOOL_CALL]\nname=shell\narguments={\"command\":\"cargo test\"}\n[/TOOL_CALL]",
+        );
+        let mut allowed = BTreeSet::new();
+        allowed.insert("shell".to_string());
+
+        let result = normalize_assistant_response(&mut response, 1, &allowed);
+
+        assert!(matches!(result, AssistantResponseNormalization::Ready));
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "shell");
+        assert!(response.assistant.content.is_none());
+    }
 }

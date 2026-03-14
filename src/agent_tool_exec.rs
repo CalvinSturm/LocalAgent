@@ -375,6 +375,9 @@ pub(crate) fn extract_content_tool_calls(
     if !wrapped.is_empty() {
         return wrapped;
     }
+    if let Some(tc) = extract_recoverable_single_wrapped_tool_call(raw, step, allowed_tool_names) {
+        return vec![tc];
+    }
     if let Some(tc) = extract_inline_tool_call(raw, step, allowed_tool_names) {
         return vec![tc];
     }
@@ -387,19 +390,7 @@ pub(crate) fn extract_inline_tool_call(
     allowed_tool_names: &std::collections::BTreeSet<String>,
 ) -> Option<ToolCall> {
     let v = parse_jsonish(raw)?;
-    let name = v.get("name").and_then(|x| x.as_str())?;
-    if !allowed_tool_names.contains(name) {
-        return None;
-    }
-    let arguments = v
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    Some(ToolCall {
-        id: format!("inline_tc_{step}_0"),
-        name: name.to_string(),
-        arguments,
-    })
+    tool_call_from_json_value(v, step, "inline_tc", allowed_tool_names)
 }
 
 pub(crate) fn extract_wrapped_tool_calls(
@@ -421,26 +412,155 @@ pub(crate) fn extract_wrapped_tool_calls(
         let body = raw[start..end].trim();
         if !body.is_empty() {
             if let Some(v) = parse_jsonish(body) {
-                if let Some(name) = v.get("name").and_then(|x| x.as_str()) {
-                    if !allowed_tool_names.contains(name) {
-                        offset = end + end_tag.len();
-                        continue;
-                    }
-                    let arguments = v
-                        .get("arguments")
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    out.push(ToolCall {
-                        id: format!("wrapped_tc_{step}_{}", out.len()),
-                        name: name.to_string(),
-                        arguments,
-                    });
+                if let Some(tc) = tool_call_from_json_value_with_id(
+                    v,
+                    format!("wrapped_tc_{step}_{}", out.len()),
+                    allowed_tool_names,
+                ) {
+                    out.push(tc);
                 }
             }
         }
         offset = end + end_tag.len();
     }
     out
+}
+
+fn extract_recoverable_single_wrapped_tool_call(
+    raw: &str,
+    step: u32,
+    allowed_tool_names: &std::collections::BTreeSet<String>,
+) -> Option<ToolCall> {
+    let body = recoverable_wrapped_tool_call_body(raw)?;
+    if let Some(v) = parse_jsonish(body) {
+        if let Some(tc) =
+            tool_call_from_json_value(v, step, "recovered_wrapped_tc", allowed_tool_names)
+        {
+            return Some(tc);
+        }
+    }
+    extract_named_arguments_tool_call(body, step, allowed_tool_names, "recovered_wrapped_named_tc")
+}
+
+fn recoverable_wrapped_tool_call_body<'a>(raw: &'a str) -> Option<&'a str> {
+    let trimmed = raw.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    let start_tag = "[TOOL_CALL]";
+    let start_count = upper.matches(start_tag).count();
+    if start_count != 1 {
+        return None;
+    }
+    let start = upper.find(start_tag)? + start_tag.len();
+    let body = &trimmed[start..];
+
+    for malformed_end in ["[/TOOL_CALL]", "[END_TOOL_CALL]", "<|END_OF_BOX|>"] {
+        if let Some(end) = body
+            .to_ascii_uppercase()
+            .find(&malformed_end.to_ascii_uppercase())
+        {
+            let candidate = body[..end].trim();
+            if !candidate.is_empty() {
+                return Some(candidate);
+            }
+            return None;
+        }
+    }
+
+    let candidate = body.trim();
+    if candidate.is_empty() {
+        None
+    } else {
+        Some(candidate)
+    }
+}
+
+fn tool_call_from_json_value(
+    value: serde_json::Value,
+    step: u32,
+    prefix: &str,
+    allowed_tool_names: &std::collections::BTreeSet<String>,
+) -> Option<ToolCall> {
+    let name = value.get("name").and_then(|x| x.as_str())?;
+    if !allowed_tool_names.contains(name) {
+        return None;
+    }
+    let arguments = value
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Some(ToolCall {
+        id: format!("{prefix}_{step}_0"),
+        name: name.to_string(),
+        arguments,
+    })
+}
+
+fn tool_call_from_json_value_with_id(
+    value: serde_json::Value,
+    id: String,
+    allowed_tool_names: &std::collections::BTreeSet<String>,
+) -> Option<ToolCall> {
+    let name = value.get("name").and_then(|x| x.as_str())?;
+    if !allowed_tool_names.contains(name) {
+        return None;
+    }
+    let arguments = value
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Some(ToolCall {
+        id,
+        name: name.to_string(),
+        arguments,
+    })
+}
+
+fn extract_named_arguments_tool_call(
+    raw: &str,
+    step: u32,
+    allowed_tool_names: &std::collections::BTreeSet<String>,
+    prefix: &str,
+) -> Option<ToolCall> {
+    let lines = raw.lines().collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+
+    for (idx, raw_line) in lines.iter().enumerate() {
+        let line = raw_line.trim();
+        if !line.starts_with("name=") {
+            continue;
+        }
+
+        let next_line = lines
+            .iter()
+            .skip(idx + 1)
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())?;
+
+        if !next_line.starts_with("arguments=") {
+            return None;
+        }
+
+        let name = line.trim_start_matches("name=").trim();
+        if !allowed_tool_names.contains(name) {
+            return None;
+        }
+        let args_raw = next_line.trim_start_matches("arguments=").trim();
+        let arguments = serde_json::from_str::<serde_json::Value>(args_raw).ok()?;
+        if !arguments.is_object() {
+            return None;
+        }
+        candidates.push((name.to_string(), arguments));
+    }
+
+    if candidates.len() != 1 {
+        return None;
+    }
+    let (name, arguments) = candidates.into_iter().next()?;
+    Some(ToolCall {
+        id: format!("{prefix}_{step}_0"),
+        name,
+        arguments,
+    })
 }
 
 pub(crate) fn fenced_json_candidate(s: &str) -> Option<String> {

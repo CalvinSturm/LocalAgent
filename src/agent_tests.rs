@@ -1144,6 +1144,34 @@ fn inline_tool_call_fenced_json_is_parsed() {
 }
 
 #[test]
+fn malformed_wrapped_named_arguments_single_tool_call_is_recovered() {
+    let raw = "[TOOL_CALL]\nname=list_dir\narguments={\"path\":\".\"}\n[/TOOL_CALL]";
+    let mut allowed = std::collections::BTreeSet::new();
+    allowed.insert("list_dir".to_string());
+
+    let calls = crate::agent_tool_exec::extract_content_tool_calls(raw, 1, &allowed);
+
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "list_dir");
+    assert_eq!(calls[0].arguments, serde_json::json!({"path":"."}));
+}
+
+#[test]
+fn malformed_wrapped_named_arguments_multiple_tool_calls_are_not_recovered() {
+    let raw = "[TOOL_CALL]\nname=list_dir\narguments={\"path\":\".\"}\n\nname=read_file\narguments={\"path\":\"src/lib.rs\"}\n[/TOOL_CALL]";
+    let mut allowed = std::collections::BTreeSet::new();
+    allowed.insert("list_dir".to_string());
+    allowed.insert("read_file".to_string());
+
+    let calls = crate::agent_tool_exec::extract_content_tool_calls(raw, 1, &allowed);
+
+    assert!(
+        calls.is_empty(),
+        "ambiguous malformed wrapper should not be recovered"
+    );
+}
+
+#[test]
 fn tool_failure_classification_schema_and_network() {
     let tc_read = crate::types::ToolCall {
         id: "tc-schema".to_string(),
