@@ -7,7 +7,7 @@ param(
 
     [string]$BaseUrl = "http://localhost:1234/v1",
 
-    [string]$InstructionsConfig = ".localagent/instructions.yaml",
+    [string]$InstructionsConfig = "scripts/configs/u3_u4_closeout_instructions.yaml",
 
     [string]$InstructionTaskProfile = "closeout_exact_answer_v1",
 
