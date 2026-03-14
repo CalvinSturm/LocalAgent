@@ -155,7 +155,6 @@ function Run-Scenario {
     $cmdArgs.Add("--workdir")
     $cmdArgs.Add($workdir)
     $cmdArgs.Add("--no-session")
-    $cmdArgs.Add("true")
     if ($UseProfile) {
         $cmdArgs.Add("--instructions-config")
         $cmdArgs.Add($InstructionsConfig)
@@ -183,8 +182,8 @@ function Run-Scenario {
     }
 }
 
-$u3Prompt = "Inspect the code, fix the bug so `total(2, 3)` would produce `5`, and reply with exactly `fixed: src/math.rs`."
-$u4Prompt = "Find where the visible greeting typo is actually defined, fix `helo` to `hello`, and reply with exactly `fixed: src/messages.rs`."
+$u3Prompt = 'Inspect the code, fix the bug so `total(2, 3)` would produce `5`, and reply with exactly `fixed: src/math.rs`.'
+$u4Prompt = 'Find where the visible greeting typo is actually defined, fix `helo` to `hello`, and reply with exactly `fixed: src/messages.rs`.'
 
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force -Path $RootDir | Out-Null

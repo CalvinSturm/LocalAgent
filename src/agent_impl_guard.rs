@@ -106,6 +106,7 @@ pub(crate) fn prompt_requires_post_write_follow_on(prompt: &str) -> bool {
     [
         "final answer",
         "final response",
+        "reply with exactly",
         "summarize what changed",
         "summarise what changed",
         "summary of changes",
@@ -126,19 +127,44 @@ pub(crate) fn prompt_required_validation_command(prompt: &str) -> Option<&'stati
         .find(|needle| p.contains(needle))
 }
 
+fn extract_inline_exact_answer(rest: &str) -> Option<String> {
+    let trimmed = rest.trim_start();
+    let mut chars = trimmed.chars();
+    let quote = chars.next()?;
+    if !matches!(quote, '`' | '"' | '\'') {
+        return None;
+    }
+    let body = &trimmed[quote.len_utf8()..];
+    let end = body.find(quote)?;
+    let extracted = body[..end].trim();
+    (!extracted.is_empty()).then(|| extracted.to_string())
+}
+
 pub(crate) fn prompt_required_exact_final_answer(prompt: &str) -> Option<String> {
     let lower = prompt.to_ascii_lowercase();
-    let markers = ["your final answer must be exactly:", "reply with exactly:"];
-    let (idx, marker) = markers
+    let markers = [
+        ("your final answer must be exactly:", true),
+        ("reply with exactly:", true),
+        ("reply with exactly", false),
+    ];
+    let (idx, marker, requires_block) = markers
         .iter()
-        .filter_map(|marker| lower.find(marker).map(|idx| (idx, *marker)))
-        .min_by_key(|(idx, _)| *idx)?;
+        .filter_map(|(marker, requires_block)| {
+            lower
+                .find(marker)
+                .map(|idx| (idx, *marker, *requires_block))
+        })
+        .min_by_key(|(idx, _, _)| *idx)?;
     let rest = &prompt[idx + marker.len()..];
-    let normalized = rest.trim();
-    if normalized.is_empty() {
-        None
+    if requires_block {
+        let normalized = rest.trim();
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized.to_string())
+        }
     } else {
-        Some(normalized.to_string())
+        extract_inline_exact_answer(rest)
     }
 }
 
@@ -171,9 +197,22 @@ mod tests {
     }
 
     #[test]
+    fn extracts_required_exact_final_answer_from_inline_backticks() {
+        let prompt =
+            "Inspect the code and reply with exactly `fixed: src/math.rs` after the edit.";
+        assert_eq!(
+            prompt_required_exact_final_answer(prompt).as_deref(),
+            Some("fixed: src/math.rs")
+        );
+    }
+
+    #[test]
     fn post_write_follow_on_is_only_for_explicit_closeout_requests() {
         assert!(super::prompt_requires_post_write_follow_on(
             "Fix the bug and summarize what changed."
+        ));
+        assert!(super::prompt_requires_post_write_follow_on(
+            "Fix the bug and reply with exactly `fixed: src/math.rs`."
         ));
         assert!(!super::prompt_requires_post_write_follow_on(
             "Fix the bug. Before finishing, run cargo test successfully."
