@@ -9,6 +9,38 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
 
 - None yet.
 
+## v0.5.0 - 2026-03-14
+
+### Added
+
+- `common_coding_ux` benchmark expansion on the eval path, including broader task coverage, frozen baseline artifacts, helper runbooks, and focused comparison harnesses for closeout and validation-discipline follow-up work.
+- TypeScript LSP context provider support and supporting server/runtime harness coverage for tool-assisted coding workflows.
+
+### Changed
+
+- Runtime completion policy and coding-task contracts are stricter and more explicit:
+  - required validation commands and exact final-answer contracts now flow through clearer runtime-owned paths
+  - validation-only shell handoff is more resilient when the model emits prose-only or wrong-tool turns after a successful edit
+  - inline `reply with exactly \`...\`` closeout contracts are inferred more reliably in one-shot `run` prompts
+- One-shot `run` / `exec` behavior now defaults to isolated ephemeral state plus sessionless execution unless state/session settings are explicitly requested.
+- Common coding UX benchmark work is now treated as the active decision surface for later local-model/runtime improvement branches.
+
+### Fixed
+
+- Recovered malformed single wrapped tool calls more consistently.
+- Tightened tool-repair helpers and clippy cleanliness around runtime/tool protocol paths.
+- Sanitized stray `</think>` closers from visible output.
+
+### Docs
+
+- Aligned release metadata, release-notes indexing, and README release links for the `v0.5.0` release cut.
+- Updated coding UX benchmark documentation to preserve current baseline and follow-up evidence as explicit artifacts instead of ad hoc notes.
+
+### Schema Notes
+
+- No intentional breaking schema ID changes.
+- Runtime/event/task metadata changes in this release remain additive; downstream consumers should continue ignoring unknown fields for forward compatibility.
+
 ## v0.4.0 - 2026-03-03
 
 ### Added

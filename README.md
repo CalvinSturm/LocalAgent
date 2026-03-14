@@ -193,6 +193,7 @@ These are mainly for contributors changing shared runtime behavior.
 ### Additional docs
 
 - [Templates](docs/guides/TEMPLATES.md)
+- [Release notes](docs/release-notes/README.md)
 - [Changelog](CHANGELOG.md)
 
 ## Contributing

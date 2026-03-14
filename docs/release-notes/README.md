@@ -1,5 +1,6 @@
 # Release Notes
 
+- [v0.5.0](RELEASE_NOTES_v0.5.0.md)
 - [v0.4.0](RELEASE_NOTES_v0.4.0.md)
 - [v0.3.1](RELEASE_NOTES_v0.3.1.md)
 - [v0.3.0](RELEASE_NOTES_v0.3.0.md)
