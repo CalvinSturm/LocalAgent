@@ -78,6 +78,50 @@ pub fn closeout_quality_bugfix_fixtures() -> Vec<Fixture> {
     ]
 }
 
+pub fn test_repair_fixtures() -> Vec<Fixture> {
+    vec![
+        Fixture::WriteFile {
+            path: "Cargo.toml".to_string(),
+            content: "[package]\nname = \"test_repair_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                .to_string(),
+        },
+        Fixture::WriteFile {
+            path: "src/lib.rs".to_string(),
+            content: "pub fn total(a: i32, b: i32) -> i32 {\n    a + b\n}\n".to_string(),
+        },
+        Fixture::WriteFile {
+            path: "tests/regression.rs".to_string(),
+            content: "use test_repair_fixture::total;\n\n#[test]\nfn total_adds_values() {\n    assert_eq!(total(2, 3), 6);\n}\n".to_string(),
+        },
+        Fixture::WriteFile {
+            path: "README.md".to_string(),
+            content: "# Test repair fixture\n".to_string(),
+        },
+    ]
+}
+
+pub fn multi_file_feature_fixtures() -> Vec<Fixture> {
+    vec![
+        Fixture::WriteFile {
+            path: "Cargo.toml".to_string(),
+            content: "[package]\nname = \"multi_file_feature\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                .to_string(),
+        },
+        Fixture::WriteFile {
+            path: "src/lib.rs".to_string(),
+            content: "pub fn is_even(value: i32) -> bool {\n    value % 2 == 0\n}\n".to_string(),
+        },
+        Fixture::WriteFile {
+            path: "tests/regression.rs".to_string(),
+            content: "use multi_file_feature::is_even;\n\n#[test]\nfn even_values_are_true() {\n    assert!(is_even(4));\n}\n".to_string(),
+        },
+        Fixture::WriteFile {
+            path: "README.md".to_string(),
+            content: "# Multi-file feature fixture\n".to_string(),
+        },
+    ]
+}
+
 pub fn workspace_refactor_fixtures() -> Vec<Fixture> {
     vec![
         Fixture::WriteFile {
@@ -213,8 +257,8 @@ pub fn recovery_bugfix_fixtures() -> Vec<Fixture> {
 mod tests {
     use super::{
         cli_bugfix_fixtures, closeout_quality_bugfix_fixtures, code_investigation_fixtures,
-        inspect_before_edit_fixtures, recovery_bugfix_fixtures, single_file_bugfix_fixtures,
-        workspace_refactor_fixtures,
+        inspect_before_edit_fixtures, multi_file_feature_fixtures, recovery_bugfix_fixtures,
+        single_file_bugfix_fixtures, test_repair_fixtures, workspace_refactor_fixtures,
     };
 
     #[test]
@@ -267,6 +311,22 @@ mod tests {
     fn closeout_quality_fixture_contains_regression_test() {
         let f = closeout_quality_bugfix_fixtures();
         let has_test = f.iter().any(|fx| matches!(fx, crate::eval::tasks::Fixture::WriteFile { path, content } if path == "tests/regression.rs" && content.contains("total_adds_values")));
+        assert!(has_test);
+    }
+
+    #[test]
+    fn test_repair_fixture_contains_broken_test_expectation() {
+        let f = test_repair_fixtures();
+        let has_test = f.iter().any(|fx| matches!(fx, crate::eval::tasks::Fixture::WriteFile { path, content } if path == "tests/regression.rs" && content.contains("assert_eq!(total(2, 3), 6)")));
+        assert!(has_test);
+    }
+
+    #[test]
+    fn multi_file_feature_fixture_contains_impl_and_test() {
+        let f = multi_file_feature_fixtures();
+        let has_impl = f.iter().any(|fx| matches!(fx, crate::eval::tasks::Fixture::WriteFile { path, content } if path == "src/lib.rs" && content.contains("pub fn is_even")));
+        let has_test = f.iter().any(|fx| matches!(fx, crate::eval::tasks::Fixture::WriteFile { path, content } if path == "tests/regression.rs" && content.contains("even_values_are_true")));
+        assert!(has_impl);
         assert!(has_test);
     }
 }

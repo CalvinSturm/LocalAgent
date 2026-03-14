@@ -3,7 +3,8 @@ use clap::ValueEnum;
 use crate::eval::assert::Assertion;
 use crate::eval::fixtures_repo::{
     cli_bugfix_fixtures, code_investigation_fixtures, inspect_before_edit_fixtures,
-    recovery_bugfix_fixtures, single_file_bugfix_fixtures, workspace_refactor_fixtures,
+    multi_file_feature_fixtures, recovery_bugfix_fixtures, single_file_bugfix_fixtures,
+    test_repair_fixtures, workspace_refactor_fixtures,
 };
 use crate::eval::types::EvalTaskFamily;
 
@@ -595,6 +596,36 @@ fn common_coding_ux_tasks() -> Vec<EvalTask> {
             closeout_requirements: None,
         },
         EvalTask {
+            id: "U2".to_string(),
+            task_family: Some(EvalTaskFamily::ReadOnlyAnalysis),
+            prompt: "Inspect this crate and identify the likely bug location causing spaced numbers to fail. Do not make any changes. Reply with exactly `bug: src/lib.rs::parse_count missing trim()`."
+                .to_string(),
+            required_tools: vec!["read_file".to_string()],
+            assertions: vec![
+                Assertion::ToolUsedGlob {
+                    pattern: "{read_file,list_dir}".to_string(),
+                },
+                Assertion::ToolNotUsedGlob {
+                    pattern: "{write_file,edit,apply_patch,str_replace,shell}".to_string(),
+                },
+                Assertion::OutputContains {
+                    substring: "bug: src/lib.rs::parse_count missing trim()".to_string(),
+                },
+            ],
+            fixtures: cli_bugfix_fixtures(),
+            needs_write: false,
+            needs_playwright: false,
+            optional: false,
+            required_capabilities: RequiredCapabilities {
+                needs_write_tools: false,
+                needs_shell: false,
+                needs_mcp: false,
+            },
+            verifier: None,
+            exact_final_answer: Some("bug: src/lib.rs::parse_count missing trim()".to_string()),
+            closeout_requirements: None,
+        },
+        EvalTask {
             id: "U3".to_string(),
             task_family: Some(EvalTaskFamily::SingleFileFix),
             prompt: "Inspect the code, fix the bug so `total(2, 3)` would produce `5`, and reply with exactly `fixed: src/math.rs`."
@@ -626,6 +657,44 @@ fn common_coding_ux_tasks() -> Vec<EvalTask> {
             },
             verifier: None,
             exact_final_answer: Some("fixed: src/math.rs".to_string()),
+            closeout_requirements: None,
+        },
+        EvalTask {
+            id: "U4".to_string(),
+            task_family: Some(EvalTaskFamily::SingleFileFix),
+            prompt: "Find where the visible greeting typo is actually defined, fix `helo` to `hello`, and reply with exactly `fixed: src/messages.rs`."
+                .to_string(),
+            required_tools: vec![
+                "list_dir".to_string(),
+                "read_file".to_string(),
+                "apply_patch".to_string(),
+            ],
+            assertions: vec![
+                Assertion::ToolUsedGlob {
+                    pattern: "{list_dir,read_file}".to_string(),
+                },
+                Assertion::ToolUsedGlob {
+                    pattern: "{edit,apply_patch,str_replace}".to_string(),
+                },
+                Assertion::FileContains {
+                    path: "src/messages.rs".to_string(),
+                    substring: "\"hello\"".to_string(),
+                },
+                Assertion::OutputContains {
+                    substring: "fixed: src/messages.rs".to_string(),
+                },
+            ],
+            fixtures: inspect_before_edit_fixtures(),
+            needs_write: true,
+            needs_playwright: false,
+            optional: false,
+            required_capabilities: RequiredCapabilities {
+                needs_write_tools: true,
+                needs_shell: false,
+                needs_mcp: false,
+            },
+            verifier: None,
+            exact_final_answer: Some("fixed: src/messages.rs".to_string()),
             closeout_requirements: None,
         },
         EvalTask {
@@ -724,6 +793,61 @@ fn common_coding_ux_tasks() -> Vec<EvalTask> {
             closeout_requirements: None,
         },
         EvalTask {
+            id: "U7".to_string(),
+            task_family: Some(EvalTaskFamily::MultiFileChange),
+            prompt: "Add a new helper `is_zero_or_even` in `src/lib.rs`, update the tests in `tests/regression.rs` to validate both `0` and `4`, run `cargo test`, and reply with exactly `validated: src/lib.rs, tests/regression.rs` only if the tests pass."
+                .to_string(),
+            required_tools: vec![
+                "read_file".to_string(),
+                "apply_patch".to_string(),
+                "shell".to_string(),
+            ],
+            assertions: vec![
+                Assertion::ToolUsedGlob {
+                    pattern: "read_file".to_string(),
+                },
+                Assertion::ToolUsedGlob {
+                    pattern: "{edit,apply_patch,str_replace}".to_string(),
+                },
+                Assertion::ToolArgContains {
+                    tool: "shell".to_string(),
+                    substring: "cargo test".to_string(),
+                },
+                Assertion::FileContains {
+                    path: "src/lib.rs".to_string(),
+                    substring: "pub fn is_zero_or_even".to_string(),
+                },
+                Assertion::FileContains {
+                    path: "tests/regression.rs".to_string(),
+                    substring: "assert!(is_zero_or_even(0));".to_string(),
+                },
+                Assertion::FileContains {
+                    path: "tests/regression.rs".to_string(),
+                    substring: "assert!(is_zero_or_even(4));".to_string(),
+                },
+                Assertion::OutputContains {
+                    substring: "validated: src/lib.rs, tests/regression.rs".to_string(),
+                },
+            ],
+            fixtures: multi_file_feature_fixtures(),
+            needs_write: true,
+            needs_playwright: false,
+            optional: false,
+            required_capabilities: RequiredCapabilities {
+                needs_write_tools: true,
+                needs_shell: true,
+                needs_mcp: false,
+            },
+            verifier: Some(VerifierSpec {
+                command: "cargo".to_string(),
+                args: vec!["test".to_string()],
+                cwd: ".".to_string(),
+                summary_success_contains: "test result: ok".to_string(),
+            }),
+            exact_final_answer: Some("validated: src/lib.rs, tests/regression.rs".to_string()),
+            closeout_requirements: None,
+        },
+        EvalTask {
             id: "U12".to_string(),
             task_family: Some(EvalTaskFamily::EditWithValidation),
             prompt: "Inspect the code, fix the bug so `total(2, 3)` would produce `5`, run `cargo test`, and then reply with a concise final answer that mentions `src/math.rs` and that `cargo test passed`."
@@ -776,6 +900,53 @@ fn common_coding_ux_tasks() -> Vec<EvalTask> {
                 validation_result_substrings: vec!["cargo test passed".to_string()],
             }),
         },
+        EvalTask {
+            id: "U9".to_string(),
+            task_family: Some(EvalTaskFamily::TestWork),
+            prompt: "Inspect this crate, repair the broken existing unit test so it matches the current implementation, run `cargo test`, and reply with exactly `validated: tests/regression.rs` only if the tests pass."
+                .to_string(),
+            required_tools: vec![
+                "read_file".to_string(),
+                "apply_patch".to_string(),
+                "shell".to_string(),
+            ],
+            assertions: vec![
+                Assertion::ToolUsedGlob {
+                    pattern: "read_file".to_string(),
+                },
+                Assertion::ToolUsedGlob {
+                    pattern: "{edit,apply_patch,str_replace}".to_string(),
+                },
+                Assertion::ToolArgContains {
+                    tool: "shell".to_string(),
+                    substring: "cargo test".to_string(),
+                },
+                Assertion::FileContains {
+                    path: "tests/regression.rs".to_string(),
+                    substring: "assert_eq!(total(2, 3), 5);".to_string(),
+                },
+                Assertion::OutputContains {
+                    substring: "validated: tests/regression.rs".to_string(),
+                },
+            ],
+            fixtures: test_repair_fixtures(),
+            needs_write: true,
+            needs_playwright: false,
+            optional: false,
+            required_capabilities: RequiredCapabilities {
+                needs_write_tools: true,
+                needs_shell: true,
+                needs_mcp: false,
+            },
+            verifier: Some(VerifierSpec {
+                command: "cargo".to_string(),
+                args: vec!["test".to_string()],
+                cwd: ".".to_string(),
+                summary_success_contains: "test result: ok".to_string(),
+            }),
+            exact_final_answer: Some("validated: tests/regression.rs".to_string()),
+            closeout_requirements: None,
+        },
     ]
 }
 
@@ -826,7 +997,7 @@ mod tests {
     fn common_coding_ux_pack_has_first_landing_slice_tasks() {
         let tasks = tasks_for_pack(EvalPack::CommonCodingUx);
         let ids = tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
-        for id in ["U1", "U3", "U5", "U6", "U12"] {
+        for id in ["U1", "U2", "U3", "U4", "U5", "U6", "U7", "U9", "U12"] {
             assert!(ids.contains(&id.to_string()));
         }
     }
@@ -847,9 +1018,17 @@ mod tests {
     fn common_coding_ux_tasks_have_task_family_metadata() {
         let tasks = tasks_for_pack(EvalPack::CommonCodingUx);
         let u1 = tasks.iter().find(|t| t.id == "U1").expect("u1");
+        let u2 = tasks.iter().find(|t| t.id == "U2").expect("u2");
+        let u4 = tasks.iter().find(|t| t.id == "U4").expect("u4");
         let u6 = tasks.iter().find(|t| t.id == "U6").expect("u6");
+        let u7 = tasks.iter().find(|t| t.id == "U7").expect("u7");
+        let u9 = tasks.iter().find(|t| t.id == "U9").expect("u9");
         assert_eq!(u1.task_family, Some(EvalTaskFamily::ReadOnlyAnalysis));
+        assert_eq!(u2.task_family, Some(EvalTaskFamily::ReadOnlyAnalysis));
+        assert_eq!(u4.task_family, Some(EvalTaskFamily::SingleFileFix));
         assert_eq!(u6.task_family, Some(EvalTaskFamily::Recovery));
+        assert_eq!(u7.task_family, Some(EvalTaskFamily::MultiFileChange));
+        assert_eq!(u9.task_family, Some(EvalTaskFamily::TestWork));
     }
 
     #[test]

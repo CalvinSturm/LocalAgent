@@ -128,6 +128,10 @@ Goal:
 
 Candidate tasks:
 - [ ] `U7` small feature addition touching implementation and test
+- [x] `U7` small feature addition touching implementation and test
+  - prompt shape: add a narrow helper in `src/lib.rs` and update `tests/regression.rs` to cover the new behavior
+  - success: both files change coherently, `cargo test` passes, exact closeout is satisfied
+  - UX focus: multi-file coordination, minimal necessary surface
   - prompt shape: add a narrow behavior change and update/add one test
   - success: both files changed coherently and tests pass
   - UX focus: multi-file coordination, minimal necessary surface
@@ -142,10 +146,10 @@ Goal:
 - measure whether the agent can work directly in the test surface instead of only application code
 
 Candidate tasks:
-- [ ] `U9` repair a broken existing unit test
-  - prompt shape: make the smallest test-side change needed after reading the failing expectation
-  - success: test file is correctly edited and validation passes
-  - UX focus: reading failures, editing the right layer
+- [x] `U9` repair a broken existing unit test
+  - prompt shape: repair a broken existing unit test so it matches the current implementation
+  - success: `tests/regression.rs` is corrected, `cargo test` passes, exact closeout is satisfied
+  - UX focus: test-surface reliability, editing the right layer instead of application code
 - [ ] `U10` add a missing regression test for an already-fixed bug
   - prompt shape: inspect implementation and add one targeted regression test
   - success: new test meaningfully covers the bug and passes
@@ -224,7 +228,7 @@ Do not add weighted composite scoring in PR1.
 ## Immediate Next Step
 
 Recommended next action:
-- use the landed PR4b authored-contract surface in one real coding-task run or benchmark case so the benchmark can measure whether explicit taskfile contracts improve reliability beyond prompt inference alone
+- use `U7` and `U9` as the next benchmark expansion surface rather than continuing ad hoc tuning on the `D5` branch
 
 ## PR4b Status Note
 
@@ -261,6 +265,96 @@ Decision:
 - PR4b is now exercised in one real coding-task workflow, not only unit tests
 - explicit authored contracts can improve practical task progression for at least one local model even when the task still fails overall
 - the next workstream choice should use this result rather than assuming authored metadata is only a paper improvement
+
+## PR4b Follow-on Workflow: D5 Recovery Fixture
+
+Completed second real PR4b workflow:
+- prompt-contract taskfile: `manual-testing/taskfiles/pr4b_d5_prompt_contract.json`
+- authored-contract taskfile: `manual-testing/taskfiles/pr4b_d5_authored_contract.json`
+- fixture: `manual-testing/D-tests/D5`
+
+Observed result:
+- `qwen2.5-coder-7b-instruct@q8_0`
+  - prompt-contract baseline: reached edit plus validation, then failed on exact final-answer compliance
+  - authored-contract variant: regressed to a generic prose response after a single repo-inspection step and no effective write
+  - read: explicit authored contracts did not help on this harder recovery task and may have worsened task execution for qwen
+- `omnicoder-9b@q8_0`
+  - prompt-contract baseline: reached repo inspection and validation, then still failed on effective write
+  - authored-contract variant: performed more repo inspection steps, but still failed on effective write
+  - read: explicit authored contracts increased activity but did not improve the actual repair outcome
+
+Current PR4b read after `D3` + `D5`:
+- authored contracts are a real improvement surface, not just schema wiring
+- the benefit is not broad or automatic across harder recovery/edit tasks
+- authored contracts alone are unlikely to be the next dominant reliability lever for LocalAgent on more difficult coding workflows
+
+Decision:
+- keep the landed PR4b authored-contract surface
+- make `PR4a` the next formal workstream
+- use `D5`-style harder recovery/edit tasks as the primary validation surface for whether bounded structural grounding improves coding-task reliability where authored contracts did not
+
+## PR4a Status Note
+
+Completed PR4a grounding refinements:
+- bounded likely-target grounding now prefers the active task workdir when candidates are available
+- stale transient `.tmp/...` likely-target candidates are filtered out
+- code surfaces are prioritized over generic docs/config matches for coding-task likely-target selection
+
+Observed result from clean `D5` reruns:
+- `repo_map_likely_target_files_count` now falls back to `0` instead of surfacing misleading `.tmp/...` or `.github/...` targets
+- `qwen2.5-coder-7b-instruct@q8_0`
+  - concurrent clean reruns still showed provider/qualification instability
+  - a sequential rerun passed qualification and then failed later on `implementation guard: file-edit task finalized without an effective write`
+  - read: qualification fallback is not the primary LocalAgent-side blocker for qwen on this path
+- `omnicoder-9b@q8_0`
+  - sequential prompt and authored reruns wrote a positive `orchestrator_qualification_cache.json`
+  - both then failed before tool use with `HTTP 400: {"error":"Context size has been exceeded."}`
+  - read: qualification also succeeded for omnicoder; the next blocker is LM Studio context-budget pressure on the task-graph path, not qualification fallback
+
+Current PR4a read:
+- PR4a grounding is now in a good enough state to keep
+- bad likely-target injection is no longer the blocker on `D5`
+- the qualification investigation does not justify a LocalAgent-side gating change:
+  - qwen can pass qualification and then exposes a model-side ineffective-write failure
+  - omnicoder can pass qualification but overruns LM Studio context before tool use
+- the task-graph context-budget reduction is now also validated:
+  - coding-node repo-map injection was capped more aggressively
+  - `omnicoder-9b@q8_0` moved from pre-tool provider overflow to a real edit trace and now fails on validation-phase protocol discipline
+  - `qwen3.5-9b-uncensored-hauhaucs-aggressive` moved past provider overflow but still fell back to read-only and then failed on write denial
+- the next narrow blocker on this workflow is no longer prompt-size overflow; it is model/runtime behavior after the prompt fits
+
+Decision:
+- keep the current PR4a grounding slices
+- close the qualification-stability investigation without a LocalAgent runtime change
+- close the context-budget investigation as a successful PR4a refinement
+- close the `omnicoder-9b@q8_0` validation-phase discipline branch on `D5`:
+  - a narrow local follow-up profile was tested after the budget-cap and grounding refinements landed
+  - it did not move the failure boundary
+  - both baseline and shaped runs still failed with the same validation-phase protocol violation after a real write
+- stop stacking more omnicoder profile variants on this branch
+- close the narrow `D5` authored-contract audit without a code change:
+  - the taskfile contract is already minimal and explicit
+  - `task_kind = coding`, `validation_command = cargo test`, and `exact_final_answer = verified fix` are not the repeated blocker on this path
+  - no additional taskfile-contract shaping is justified from this branch
+- do not treat these clean reruns as evidence for planner/routing work yet
+- move off the `D5` tuning branch and use the next benchmark expansion item as the next roadmap step
+
+## U9 Result Note
+
+Observed result from the first narrow `U9` comparison run:
+- `omnicoder-9b@q8_0`
+  - repaired `tests/regression.rs` correctly by changing the expected value from `6` to `5`
+  - then failed at the same validation-only boundary seen on harder `D5` runs:
+    - `required validation phase requires exactly one shell tool call and no prose`
+  - read: `U9` confirms that omnicoder can target and repair the test surface, but the repeated blocker remains post-write validation-phase discipline
+- `qwen2.5-coder-7b-instruct@q8_0`
+  - did not produce a valid comparison run because LM Studio failed to load the model on the corrected rerun
+  - read: `U9` is not yet a fair cross-model comparison surface while qwen remains provider-unstable on this branch
+
+Decision:
+- keep `U9` as a useful benchmark task
+- do not treat the `U9` result as a reason to resume prompt tuning
+- use `U7` as the next expansion task so the benchmark keeps broadening beyond `D5` and validation-only failures
 
 ## PR3 Result Note
 
