@@ -333,6 +333,68 @@ impl<P: ModelProvider> Agent<P> {
         None
     }
 
+    fn repair_required_validation_phase_response(
+        &self,
+        user_prompt: &str,
+        required_command: &str,
+        assistant: &mut Message,
+        tool_calls: &mut Vec<ToolCall>,
+    ) -> bool {
+        if tool_calls.len() == 1 && tool_calls[0].name == "shell" {
+            if !assistant
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                assistant.content = Some(String::new());
+                return true;
+            }
+            return false;
+        }
+
+        if tool_calls.len() == 1 && tool_calls[0].name != "shell" {
+            tool_calls[0] = ToolCall {
+                id: format!("tc_validation_shell_{}", Uuid::new_v4().simple()),
+                name: "shell".to_string(),
+                arguments: json!({ "command": required_command }),
+            };
+            assistant.content = Some(String::new());
+            return true;
+        }
+
+        if tool_calls.is_empty() {
+            if let Some(shell_call) = self.synthesize_required_validation_shell_call(
+                user_prompt,
+                required_command,
+                assistant,
+            ) {
+                tool_calls.push(shell_call);
+                assistant.content = Some(String::new());
+                return true;
+            }
+
+            if !assistant
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                tool_calls.push(ToolCall {
+                    id: format!("tc_validation_shell_{}", Uuid::new_v4().simple()),
+                    name: "shell".to_string(),
+                    arguments: json!({ "command": required_command }),
+                });
+                assistant.content = Some(String::new());
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn emit_phase_transition(
         &mut self,
         run_id: &str,
@@ -390,29 +452,27 @@ impl<P: ModelProvider> Agent<P> {
                 .blocked_required_validation_phase_count = 0;
             return Ok(PhaseLoopControl::Proceed);
         }
-        if resp.tool_calls.is_empty() {
-            if let Some(required_command) = runtime_checkpoint
-                .validation_state
-                .required_command
-                .as_deref()
-            {
-                if let Some(shell_call) = self.synthesize_required_validation_shell_call(
-                    user_prompt,
-                    required_command,
-                    &resp.assistant,
-                ) {
-                    self.emit_event(
-                        run_id,
-                        step,
-                        EventKind::StepBlocked,
-                        serde_json::json!({
-                            "reason": "required_validation_phase_shell_shape_repaired",
-                            "tool_name": "shell"
-                        }),
-                    );
-                    resp.tool_calls.push(shell_call);
-                    resp.assistant.content = Some(String::new());
-                }
+        if let Some(required_command) = runtime_checkpoint
+            .validation_state
+            .required_command
+            .as_deref()
+            .or_else(|| self.required_validation_command(user_prompt))
+        {
+            if self.repair_required_validation_phase_response(
+                user_prompt,
+                required_command,
+                &mut resp.assistant,
+                &mut resp.tool_calls,
+            ) {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::StepBlocked,
+                    serde_json::json!({
+                        "reason": "required_validation_phase_shell_shape_repaired",
+                        "tool_name": "shell"
+                    }),
+                );
             }
         }
         let decision = decide_required_validation_phase_response(
@@ -3406,6 +3466,15 @@ mod validation_shell_shape_tests {
         )
         .expect("shell args");
         assert_eq!(args, json!({ "command": "node --test" }));
+    }
+
+    #[test]
+    fn does_not_extract_unrelated_reasoning_without_command_mention() {
+        let args = synthesize_shell_args_from_validation_text(
+            "<think>I should inspect the file again before running tests.</think>",
+            "node --test",
+        );
+        assert!(args.is_none());
     }
 }
 

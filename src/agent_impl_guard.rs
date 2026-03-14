@@ -198,8 +198,7 @@ mod tests {
 
     #[test]
     fn extracts_required_exact_final_answer_from_inline_backticks() {
-        let prompt =
-            "Inspect the code and reply with exactly `fixed: src/math.rs` after the edit.";
+        let prompt = "Inspect the code and reply with exactly `fixed: src/math.rs` after the edit.";
         assert_eq!(
             prompt_required_exact_final_answer(prompt).as_deref(),
             Some("fixed: src/math.rs")

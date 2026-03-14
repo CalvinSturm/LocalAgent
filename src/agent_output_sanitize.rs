@@ -17,7 +17,8 @@ fn split_visible_and_thinking_from_parts(
     without_think: &str,
     think_blocks: Vec<String>,
 ) -> (String, Option<String>) {
-    let trimmed = without_think.trim();
+    let trimmed_owned = strip_orphan_think_closers(without_think);
+    let trimmed = trimmed_owned.trim();
     let upper = trimmed.to_uppercase();
     if let Some(thought_idx) = upper.find("THOUGHT:") {
         if let Some(response_rel) = upper[thought_idx..].find("RESPONSE:") {
@@ -37,6 +38,10 @@ fn split_visible_and_thinking_from_parts(
         Some(think_blocks.join("\n\n"))
     };
     (trimmed.to_string(), thinking)
+}
+
+fn strip_orphan_think_closers(input: &str) -> String {
+    input.replace("</think>", "")
 }
 
 fn strip_tag_block_with_capture(
@@ -78,4 +83,17 @@ fn strip_tag_block_with_capture(
         }
     }
     (out, captured)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_user_visible_output;
+
+    #[test]
+    fn strips_orphan_think_closer_from_visible_output() {
+        assert_eq!(
+            sanitize_user_visible_output("\n</think>\n\nvalidated: src/lib.rs"),
+            "validated: src/lib.rs"
+        );
+    }
 }

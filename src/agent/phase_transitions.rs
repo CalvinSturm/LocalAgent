@@ -171,7 +171,7 @@ pub(crate) fn refresh_phase_state_from_tool_facts(
 }
 
 pub(crate) fn apply_verified_write_follow_on(
-    _user_prompt: &str,
+    user_prompt: &str,
     runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
     result: &VerifiedWriteResult,
 ) -> Option<VerifiedWriteFollowOnUpdate> {
@@ -207,6 +207,15 @@ pub(crate) fn apply_verified_write_follow_on(
                 .retry_state
                 .blocked_runtime_completion_count = 0;
             runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Validating;
+            if runtime_checkpoint
+                .validation_state
+                .required_command
+                .is_none()
+            {
+                runtime_checkpoint.validation_state.required_command =
+                    crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
+                        .map(str::to_string);
+            }
             Some(VerifiedWriteFollowOnUpdate {
                 control: PhaseLoopControl::ContinueAgentStep,
                 developer_message: message.clone(),
