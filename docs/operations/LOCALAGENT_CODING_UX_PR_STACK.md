@@ -4,7 +4,7 @@
 
 **Formal active phase**
 
-* `PR1` is the only formal in-flight implementation phase until its benchmark, artifact shape, and dashboard path are considered stable enough to use as the decision surface for later PRs.
+* `PR1` remains the formal active phase, and the current `common_coding_ux` pack is now broad enough to serve as the benchmark decision surface for later work.
 
 **Sequencing discipline**
 
@@ -17,6 +17,7 @@
 * completed and in-progress benchmark plumbing on the eval path counts as `PR1`
 * current omnicoder instruction-profile tuning counts as a `PR1` evidence slice used to interpret benchmark failures, not as broader coding-UX shaping rollout
 * the next formal implementation phase after `PR1` closeout remains `PR2`
+* future improvement branches should now be judged against the broader `common_coding_ux` pack, not against isolated `D5`-style tuning runs
 
 ---
 

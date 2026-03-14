@@ -26,7 +26,13 @@ PR1 is complete when:
 
 Implemented now:
 - [x] `common_coding_ux` exists as an `EvalPack` on the eval path
-- [x] first landing slice tasks are implemented: `U1`, `U3`, `U5`, `U6`
+- [x] the benchmark now spans:
+  - read-only analysis: `U1`, `U2`
+  - single-file fix: `U3`, `U4`
+  - edit plus validation: `U5`, `U12`
+  - recovery: `U6`
+  - multi-file coordination: `U7`
+  - test work: `U9`
 - [x] per-run UX fields exist under `runs[*].ux`
 - [x] flattened per-run UX metric rows exist under `runs[*].ux_metric_rows`
 - [x] aggregate UX rows exist at:
@@ -36,7 +42,7 @@ Implemented now:
 - [x] RunScope ingest path has been proven against real LocalAgent eval artifacts
 
 Still open before PR1 closeout:
-- [ ] decide whether the current four-task slice is stable enough to freeze as the initial PR1 benchmark
+- [x] decide whether the current pack is broad enough to act as the active benchmark decision surface
 - [x] document the first frozen baseline result in a stable location
 - [ ] document benchmark caveats that materially affect interpretation
 
@@ -228,7 +234,7 @@ Do not add weighted composite scoring in PR1.
 ## Immediate Next Step
 
 Recommended next action:
-- use `U7` and `U9` as the next benchmark expansion surface rather than continuing ad hoc tuning on the `D5` branch
+- treat the current `common_coding_ux` pack as the active benchmark decision surface for future improvement work
 
 ## PR4b Status Note
 
@@ -355,6 +361,39 @@ Decision:
 - keep `U9` as a useful benchmark task
 - do not treat the `U9` result as a reason to resume prompt tuning
 - use `U7` as the next expansion task so the benchmark keeps broadening beyond `D5` and validation-only failures
+
+## Clean U7/U9 Rerun Note
+
+Observed result from the clean rerun set under fresh state dirs:
+- `qwen2.5-coder-7b-instruct@q8_0`
+  - `U9`: passed end to end
+    - repaired `tests/regression.rs`
+    - ran validation successfully
+    - returned the exact final answer `validated: tests/regression.rs`
+  - `U7`: failed on tool-step discipline
+    - `multiple tool calls in a single assistant step (max 1, got 3)`
+  - read: qwen can now succeed on test-surface work, but multi-file coordination still exposes step-discipline weakness
+- `omnicoder-9b@q8_0`
+  - `U7`: produced a useful partial-success signal
+    - added `is_zero_or_even` in `src/lib.rs`
+    - did not update `tests/regression.rs`
+    - then failed at the familiar post-write boundary:
+      - `required validation phase requires exactly one shell tool call and no prose`
+  - `U9`: failed even earlier on step-discipline
+    - `multiple tool calls in a single assistant step (max 1, got 2)`
+  - read: omnicoder can reach meaningful multi-file edits, but its repeated blocker is still post-write protocol discipline
+
+Decision:
+- the current `common_coding_ux` pack is now broad enough to act as the active benchmark decision surface
+- the benchmark now covers:
+  - read-only investigation
+  - single-file fixes
+  - validation-required fixes
+  - recovery
+  - closeout quality
+  - test-surface work
+  - multi-file coordination
+- future improvement work should be judged against this broader pack rather than against `D5`-only tuning loops
 
 ## PR3 Result Note
 
