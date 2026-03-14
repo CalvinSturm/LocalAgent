@@ -44,7 +44,7 @@ Implemented now:
 Still open before PR1 closeout:
 - [x] decide whether the current pack is broad enough to act as the active benchmark decision surface
 - [x] document the first frozen baseline result in a stable location
-- [ ] document benchmark caveats that materially affect interpretation
+- [x] document benchmark caveats that materially affect interpretation
 
 ## Historical Frozen Baseline Artifact
 
@@ -78,6 +78,7 @@ Interpretation:
 - current omnicoder instruction-profile tuning should be interpreted as PR1 benchmark evidence work, not as the formal start of PR3
 - current `validation_passed` UX reporting is verifier-oriented; it does not always distinguish "the verifier command would pass" from "the model itself correctly emitted the required validation tool call"
 - taskfile-authored contract metadata is now landed for `task_kind`, `validation_command`, and `exact_final_answer`, and has been exercised in real `D3` and `D5` coding-task workflows; it is still not a first-class benchmark dimension inside the core `common_coding_ux` pack
+- the broad-pack qwen baseline is materially unstable across reruns; an immediate compare pass after the frozen `2026-03-13` baseline regressed from `1/9` to `0/9`, so future comparisons should rely on named artifacts and task-level deltas rather than treating one rerun as definitive in isolation
 
 ## Task Families
 
@@ -193,8 +194,29 @@ Historical frozen baseline:
   - the first frozen artifact above is already recorded
   - it represents the earlier four-task landing slice, not the current broader pack
 
-Broader-pack frozen baseline still to capture before PR1 closeout:
-- [ ] capture one explicit frozen artifact for the current broad `common_coding_ux` decision surface
+Broader-pack frozen baseline:
+- [x] capture one explicit frozen artifact for the current broad `common_coding_ux` decision surface
+  - model: `qwen2.5-coder-7b-instruct@q8_0`
+  - date captured: `2026-03-13`
+  - baseline name: `broad_common_coding_ux_qwen2_5_coder_7b_instruct_q8_0_2026_03_13`
+  - local artifact:
+    - [run.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.artifacts/eval/common_coding_ux/qwen2_5_coder_7b_instruct_q8_0-2026-03-13/run.json)
+    - [SUMMARY.md](/C:/Users/Calvin/Software%20Projects/LocalAgent/.artifacts/eval/common_coding_ux/qwen2_5_coder_7b_instruct_q8_0-2026-03-13/SUMMARY.md)
+    - [junit.xml](/C:/Users/Calvin/Software%20Projects/LocalAgent/.artifacts/eval/common_coding_ux/qwen2_5_coder_7b_instruct_q8_0-2026-03-13/junit.xml)
+  - baseline record:
+    - [broad_common_coding_ux_qwen2_5_coder_7b_instruct_q8_0_2026_03_13.json](/C:/Users/Calvin/Software%20Projects/LocalAgent/.localagent/eval/baselines/broad_common_coding_ux_qwen2_5_coder_7b_instruct_q8_0_2026_03_13.json)
+  - readout:
+    - total runs: `9`
+    - passed: `1`
+    - failed: `8`
+    - skipped: `0`
+    - pass rate: `11.11%`
+    - passing task: `U9`
+    - failing tasks: `U1`, `U2`, `U3`, `U4`, `U5`, `U6`, `U7`, `U12`
+  - interpretation:
+    - this is now the frozen PR1 baseline for the current broad decision surface
+    - the current qwen baseline remains weak overall, but it is explicit and stable enough to compare future changes against
+    - future benchmark claims should compare against this named baseline rather than against isolated `D5` or `U9` anecdotes
 
 Primary comparison models for early PR1 readouts:
 - [ ] `omnicoder-9b@q8_0`

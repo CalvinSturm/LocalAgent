@@ -103,7 +103,7 @@ pwsh -File scripts/run-common-coding-ux-eval.ps1 `
   -CompareBaseline "broad_common_coding_ux_qwen2_5_coder_7b_instruct_q8_0_2026_03_13"
 ```
 
-The helper writes a single run directory containing `run.json`, `SUMMARY.md`, `junit.xml`, and `bundle.zip`, and it uses a dedicated persistent state dir so named baselines remain durable across runs.
+The helper writes a single run directory containing `run.json`, `SUMMARY.md`, `junit.xml`, and `bundle.zip`, and it uses a dedicated persistent state dir so named baselines remain durable across runs. It targets the CLI's `common-coding-ux` eval pack from the current checkout.
 
 ## Related Docs
 

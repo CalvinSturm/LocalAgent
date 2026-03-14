@@ -41,12 +41,16 @@ function Sanitize-Slug {
 }
 
 function Resolve-LocalAgentCommand {
-    $command = Get-Command "localagent" -ErrorAction SilentlyContinue
-    if ($command) {
-        return @("localagent")
+    if (Test-Path "Cargo.toml") {
+        return @("cargo", "run", "--")
     }
 
-    return @("cargo", "run", "--")
+    $command = Get-Command "localagent" -ErrorAction SilentlyContinue
+    if ($command) {
+        return ,("localagent")
+    }
+
+    throw "Neither a local Cargo.toml checkout nor a localagent binary on PATH was found."
 }
 
 $dateStamp = Get-Date -Format "yyyy-MM-dd"
@@ -67,7 +71,7 @@ $argsList.Add($BaseUrl)
 $argsList.Add("--models")
 $argsList.Add($Model)
 $argsList.Add("--pack")
-$argsList.Add("common_coding_ux")
+$argsList.Add("common-coding-ux")
 $argsList.Add("--runs-per-task")
 $argsList.Add($RunsPerTask.ToString())
 $argsList.Add("--allow-write")
@@ -83,6 +87,8 @@ $argsList.Add("--junit")
 $argsList.Add($junitPath)
 $argsList.Add("--bundle")
 $argsList.Add($bundlePath)
+$argsList.Add("--bundle-on-fail")
+$argsList.Add("false")
 
 if ($CompareBaseline) {
     $argsList.Add("--compare-baseline")
@@ -107,7 +113,7 @@ if ($ExtraArgs) {
     }
 }
 
-$commandPrefix = Resolve-LocalAgentCommand
+$commandPrefix = @(Resolve-LocalAgentCommand)
 $previewParts = [System.Collections.Generic.List[string]]::new()
 foreach ($part in $commandPrefix) {
     $previewParts.Add($part)
