@@ -4,7 +4,7 @@ LocalAgent is a local-first agent runtime for connecting on-machine LLMs to MCP 
 
 It is built for the hard part of local agents: getting from curiosity to a working workflow without fighting provider setup, unsafe defaults, or opaque failures.
 
-<img width="1093" height="581" alt="LocalAgent startup screen with mode selection and automatic provider detection." src="https://github.com/user-attachments/assets/1b2c6f7e-9869-46bc-8ec8-24b70ae23268" />
+![LocalAgent startup screen with mode selection and automatic provider detection.](docs/assets/setup.png)
 
 *Startup screen with mode selection and automatic local provider detection.*
 
