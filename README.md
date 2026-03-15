@@ -1,24 +1,22 @@
 # LocalAgent
 
-LocalAgent is a local-first agent runtime for connecting on-machine LLMs to MCP tools with explicit safety controls, replayable artifacts for persistent workflows, and a guided path to first success.
+LocalAgent is a local-first agent runtime for connecting on-machine LLMs to MCP tools with explicit trust controls, replayable runs, and a guided path to first success.
 
 It is built for the hard part of local agents: getting from curiosity to a working workflow without fighting provider setup, unsafe defaults, or opaque failures.
 
-Use it to inspect a repo, summarize files, call MCP tools with approvals, and review resulting artifacts locally when you use persistent state.
+<img width="1093" height="581" alt="LocalAgent startup screen with mode selection and automatic provider detection." src="https://github.com/user-attachments/assets/1b2c6f7e-9869-46bc-8ec8-24b70ae23268" />
 
-<img width="1093" height="581" alt="LocalAgent chat TUI showing Code mode, connected LM Studio provider, command hints, and cwd footer (C:\demo)." src="https://github.com/user-attachments/assets/1b2c6f7e-9869-46bc-8ec8-24b70ae23268" />
+*Startup screen with mode selection and automatic local provider detection.*
 
 ## Why LocalAgent
 
 Most friction in local agents is operational.
 
-People are curious about local models, tool calling, MCP, coding workflows, and agent loops, but the path from interest to a successful run is still brittle. Provider setup is inconsistent. Tool permissions are easy to misconfigure. Trust boundaries are often unclear. When runs fail, it is often hard to tell what happened or why.
+People are curious about local models, tool calling, MCP, coding workflows, and agent loops, but the path from interest to a successful run is still brittle. Provider setup is inconsistent, tool permissions are easy to misconfigure, and trust boundaries are often unclear. When runs fail, it is often hard to tell what happened or why.
 
-LocalAgent narrows that gap with a guided local-first runtime that keeps side effects explicit, runtime behavior visible, and persistent runs inspectable, while still supporting serious MCP-based workflows.
+LocalAgent narrows that gap with a guided local-first runtime that keeps side effects explicit, runtime behavior visible, and persistent runs inspectable while still supporting serious MCP-based workflows.
 
-As of `v0.5.0`, the core runtime is materially stronger for coding workflows: completion and validation behavior are more runtime-owned, one-shot runs default to isolated ephemeral state unless you opt into persistence, and the repo includes broader eval and local-model investigation surfaces for measuring coding-task reliability.
-
-What you get:
+## What you get
 
 - guided startup with provider auto-detection
 - interactive TUI chat for local agent workflows
@@ -33,8 +31,7 @@ What you get:
 
 ## First success
 
-Start a supported local provider first, then run LocalAgent in the project directory you want to work in.
-
+Start a supported local provider, then launch LocalAgent in the project directory you want to work in.
 ```bash
 # 1) Install from the repo root
 cargo install --path . --force
@@ -68,7 +65,7 @@ localagent --provider ollama --model llama3.2 --prompt "Summarize src/main.rs" r
 localagent --provider ollama --model llama3.2 chat --tui
 ```
 
-## Common paths
+## Common commands
 
 ### One-shot task
 
