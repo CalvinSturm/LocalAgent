@@ -47,10 +47,8 @@ pub fn run_tail(path: &Path, refresh_ms: u64) -> anyhow::Result<()> {
                         UiAction::Up => {
                             selected = selected.saturating_sub(1);
                         }
-                        UiAction::Down => {
-                            if selected + 1 < state.pending_approvals.len() {
-                                selected += 1;
-                            }
+                        UiAction::Down if selected + 1 < state.pending_approvals.len() => {
+                            selected += 1;
                         }
                         _ => {}
                     }

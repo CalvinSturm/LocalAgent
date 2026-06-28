@@ -222,32 +222,6 @@ pub(crate) async fn build_tui_normal_submit_launch(
     Ok(Some(TuiSubmitLaunch { rx, queue_tx, fut }))
 }
 
-#[cfg(test)]
-mod tests {
-    use clap::Parser;
-
-    use super::prepare_tui_turn_args;
-    use crate::RunArgs;
-
-    #[test]
-    fn prepare_tui_turn_args_preserves_disabled_streaming() {
-        let base = RunArgs::parse_from(["localagent"]);
-        let prepared = prepare_tui_turn_args(&base, "test prompt");
-        assert_eq!(prepared.prompt.as_deref(), Some("test prompt"));
-        assert!(!prepared.stream);
-        assert!(!prepared.tui);
-    }
-
-    #[test]
-    fn prepare_tui_turn_args_preserves_enabled_streaming() {
-        let base = RunArgs::parse_from(["localagent", "--stream"]);
-        let prepared = prepare_tui_turn_args(&base, "test prompt");
-        assert_eq!(prepared.prompt.as_deref(), Some("test prompt"));
-        assert!(prepared.stream);
-        assert!(!prepared.tui);
-    }
-}
-
 pub(crate) struct TuiEnterSubmitInput<'a> {
     pub(crate) terminal: &'a mut Terminal<CrosstermBackend<std::io::Stdout>>,
     pub(crate) input: &'a mut String,
@@ -533,4 +507,30 @@ pub(crate) async fn handle_tui_enter_submit(
     };
 
     Ok(TuiEnterSubmitOutcome::Launched(launch))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::prepare_tui_turn_args;
+    use crate::RunArgs;
+
+    #[test]
+    fn prepare_tui_turn_args_preserves_disabled_streaming() {
+        let base = RunArgs::parse_from(["localagent"]);
+        let prepared = prepare_tui_turn_args(&base, "test prompt");
+        assert_eq!(prepared.prompt.as_deref(), Some("test prompt"));
+        assert!(!prepared.stream);
+        assert!(!prepared.tui);
+    }
+
+    #[test]
+    fn prepare_tui_turn_args_preserves_enabled_streaming() {
+        let base = RunArgs::parse_from(["localagent", "--stream"]);
+        let prepared = prepare_tui_turn_args(&base, "test prompt");
+        assert_eq!(prepared.prompt.as_deref(), Some("test prompt"));
+        assert!(prepared.stream);
+        assert!(!prepared.tui);
+    }
 }

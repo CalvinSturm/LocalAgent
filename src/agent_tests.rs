@@ -2220,7 +2220,7 @@ impl ModelProvider for ReadThenRepeatedBadStrReplaceThenPatchThenReadThenDonePro
                 }],
                 usage: None,
             }),
-            1 | 2 | 3 | 4 => Ok(GenerateResponse {
+            1..=4 => Ok(GenerateResponse {
                 assistant: Message {
                     role: Role::Assistant,
                     content: Some(String::new()),
@@ -2578,7 +2578,7 @@ impl ModelProvider for ReadThenRepeatedBadApplyPatchThenEditThenReadThenDoneProv
                 }],
                 usage: None,
             }),
-            1 | 2 | 3 | 4 => Ok(GenerateResponse {
+            1..=4 => Ok(GenerateResponse {
                 assistant: Message {
                     role: Role::Assistant,
                     content: Some(String::new()),

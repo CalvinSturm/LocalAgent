@@ -230,13 +230,11 @@ pub(crate) async fn drive_tui_active_turn_loop(
                         }
                     }
                 }
-                EventKind::ModelResponseEnd => {
-                    if streaming_assistant.is_empty() {
-                        if let Some(c) = ev.data.get("content").and_then(|v| v.as_str()) {
-                            streaming_assistant.push_str(c);
-                            if *follow_output {
-                                *transcript_scroll = usize::MAX;
-                            }
+                EventKind::ModelResponseEnd if streaming_assistant.is_empty() => {
+                    if let Some(c) = ev.data.get("content").and_then(|v| v.as_str()) {
+                        streaming_assistant.push_str(c);
+                        if *follow_output {
+                            *transcript_scroll = usize::MAX;
                         }
                     }
                 }
