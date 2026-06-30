@@ -770,7 +770,8 @@ fn draw_startup_bootstrap_frame(
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(outer[5]);
     f.render_widget(
-        Paragraph::new(Line::from(footer_line)).alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(footer_line))
+            .alignment(ratatui::layout::HorizontalAlignment::Center),
         footer_outer[0],
     );
     f.render_widget(
@@ -787,7 +788,7 @@ fn draw_startup_bootstrap_frame(
             Span::raw(" "),
             Span::styled("Quit", Style::default().fg(Color::White)),
         ]))
-        .alignment(ratatui::layout::Alignment::Center),
+        .alignment(ratatui::layout::HorizontalAlignment::Center),
         footer_outer[1],
     );
 }
