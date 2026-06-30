@@ -580,25 +580,53 @@ fn draw_approvals_pane(
 ) {
     let summary = if focused {
         format!(
-            "Approvals  pending:{}  focus",
+            "Approvals pending:{} focus | Ctrl+A approve Ctrl+X deny Ctrl+R refresh",
             ui_state.pending_approvals.len()
         )
     } else {
-        format!("Approvals  pending:{}", ui_state.pending_approvals.len())
+        format!(
+            "Approvals pending:{} | Ctrl+A approve Ctrl+X deny Ctrl+R refresh",
+            ui_state.pending_approvals.len()
+        )
     };
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(3)])
-        .split(area);
+    let header_height = if area.width < 44 { 2 } else { 1 };
+    let show_detail = !ui_state.pending_approvals.is_empty() && area.height >= 10;
+    let layout = if show_detail {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(header_height),
+                Constraint::Min(3),
+                Constraint::Length(6),
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(header_height),
+                Constraint::Min(3),
+                Constraint::Length(0),
+            ])
+            .split(area)
+    };
     f.render_widget(
-        Paragraph::new(summary).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(if area.width < 44 {
+            format!(
+                "Approvals:{} {}\n^A ok ^X deny ^R",
+                ui_state.pending_approvals.len(),
+                if focused { "focus" } else { "" }
+            )
+        } else {
+            summary
+        })
+        .style(Style::default().fg(Color::DarkGray))
+        .wrap(Wrap { trim: false }),
         layout[0],
     );
 
     let total_w = layout[1].width.max(12);
-    let id_w = ((total_w as usize * 36) / 100).max(10) as u16;
-    let status_w = ((total_w as usize * 19) / 100).max(8) as u16;
-    let tool_w = total_w.saturating_sub(id_w).saturating_sub(status_w).max(8);
+    let compact = total_w < 46;
 
     let approval_rows = ui_state.pending_approvals.iter().enumerate().map(|(i, a)| {
         let style = if i == approvals_selected {
@@ -610,28 +638,69 @@ fn draw_approvals_pane(
         } else {
             Style::default()
         };
-        Row::new(vec![
-            Cell::from(truncate_cell(&a.id, id_w.saturating_sub(1) as usize)),
-            Cell::from(truncate_cell(
-                &a.status,
-                status_w.saturating_sub(1) as usize,
-            )),
-            Cell::from(truncate_cell(&a.tool, tool_w.saturating_sub(1) as usize)),
-        ])
-        .style(style)
+        if compact {
+            Row::new(vec![
+                Cell::from(short_id(&a.id, 8)),
+                Cell::from(approval_status_label(&a.status, 7)),
+                Cell::from(truncate_cell(&a.tool, 9)),
+                Cell::from(a.risk.clone()),
+            ])
+            .style(style)
+        } else {
+            Row::new(vec![
+                Cell::from(short_id(&a.id, 12)),
+                Cell::from(approval_status_label(&a.status, 8)),
+                Cell::from(truncate_cell(&a.tool, 14)),
+                Cell::from(a.risk.clone()),
+            ])
+            .style(style)
+        }
     });
-    f.render_widget(
+    let table = if compact {
         Table::new(
             approval_rows,
             [
-                Constraint::Length(id_w),
-                Constraint::Length(status_w),
-                Constraint::Length(tool_w),
+                Constraint::Length(8),
+                Constraint::Length(7),
+                Constraint::Length(9),
+                Constraint::Min(4),
             ],
         )
-        .header(Row::new(vec!["Approval", "Status", "Tool"])),
-        layout[1],
-    );
+        .header(Row::new(vec!["ID", "State", "Tool", "Risk"]))
+        .column_spacing(0)
+    } else {
+        Table::new(
+            approval_rows,
+            [
+                Constraint::Length(12),
+                Constraint::Length(8),
+                Constraint::Length(14),
+                Constraint::Min(6),
+            ],
+        )
+        .header(Row::new(vec!["Approval", "State", "Tool", "Risk"]))
+        .column_spacing(0)
+    };
+    f.render_widget(table, layout[1]);
+
+    if show_detail {
+        if let Some(a) = ui_state.pending_approvals.get(approvals_selected) {
+            let detail = format!(
+                "status: approval required\npolicy reason: not stored\ndecision: {}  risk: {}\ntool: {}  id: {}\nargs: {}",
+                approval_status_label(&a.status, 16),
+                a.risk,
+                a.tool,
+                a.id,
+                a.arguments
+            );
+            f.render_widget(
+                Paragraph::new(detail)
+                    .wrap(Wrap { trim: false })
+                    .style(Style::default().fg(Color::DarkGray)),
+                layout[2],
+            );
+        }
+    }
 }
 
 fn draw_reasoning_pane(
@@ -686,6 +755,24 @@ fn truncate_cell(s: &str, max_chars: usize) -> String {
     out
 }
 
+fn short_id(id: &str, max_chars: usize) -> String {
+    if id.chars().count() <= max_chars {
+        id.to_string()
+    } else {
+        id.chars().take(max_chars).collect()
+    }
+}
+
+fn approval_status_label(raw: &str, width: usize) -> String {
+    let normalized = match raw {
+        "pending" => "PENDING",
+        "approved" => "APPROVED",
+        "denied" => "DENIED",
+        other => other,
+    };
+    truncate_cell(normalized, width)
+}
+
 fn is_protocol_badge_row(t: &ToolRow) -> bool {
     if t.reason_token == "protocol" || t.status.to_ascii_lowercase().contains("protocol") {
         return true;
@@ -700,7 +787,7 @@ fn is_protocol_badge_row(t: &ToolRow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::draw_chat_frame;
-    use crate::tui::state::UiState;
+    use crate::tui::state::{ApprovalRow, UiState};
     use ratatui::{backend::TestBackend, Terminal};
     use std::collections::BTreeMap;
 
@@ -798,5 +885,140 @@ mod tests {
 
         assert!(!rendered.contains("leftover-status-tail-278"));
         assert!(!rendered.contains("278"));
+    }
+
+    #[test]
+    fn approval_pane_keeps_hints_visible_in_narrow_layout() {
+        let backend = TestBackend::new(72, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut ui_state = UiState::new(16);
+        ui_state.pending_approvals.push(test_approval_row());
+
+        terminal
+            .draw(|f| {
+                draw_chat_frame(
+                    f,
+                    "Code",
+                    "lmstudio",
+                    true,
+                    "model",
+                    "running",
+                    "",
+                    &[],
+                    &BTreeMap::new(),
+                    false,
+                    "",
+                    &ui_state,
+                    0,
+                    false,
+                    false,
+                    0,
+                    "C:\\demo",
+                    "",
+                    0,
+                    false,
+                    &[],
+                    0,
+                    100,
+                    false,
+                    true,
+                    false,
+                    0,
+                    false,
+                    false,
+                    0,
+                    None,
+                    None,
+                );
+            })
+            .expect("draw");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Approvals:1"));
+        assert!(rendered.contains("^A ok"));
+        assert!(rendered.contains("^X deny"));
+        assert!(rendered.contains("shell"));
+    }
+
+    #[test]
+    fn approval_pane_detail_shows_action_risk_decision_and_args() {
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut ui_state = UiState::new(16);
+        ui_state.pending_approvals.push(test_approval_row());
+
+        terminal
+            .draw(|f| {
+                draw_chat_frame(
+                    f,
+                    "Code",
+                    "lmstudio",
+                    true,
+                    "model",
+                    "running",
+                    "",
+                    &[],
+                    &BTreeMap::new(),
+                    false,
+                    "",
+                    &ui_state,
+                    0,
+                    false,
+                    false,
+                    0,
+                    "C:\\demo",
+                    "",
+                    0,
+                    false,
+                    &[],
+                    0,
+                    100,
+                    false,
+                    true,
+                    false,
+                    0,
+                    false,
+                    false,
+                    0,
+                    None,
+                    None,
+                );
+            })
+            .expect("draw");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("risk: shell"));
+        assert!(rendered.contains("decision: PENDING"));
+        assert!(rendered.contains("status: approval required"));
+        assert!(rendered.contains("policy reason: not stored"));
+        assert!(rendered.contains(r#"args: {"cmd":"cmd"}"#));
+    }
+
+    fn test_approval_row() -> ApprovalRow {
+        ApprovalRow {
+            id: "approval-1234567890".to_string(),
+            tool: "shell".to_string(),
+            status: "pending".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            arguments: r#"{"cmd":"cmd"}"#.to_string(),
+            risk: "shell".to_string(),
+            approval_key_short: "abcdef12".to_string(),
+            approval_key_version: "v1".to_string(),
+            exec_target: "host".to_string(),
+        }
     }
 }

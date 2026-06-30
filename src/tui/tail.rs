@@ -50,6 +50,9 @@ pub fn run_tail(path: &Path, refresh_ms: u64) -> anyhow::Result<()> {
                         UiAction::Down if selected + 1 < state.pending_approvals.len() => {
                             selected += 1;
                         }
+                        UiAction::ToggleDetails => {
+                            state.show_details = !state.show_details;
+                        }
                         _ => {}
                     }
                 }

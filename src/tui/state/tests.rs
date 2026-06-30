@@ -180,6 +180,11 @@ fn approvals_refresh_and_transition() {
     s.refresh_approvals(&path).expect("refresh");
     assert_eq!(s.pending_approvals.len(), 1);
     assert_eq!(s.pending_approvals[0].status, "pending");
+    assert_eq!(s.pending_approvals[0].risk, "shell");
+    assert_eq!(
+        s.pending_approvals[0].arguments,
+        r#"{"cmd":"echo"}"#.to_string()
+    );
     store.approve(&id, None, None).expect("approve");
     s.refresh_approvals(&path).expect("refresh2");
     assert_eq!(s.pending_approvals[0].status, "approved");
@@ -253,18 +258,33 @@ fn pending_approval_count_counts_pending_only() {
             tool: "shell".to_string(),
             status: "pending".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
+            arguments: r#"{"cmd":"echo"}"#.to_string(),
+            risk: "shell".to_string(),
+            approval_key_short: "-".to_string(),
+            approval_key_version: "v1".to_string(),
+            exec_target: "-".to_string(),
         },
         ApprovalRow {
             id: "a2".to_string(),
             tool: "write_file".to_string(),
             status: "approved".to_string(),
             created_at: "2026-01-01T00:00:01Z".to_string(),
+            arguments: r#"{"path":"x"}"#.to_string(),
+            risk: "write".to_string(),
+            approval_key_short: "-".to_string(),
+            approval_key_version: "v1".to_string(),
+            exec_target: "-".to_string(),
         },
         ApprovalRow {
             id: "a3".to_string(),
             tool: "shell".to_string(),
             status: "denied".to_string(),
             created_at: "2026-01-01T00:00:02Z".to_string(),
+            arguments: r#"{"cmd":"echo"}"#.to_string(),
+            risk: "shell".to_string(),
+            approval_key_short: "-".to_string(),
+            approval_key_version: "v1".to_string(),
+            exec_target: "-".to_string(),
         },
     ];
     assert_eq!(s.pending_approval_count(), 1);

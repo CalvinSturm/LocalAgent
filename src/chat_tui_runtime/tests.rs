@@ -1431,6 +1431,11 @@ fn refresh_approvals_failure_logs_once_and_preserves_rows() {
         tool: "shell".to_string(),
         status: "pending".to_string(),
         created_at: "2026-01-01T00:00:00Z".to_string(),
+        arguments: r#"{"cmd":"echo"}"#.to_string(),
+        risk: "shell".to_string(),
+        approval_key_short: "-".to_string(),
+        approval_key_version: "v1".to_string(),
+        exec_target: "-".to_string(),
     }];
     let mut show_approvals = false;
     let mut previous_pending = 1usize;

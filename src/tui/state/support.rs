@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::trust::approvals::{ApprovalsStore, StoredStatus};
+use crate::trust::approvals::{canonical_json, ApprovalsStore, StoredStatus};
+use crate::types::SideEffects;
 
 use super::{ApprovalRow, ToolRow, UiState};
 
@@ -45,16 +46,32 @@ impl UiState {
         let mut rows = data
             .requests
             .into_iter()
-            .map(|(id, req)| ApprovalRow {
-                id,
-                tool: req.tool,
-                status: match req.status {
-                    StoredStatus::Pending => "pending",
-                    StoredStatus::Approved => "approved",
-                    StoredStatus::Denied => "denied",
+            .map(|(id, req)| {
+                let risk = approval_risk_label(&req.tool).to_string();
+                let arguments =
+                    canonical_json(&req.arguments).unwrap_or_else(|_| req.arguments.to_string());
+                ApprovalRow {
+                    id,
+                    tool: req.tool,
+                    status: match req.status {
+                        StoredStatus::Pending => "pending",
+                        StoredStatus::Approved => "approved",
+                        StoredStatus::Denied => "denied",
+                    }
+                    .to_string(),
+                    created_at: req.created_at,
+                    arguments,
+                    risk,
+                    approval_key_short: req
+                        .approval_key
+                        .as_deref()
+                        .map(short_hash)
+                        .unwrap_or_else(|| "-".to_string()),
+                    approval_key_version: req
+                        .approval_key_version
+                        .unwrap_or_else(|| "v1".to_string()),
+                    exec_target: req.exec_target.unwrap_or_else(|| "-".to_string()),
                 }
-                .to_string(),
-                created_at: req.created_at,
             })
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| a.id.cmp(&b.id));
@@ -231,6 +248,17 @@ impl UiState {
                 self.mcp_stalled = false;
             }
         }
+    }
+}
+
+fn approval_risk_label(tool: &str) -> &'static str {
+    match crate::tools::tool_side_effects(tool) {
+        SideEffects::None => "none",
+        SideEffects::FilesystemRead => "read",
+        SideEffects::FilesystemWrite => "write",
+        SideEffects::ShellExec => "shell",
+        SideEffects::Network => "network",
+        SideEffects::Browser => "browser",
     }
 }
 

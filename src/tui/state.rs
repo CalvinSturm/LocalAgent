@@ -30,6 +30,11 @@ pub struct ApprovalRow {
     pub tool: String,
     pub status: String,
     pub created_at: String,
+    pub arguments: String,
+    pub risk: String,
+    pub approval_key_short: String,
+    pub approval_key_version: String,
+    pub exec_target: String,
 }
 
 #[derive(Debug, Clone)]
