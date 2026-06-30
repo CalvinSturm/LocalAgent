@@ -128,6 +128,7 @@ pub enum ToolErrorCode {
     ShellExecOsError,
     ShellExecNonZeroExit,
     ShellExecTimeout,
+    ShellExecTimeoutUnsupported,
 }
 
 impl ToolErrorCode {
@@ -147,6 +148,7 @@ impl ToolErrorCode {
             Self::ShellExecOsError => "shell_exec_os_error",
             Self::ShellExecNonZeroExit => "shell_exec_non_zero_exit",
             Self::ShellExecTimeout => "shell_exec_timeout",
+            Self::ShellExecTimeoutUnsupported => "shell_exec_timeout_unsupported",
         }
     }
 }

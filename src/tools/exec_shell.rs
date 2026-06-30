@@ -76,6 +76,9 @@ pub(super) fn classify_shell_target_error(
     content: &str,
     exit_code: Option<i32>,
 ) -> ToolErrorDetail {
+    if let Some(detail) = timeout_unsupported_error_from_content(content) {
+        return detail;
+    }
     if let Some(detail) = timeout_error_from_content(content) {
         return detail;
     }
@@ -115,6 +118,27 @@ pub(super) fn classify_shell_target_error(
         minimal_example: minimal_builtin_example("shell"),
         available_tools: None,
     }
+}
+
+fn timeout_unsupported_error_from_content(content: &str) -> Option<ToolErrorDetail> {
+    let parsed = serde_json::from_str::<Value>(content).ok()?;
+    if parsed.get("error").and_then(|v| v.as_str()) != Some("timeout_unsupported") {
+        return None;
+    }
+    let target = parsed
+        .get("execution_target")
+        .and_then(|v| v.as_str())
+        .unwrap_or("this");
+    Some(ToolErrorDetail {
+        code: ToolErrorCode::ShellExecTimeoutUnsupported,
+        message: format!(
+            "timeout_ms is not supported on the {target} execution target. Re-run on the host target or omit timeout_ms."
+        ),
+        expected_schema: None,
+        received_args: None,
+        minimal_example: minimal_builtin_example("shell"),
+        available_tools: None,
+    })
 }
 
 fn timeout_error_from_content(content: &str) -> Option<ToolErrorDetail> {

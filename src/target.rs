@@ -608,6 +608,30 @@ impl ExecTarget for DockerTarget {
     }
 
     async fn exec_shell(&self, req: ShellReq) -> TargetResult {
+        // Timeout enforcement is not implemented for the docker target (killing
+        // the `docker run` client would not reliably stop the container). Rather
+        // than silently ignore a requested bound, reject it with a structured,
+        // classifiable error so the model/operator gets a clear signal instead
+        // of an unexpectedly unbounded command.
+        if req.timeout_ms > 0 {
+            return TargetResult {
+                ok: false,
+                content: json!({
+                    "error": "timeout_unsupported",
+                    "execution_target": "docker",
+                    "timeout_ms": req.timeout_ms,
+                    "hint": "timeout_ms is not supported on the docker execution target. Re-run on the host target, or omit timeout_ms."
+                })
+                .to_string(),
+                truncated: false,
+                bytes: None,
+                exit_code: None,
+                stderr_truncated: None,
+                stdout_truncated: None,
+                execution_target: ExecTargetKind::Docker,
+                docker: Some(self.meta.clone()),
+            };
+        }
         let args = req
             .args
             .iter()
@@ -1353,6 +1377,34 @@ mod tests {
                 "echo hi"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn docker_shell_rejects_timeout_with_structured_error() {
+        // The guard returns before any docker invocation, so this is
+        // deterministic without docker installed.
+        let t = DockerTarget::new(
+            "ubuntu:24.04".to_string(),
+            "/work".to_string(),
+            "none".to_string(),
+            None,
+        );
+        let out = t
+            .exec_shell(ShellReq {
+                workdir: PathBuf::from("."),
+                cmd: "echo".to_string(),
+                args: vec!["hi".to_string()],
+                cwd: None,
+                max_tool_output_bytes: 200_000,
+                timeout_ms: 500,
+            })
+            .await;
+        assert!(!out.ok, "timeout on docker target must be rejected");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&out.content).expect("structured docker rejection is JSON");
+        assert_eq!(parsed["error"], serde_json::json!("timeout_unsupported"));
+        assert_eq!(parsed["execution_target"], serde_json::json!("docker"));
+        assert_eq!(parsed["timeout_ms"], serde_json::json!(500));
     }
 
     #[test]
