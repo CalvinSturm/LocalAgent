@@ -771,10 +771,15 @@ async fn shell_auto_repair_wraps_windows_builtin() {
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
+    // Use `ver` rather than `echo`: both are cmd builtins, but `echo` is often
+    // shadowed by an MSYS/Git `echo.exe` on PATH, which lets the direct spawn
+    // succeed and bypasses the repair path. `ver` has no standalone executable
+    // counterpart, so the initial spawn deterministically fails regardless of
+    // host PATH contents, forcing the windows_cmd_c auto-repair.
     let tc = ToolCall {
         id: "tc_shell_auto_repair_win".to_string(),
         name: "shell".to_string(),
-        arguments: json!({"cmd":"echo","args":["hi-manual-test"]}),
+        arguments: json!({"cmd":"ver"}),
     };
     let msg = execute_tool(&rt, &tc).await;
     let envelope: Value = serde_json::from_str(&msg.content.expect("content")).expect("json");
@@ -788,7 +793,11 @@ async fn shell_auto_repair_wraps_windows_builtin() {
         .get("stdout")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    assert!(stdout.contains("hi-manual-test"));
+    // `cmd /c ver` prints a line like "Microsoft Windows [Version 10.0.x]".
+    assert!(
+        stdout.to_ascii_lowercase().contains("windows"),
+        "expected `ver` output to mention Windows, got: {stdout}"
+    );
     assert_eq!(
         inner.get("repair_attempted").and_then(|v| v.as_bool()),
         Some(true)
