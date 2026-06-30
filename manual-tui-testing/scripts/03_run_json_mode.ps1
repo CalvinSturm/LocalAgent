@@ -1,3 +1,11 @@
+<#
+.SYNOPSIS
+Runs a non-TUI JSON-mode LocalAgent smoke test against the manual fixture.
+
+.EXAMPLE
+pwsh ./manual-tui-testing/scripts/03_run_json_mode.ps1 -Provider mock -Model mock-model -Prompt "Use glob with pattern 'src/**/*.rs' and then grep TODO."
+#>
+
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("lmstudio", "ollama", "llamacpp", "mock")]
