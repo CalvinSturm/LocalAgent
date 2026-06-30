@@ -237,6 +237,7 @@ localagent doctor --docker
 ```
 
 Notes:
+- Provider doctor prints the provider tested, base URL tested, model-list endpoint, model status, streaming support, and the next action when readiness fails. Doctor does not run a generation probe.
 - `doctor --docker` checks that the Docker daemon is reachable and that the configured Docker image (from `--docker-image`, default runtime config, or profile-resolved run config) exists locally.
 - Docker shell sandbox runs do not fall back to host shell execution if Docker fails.
 - Windows: Docker Desktop must be running and the workdir drive must be shared/mountable. If Docker mount checks fail, inspect the resolved workdir path and Docker config summary in the error output/artifacts.

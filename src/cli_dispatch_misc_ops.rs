@@ -32,7 +32,7 @@ pub(crate) async fn handle_doctor_command(
             Ok(())
         }
         Err(fail_reason) => {
-            println!("FAIL: {fail_reason}");
+            println!("{fail_reason}");
             std::process::exit(1);
         }
     }

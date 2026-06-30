@@ -222,14 +222,20 @@ pub(crate) async fn run_startup_bootstrap(
                             }
                             let Some(provider) = detection.provider else {
                                 error_line = Some(
-                                    "No local provider detected yet. Start LM Studio/Ollama/llama.cpp, then press R."
+                                    detection
+                                        .next_action
+                                        .as_deref()
+                                        .unwrap_or("No local provider detected yet. Start LM Studio/Ollama/llama.cpp, then press R.")
                                         .to_string(),
                                 );
                                 continue;
                             };
                             let Some(model) = detection.model.clone() else {
                                 error_line = Some(
-                                    "Provider detected but no model found. Load a model locally, then press R."
+                                    detection
+                                        .next_action
+                                        .as_deref()
+                                        .unwrap_or("Provider detected but no model found. Load a model locally, then press R.")
                                         .to_string(),
                                 );
                                 continue;
@@ -473,11 +479,15 @@ fn draw_startup_bootstrap_frame(
         "Web MCP Not Ready"
     } else if provider_ready {
         "Provider Connected"
+    } else if detection.provider.is_some() {
+        "Provider Needs Setup"
     } else {
         "Not Connected"
     };
     let provider_summary = if provider_ready {
         "connected"
+    } else if detection.provider.is_some() {
+        "needs setup"
     } else {
         "not connected"
     };
@@ -633,13 +643,17 @@ fn draw_startup_bootstrap_frame(
         ]));
         conn_lines.push(Line::from(""));
         conn_lines.push(Line::from(vec![Span::styled(
-            "Start LM Studio, Ollama, or llama.cpp.",
+            detection.status_line.clone(),
             Style::default().fg(Color::Green),
         )]));
-        conn_lines.push(Line::from(vec![Span::styled(
-            "I'll connect automatically.",
-            Style::default().fg(Color::Green),
-        )]));
+        if let Some(next_action) = detection.next_action.as_deref() {
+            if !detection.status_line.contains(next_action) {
+                conn_lines.push(Line::from(vec![Span::styled(
+                    next_action.to_string(),
+                    Style::default().fg(Color::Green),
+                )]));
+            }
+        }
         if let Some(warn) = downloads_cwd_warning {
             conn_lines.push(Line::from(""));
             conn_lines.push(Line::from(vec![Span::styled(
@@ -735,16 +749,17 @@ fn draw_startup_bootstrap_frame(
         conn_inner,
     );
 
+    let disabled_hint = startup_disabled_hint(detection);
     let enter_hint = if custom_menu_open {
         if provider_ready {
-            "Start chat"
+            "Start chat".to_string()
         } else {
-            "Start disabled: no provider detected"
+            disabled_hint.clone()
         }
     } else if provider_ready {
-        "Select mode + start chat"
+        "Select mode + start chat".to_string()
     } else {
-        "Select mode (start disabled: no provider detected)"
+        format!("Select mode ({disabled_hint})")
     };
     let mut footer_line: Vec<Span<'static>> = vec![
         Span::styled("[↑/↓]", Style::default().fg(Color::White)),
@@ -791,4 +806,106 @@ fn draw_startup_bootstrap_frame(
         .alignment(ratatui::layout::HorizontalAlignment::Center),
         footer_outer[1],
     );
+}
+
+fn startup_disabled_hint(detection: &startup_detect::StartupDetection) -> String {
+    let diagnosis_with_next_action = |diagnosis: &str| {
+        if let Some(next_action) = detection.next_action.as_deref() {
+            format!("Start disabled: {diagnosis} - {next_action}")
+        } else {
+            format!("Start disabled: {diagnosis}")
+        }
+    };
+
+    match detection.readiness_state {
+        Some(provider_runtime::ProviderReadinessState::ProviderNotRunning) | None => {
+            "Start disabled: provider is not running".to_string()
+        }
+        Some(provider_runtime::ProviderReadinessState::NoModelLoaded) => {
+            "Start disabled: model is not ready".to_string()
+        }
+        Some(provider_runtime::ProviderReadinessState::WrongBaseUrl) => {
+            diagnosis_with_next_action("wrong base URL")
+        }
+        Some(provider_runtime::ProviderReadinessState::ModelListEndpointUnavailable) => {
+            diagnosis_with_next_action("model list endpoint unavailable")
+        }
+        Some(provider_runtime::ProviderReadinessState::RequestTimeout) => {
+            diagnosis_with_next_action("provider request timeout")
+        }
+        Some(provider_runtime::ProviderReadinessState::UnsupportedResponseShape) => {
+            diagnosis_with_next_action("unsupported provider response")
+        }
+        Some(provider_runtime::ProviderReadinessState::Ready) => {
+            "Start disabled: model is not ready".to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::startup_disabled_hint;
+    use crate::gate::ProviderKind;
+    use crate::provider_runtime::ProviderReadinessState;
+    use crate::startup_detect::StartupDetection;
+
+    fn detection(
+        readiness_state: ProviderReadinessState,
+        next_action: Option<&str>,
+    ) -> StartupDetection {
+        StartupDetection {
+            provider: Some(ProviderKind::Lmstudio),
+            model: None,
+            base_url: Some("http://localhost:1234/v1".to_string()),
+            status_line: readiness_state.label().to_string(),
+            next_action: next_action.map(str::to_string),
+            readiness_state: Some(readiness_state),
+        }
+    }
+
+    #[test]
+    fn startup_footer_names_provider_offline_reason() {
+        let detection = detection(ProviderReadinessState::ProviderNotRunning, None);
+
+        assert_eq!(
+            startup_disabled_hint(&detection),
+            "Start disabled: provider is not running"
+        );
+    }
+
+    #[test]
+    fn startup_footer_names_model_not_ready_reason() {
+        let detection = detection(ProviderReadinessState::NoModelLoaded, None);
+
+        assert_eq!(
+            startup_disabled_hint(&detection),
+            "Start disabled: model is not ready"
+        );
+    }
+
+    #[test]
+    fn startup_footer_carries_wrong_base_url_next_action() {
+        let detection = detection(
+            ProviderReadinessState::WrongBaseUrl,
+            Some("Confirm this is the provider's OpenAI-compatible API base URL and that the /models endpoint is enabled."),
+        );
+
+        assert_eq!(
+            startup_disabled_hint(&detection),
+            "Start disabled: wrong base URL - Confirm this is the provider's OpenAI-compatible API base URL and that the /models endpoint is enabled."
+        );
+    }
+
+    #[test]
+    fn startup_footer_carries_model_endpoint_next_action() {
+        let detection = detection(
+            ProviderReadinessState::ModelListEndpointUnavailable,
+            Some("Confirm the server exposes `GET /v1/models` and retry with the correct `--base-url`."),
+        );
+
+        assert_eq!(
+            startup_disabled_hint(&detection),
+            "Start disabled: model list endpoint unavailable - Confirm the server exposes `GET /v1/models` and retry with the correct `--base-url`."
+        );
+    }
 }

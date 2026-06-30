@@ -34,7 +34,14 @@ localagent doctor --provider lmstudio
 Expected:
 
 ```text
-OK: lmstudio reachable at http://localhost:1234/v1
+OK: provider readiness passed
+Provider tested: lmstudio
+Base URL tested: http://localhost:1234/v1
+Model list endpoint: http://localhost:1234/v1/models
+Model status: ready (<model-id>; 1 model available)
+Streaming support: supported by provider; not verified by doctor
+Detail: model list endpoint returned at least one model
+Next action: Run `localagent --provider lmstudio --model <model-id> chat --tui`.
 ```
 
 ### Run
@@ -274,6 +281,15 @@ localagent doctor --provider lmstudio
 localagent doctor --provider ollama
 localagent doctor --provider llamacpp
 ```
+
+Doctor distinguishes the common first-run states:
+
+- `provider not running`: start the selected provider at the tested base URL.
+- `wrong base URL`: retry with the provider's API base URL, usually including `/v1` for LM Studio and llama.cpp, and no `/v1` for Ollama.
+- `provider online but no model loaded`: load, pull, or start a model in the provider before launching LocalAgent.
+- `model list endpoint unavailable`: confirm the server exposes `/v1/models` for OpenAI-compatible providers or `/api/tags` for Ollama.
+- `request timeout`: wait for the provider to finish loading or increase the HTTP timeout.
+- `unsupported response shape`: confirm the base URL points to the selected supported provider.
 
 For slow CPUs / first-token delays, increase timeouts and disable retries while testing:
 

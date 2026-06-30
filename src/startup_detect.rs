@@ -1,9 +1,3 @@
-use std::time::Duration;
-
-use anyhow::anyhow;
-use reqwest::Client;
-use serde_json::Value;
-
 use crate::gate::ProviderKind;
 use crate::provider_runtime;
 use crate::providers::http::HttpConfig;
@@ -14,30 +8,57 @@ pub(crate) struct StartupDetection {
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub status_line: String,
+    pub next_action: Option<String>,
+    pub readiness_state: Option<provider_runtime::ProviderReadinessState>,
 }
 
 pub(crate) async fn detect_startup_provider(http: HttpConfig) -> StartupDetection {
-    match discover_local_default(http).await {
-        Ok((provider, model, base_url)) => StartupDetection {
-            provider: Some(provider),
-            model: Some(model),
-            base_url: Some(base_url),
-            status_line: "Auto-detected local provider and model.".to_string(),
-        },
-        Err(_) => StartupDetection {
-            provider: None,
-            model: None,
-            base_url: None,
-            status_line:
-                "No local provider detected. Start LM Studio, Ollama, or llama.cpp and press R."
-                    .to_string(),
-        },
+    let reports = diagnose_local_defaults(http).await;
+    if let Some(report) = reports.iter().find(|report| report.is_ready()) {
+        return StartupDetection {
+            provider: Some(report.provider),
+            model: report.model.clone(),
+            base_url: Some(report.base_url.clone()),
+            status_line: report.startup_status_line(),
+            next_action: Some(report.next_action.clone()),
+            readiness_state: Some(report.state),
+        };
+    }
+
+    if let Some(report) = reports
+        .iter()
+        .min_by_key(|report| readiness_rank(report.state))
+    {
+        if report.state != provider_runtime::ProviderReadinessState::ProviderNotRunning {
+            return StartupDetection {
+                provider: Some(report.provider),
+                model: None,
+                base_url: Some(report.base_url.clone()),
+                status_line: report.startup_status_line(),
+                next_action: Some(report.next_action.clone()),
+                readiness_state: Some(report.state),
+            };
+        }
+    }
+
+    StartupDetection {
+        provider: None,
+        model: None,
+        base_url: None,
+        status_line: format!(
+            "No local provider detected. Start LM Studio ({}), Ollama ({}), or llama.cpp server ({}) and press R.",
+            provider_runtime::default_base_url(ProviderKind::Lmstudio),
+            provider_runtime::default_base_url(ProviderKind::Ollama),
+            provider_runtime::default_base_url(ProviderKind::Llamacpp)
+        ),
+        next_action: Some("Start a supported local provider, load a model, then press R.".to_string()),
+        readiness_state: Some(provider_runtime::ProviderReadinessState::ProviderNotRunning),
     }
 }
 
-async fn discover_local_default(
+async fn diagnose_local_defaults(
     http: HttpConfig,
-) -> anyhow::Result<(ProviderKind, String, String)> {
+) -> Vec<provider_runtime::ProviderReadinessReport> {
     let candidates = [
         (
             ProviderKind::Lmstudio,
@@ -52,77 +73,24 @@ async fn discover_local_default(
             provider_runtime::default_base_url(ProviderKind::Llamacpp).to_string(),
         ),
     ];
+
+    let mut reports = Vec::new();
     for (provider, base_url) in candidates {
-        if let Some(model) = discover_model_for_provider(provider, &base_url, &http).await {
-            return Ok((provider, model, base_url));
-        }
+        reports.push(
+            provider_runtime::diagnose_provider_readiness(provider, &base_url, None, http).await,
+        );
     }
-    Err(anyhow!(
-        "No local provider detected. Start LM Studio ({}), Ollama ({}), or llama.cpp server ({}) then rerun.",
-        provider_runtime::default_base_url(ProviderKind::Lmstudio),
-        provider_runtime::default_base_url(ProviderKind::Ollama),
-        provider_runtime::default_base_url(ProviderKind::Llamacpp)
-    ))
+    reports
 }
 
-async fn discover_model_for_provider(
-    provider: ProviderKind,
-    base_url: &str,
-    http: &HttpConfig,
-) -> Option<String> {
-    match provider {
-        ProviderKind::Ollama => discover_ollama_model(base_url, http).await,
-        ProviderKind::Lmstudio | ProviderKind::Llamacpp => {
-            discover_openai_compat_model(base_url, http).await
-        }
-        ProviderKind::Mock => Some("mock-model".to_string()),
+fn readiness_rank(state: provider_runtime::ProviderReadinessState) -> u8 {
+    match state {
+        provider_runtime::ProviderReadinessState::Ready => 0,
+        provider_runtime::ProviderReadinessState::NoModelLoaded => 1,
+        provider_runtime::ProviderReadinessState::UnsupportedResponseShape => 2,
+        provider_runtime::ProviderReadinessState::WrongBaseUrl => 3,
+        provider_runtime::ProviderReadinessState::ModelListEndpointUnavailable => 4,
+        provider_runtime::ProviderReadinessState::RequestTimeout => 5,
+        provider_runtime::ProviderReadinessState::ProviderNotRunning => 6,
     }
-}
-
-async fn discover_openai_compat_model(base_url: &str, http: &HttpConfig) -> Option<String> {
-    let mut builder =
-        Client::builder().connect_timeout(Duration::from_millis(http.connect_timeout_ms));
-    if http.request_timeout_ms > 0 {
-        builder = builder.timeout(Duration::from_millis(http.request_timeout_ms));
-    }
-    let client = builder.build().ok()?;
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let resp = client.get(url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let v: Value = resp.json().await.ok()?;
-    let data = v.get("data")?.as_array()?;
-    for item in data {
-        if let Some(id) = item.get("id").and_then(|x| x.as_str()) {
-            if !id.is_empty() {
-                return Some(id.to_string());
-            }
-        }
-    }
-    None
-}
-
-async fn discover_ollama_model(base_url: &str, http: &HttpConfig) -> Option<String> {
-    let mut builder =
-        Client::builder().connect_timeout(Duration::from_millis(http.connect_timeout_ms));
-    if http.request_timeout_ms > 0 {
-        builder = builder.timeout(Duration::from_millis(http.request_timeout_ms));
-    }
-    let client = builder.build().ok()?;
-    let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
-    let resp = client.get(url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let v: Value = resp.json().await.ok()?;
-    let models = v.get("models")?.as_array()?;
-    for item in models {
-        if let Some(name) = item.get("name").and_then(|x| x.as_str()) {
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
-        }
-    }
-    None
 }
