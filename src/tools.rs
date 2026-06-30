@@ -127,6 +127,7 @@ pub enum ToolErrorCode {
     ShellExecNotFound,
     ShellExecOsError,
     ShellExecNonZeroExit,
+    ShellExecTimeout,
 }
 
 impl ToolErrorCode {
@@ -145,6 +146,7 @@ impl ToolErrorCode {
             Self::ShellExecNotFound => "shell_exec_not_found",
             Self::ShellExecOsError => "shell_exec_os_error",
             Self::ShellExecNonZeroExit => "shell_exec_non_zero_exit",
+            Self::ShellExecTimeout => "shell_exec_timeout",
         }
     }
 }

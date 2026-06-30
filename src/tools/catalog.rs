@@ -68,13 +68,14 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
     if enable_shell_tool {
         tools.push(ToolDef {
             name: "shell".to_string(),
-            description: "Run a shell command with optional args and cwd.".to_string(),
+            description: "Run a shell command with optional args, cwd, and timeout_ms. timeout_ms bounds the command's wall-clock runtime in milliseconds; omit or use 0 for no timeout.".to_string(),
             parameters: json!({
                 "type":"object",
                 "properties":{
                     "cmd":{"type":"string"},
                     "args":{"type":"array","items":{"type":"string"}},
-                    "cwd":{"type":"string"}
+                    "cwd":{"type":"string"},
+                    "timeout_ms":{"type":"integer","minimum":0}
                 },
                 "required":["cmd"]
             }),

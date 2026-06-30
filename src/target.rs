@@ -68,6 +68,11 @@ pub struct ShellReq {
     pub args: Vec<String>,
     pub cwd: Option<String>,
     pub max_tool_output_bytes: usize,
+    /// Wall-clock timeout for the command, in milliseconds. `0` means unbounded
+    /// (the historical default). The `u64` type makes negative values
+    /// unrepresentable. Timeout enforcement currently applies to the host
+    /// execution target only; the docker target ignores this field (follow-up).
+    pub timeout_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -144,34 +149,14 @@ impl ExecTarget for HostTarget {
                 None => req.workdir.clone(),
             };
         command.current_dir(cwd);
-        match command.output().await {
-            Ok(output) => {
-                let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
-                let (stdout, stdout_truncated) =
-                    truncate_utf8_to_bytes(&stdout_raw, req.max_tool_output_bytes);
-                let (stderr, stderr_truncated) =
-                    truncate_utf8_to_bytes(&stderr_raw, req.max_tool_output_bytes);
-                TargetResult {
-                    ok: output.status.success(),
-                    content: json!({
-                        "status": output.status.code(),
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "stdout_truncated": stdout_truncated,
-                        "stderr_truncated": stderr_truncated,
-                        "max_tool_output_bytes": req.max_tool_output_bytes
-                    })
-                    .to_string(),
-                    truncated: stdout_truncated || stderr_truncated,
-                    bytes: Some((output.stdout.len() + output.stderr.len()) as u64),
-                    exit_code: output.status.code(),
-                    stderr_truncated: Some(stderr_truncated),
-                    stdout_truncated: Some(stdout_truncated),
-                    execution_target: ExecTargetKind::Host,
-                    docker: None,
-                }
-            }
+        match spawn_and_wait_managed(command, req.timeout_ms, None).await {
+            Ok(managed) => build_shell_target_result(
+                ExecTargetKind::Host,
+                None,
+                managed,
+                req.timeout_ms,
+                req.max_tool_output_bytes,
+            ),
             Err(e) => TargetResult::failed(
                 ExecTargetKind::Host,
                 format!("shell execution failed: {e}"),
@@ -1005,6 +990,181 @@ fn path_is_workdir_scoped(path: &str) -> bool {
     })
 }
 
+/// Captured result of a managed child process, including whether the wait was
+/// terminated by a timeout. On timeout, `status` is `None` and partial
+/// stdout/stderr captured before termination are still returned.
+struct ManagedOutput {
+    status: Option<std::process::ExitStatus>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    timed_out: bool,
+}
+
+/// Spawn `command` with piped stdout/stderr and `kill_on_drop(true)`, drain its
+/// output concurrently, and wait for it to exit.
+///
+/// When `timeout_ms == 0` the wait is unbounded (historical behavior). When
+/// `timeout_ms > 0` and the deadline elapses, the direct child is killed and
+/// reaped, and `ManagedOutput::timed_out` is set.
+///
+/// Limitation: this kills and reaps the *direct* child only. A child launched
+/// through a shell wrapper (e.g. `sh -c "..."` or `cmd /C "..."`) may leave
+/// grandchild processes running until they exit on their own. Robust
+/// process-tree termination (unix process groups / Windows job objects) is a
+/// follow-up.
+async fn spawn_and_wait_managed(
+    mut command: Command,
+    timeout_ms: u64,
+    stdin_bytes: Option<&[u8]>,
+) -> std::io::Result<ManagedOutput> {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::AsyncReadExt;
+
+    command
+        .stdin(if stdin_bytes.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = command.spawn()?;
+
+    if let Some(data) = stdin_bytes {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(data).await?;
+            // `stdin` is dropped here, closing the pipe so the child sees EOF.
+        }
+    }
+
+    // Drain stdout/stderr into shared buffers via incremental reads. Shared
+    // buffers (rather than `read_to_end` returning the bytes) let the timeout
+    // path recover whatever was captured so far even when the drain task is
+    // still blocked on a pipe held open by a surviving grandchild process.
+    fn drain<R>(pipe: Option<R>) -> (Arc<Mutex<Vec<u8>>>, tokio::task::JoinHandle<()>)
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let handle = tokio::spawn(async move {
+            if let Some(mut p) = pipe {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match p.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if let Ok(mut guard) = sink.lock() {
+                                guard.extend_from_slice(&chunk[..n]);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        (buf, handle)
+    }
+
+    let (stdout_buf, stdout_task) = drain(child.stdout.take());
+    let (stderr_buf, stderr_task) = drain(child.stderr.take());
+    let stdout_abort = stdout_task.abort_handle();
+    let stderr_abort = stderr_task.abort_handle();
+
+    let (status, timed_out) = if timeout_ms == 0 {
+        (Some(child.wait().await?), false)
+    } else {
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait()).await
+        {
+            Ok(res) => (Some(res?), false),
+            Err(_elapsed) => {
+                // Best-effort terminate the direct child, then reap it.
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                (None, true)
+            }
+        }
+    };
+
+    if timed_out {
+        // The direct child is dead, but a grandchild may still hold the pipes
+        // open. Give the drain tasks a short grace period to flush, then abort
+        // so a surviving grandchild can never block our return.
+        let grace = std::time::Duration::from_millis(200);
+        let _ = tokio::time::timeout(grace, async {
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+        })
+        .await;
+        stdout_abort.abort();
+        stderr_abort.abort();
+    } else {
+        // Normal exit: the pipes reach EOF, so the drain tasks complete.
+        let _ = stdout_task.await;
+        let _ = stderr_task.await;
+    }
+
+    let stdout = stdout_buf.lock().map(|g| g.clone()).unwrap_or_default();
+    let stderr = stderr_buf.lock().map(|g| g.clone()).unwrap_or_default();
+
+    Ok(ManagedOutput {
+        status,
+        stdout,
+        stderr,
+        timed_out,
+    })
+}
+
+/// Build the standard shell `TargetResult` JSON envelope, adding timeout
+/// metadata and an actionable recovery hint when the command was terminated by
+/// a timeout.
+fn build_shell_target_result(
+    kind: ExecTargetKind,
+    docker: Option<DockerMeta>,
+    managed: ManagedOutput,
+    timeout_ms: u64,
+    max_tool_output_bytes: usize,
+) -> TargetResult {
+    let stdout_raw = String::from_utf8_lossy(&managed.stdout).to_string();
+    let stderr_raw = String::from_utf8_lossy(&managed.stderr).to_string();
+    let (stdout, stdout_truncated) = truncate_utf8_to_bytes(&stdout_raw, max_tool_output_bytes);
+    let (stderr, stderr_truncated) = truncate_utf8_to_bytes(&stderr_raw, max_tool_output_bytes);
+    let status_code = managed.status.and_then(|s| s.code());
+    let ok = !managed.timed_out && managed.status.map(|s| s.success()).unwrap_or(false);
+    let mut content = json!({
+        "status": status_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "max_tool_output_bytes": max_tool_output_bytes
+    });
+    if managed.timed_out {
+        if let Some(obj) = content.as_object_mut() {
+            obj.insert("timed_out".to_string(), json!(true));
+            obj.insert("timeout_ms".to_string(), json!(timeout_ms));
+            obj.insert(
+                "hint".to_string(),
+                json!(format!(
+                    "Shell command exceeded the {timeout_ms} ms timeout and was terminated before it finished. Re-run with a larger timeout_ms, make the command non-interactive, or narrow its scope."
+                )),
+            );
+        }
+    }
+    TargetResult {
+        ok,
+        content: content.to_string(),
+        truncated: stdout_truncated || stderr_truncated,
+        bytes: Some((managed.stdout.len() + managed.stderr.len()) as u64),
+        exit_code: status_code,
+        stderr_truncated: Some(stderr_truncated),
+        stdout_truncated: Some(stdout_truncated),
+        execution_target: kind,
+        docker,
+    }
+}
+
 fn truncate_utf8_to_bytes(input: &str, max_bytes: usize) -> (String, bool) {
     if max_bytes == 0 {
         return (input.to_string(), false);
@@ -1070,10 +1230,96 @@ mod tests {
                 args: vec!["hi".to_string()],
                 cwd: Some("../".to_string()),
                 max_tool_output_bytes: 200_000,
+                timeout_ms: 0,
             })
             .await;
         assert!(!out.ok);
         assert!(out.content.contains("must stay within workdir"));
+    }
+
+    fn fast_echo_shell_req() -> ShellReq {
+        if cfg!(windows) {
+            ShellReq {
+                workdir: PathBuf::from("."),
+                cmd: "cmd".to_string(),
+                args: vec!["/C".to_string(), "echo ok".to_string()],
+                cwd: None,
+                max_tool_output_bytes: 200_000,
+                timeout_ms: 0,
+            }
+        } else {
+            ShellReq {
+                workdir: PathBuf::from("."),
+                cmd: "sh".to_string(),
+                args: vec!["-c".to_string(), "echo ok".to_string()],
+                cwd: None,
+                max_tool_output_bytes: 200_000,
+                timeout_ms: 0,
+            }
+        }
+    }
+
+    fn slow_sleep_shell_req(timeout_ms: u64) -> ShellReq {
+        if cfg!(windows) {
+            ShellReq {
+                workdir: PathBuf::from("."),
+                cmd: "cmd".to_string(),
+                args: vec!["/C".to_string(), "ping -n 6 127.0.0.1 >NUL".to_string()],
+                cwd: None,
+                max_tool_output_bytes: 200_000,
+                timeout_ms,
+            }
+        } else {
+            ShellReq {
+                workdir: PathBuf::from("."),
+                cmd: "sh".to_string(),
+                args: vec!["-c".to_string(), "sleep 5".to_string()],
+                cwd: None,
+                max_tool_output_bytes: 200_000,
+                timeout_ms,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn host_shell_under_timeout_succeeds_normally() {
+        let mut req = fast_echo_shell_req();
+        req.timeout_ms = 5_000;
+        let out = HostTarget.exec_shell(req).await;
+        assert!(out.ok, "fast command should succeed: {}", out.content);
+        assert!(out.content.contains("ok"));
+        assert!(!out.content.contains("timed_out"));
+    }
+
+    #[tokio::test]
+    async fn host_shell_zero_timeout_is_unbounded_and_back_compatible() {
+        // timeout_ms == 0 preserves historical unbounded behavior; a fast
+        // command still completes normally.
+        let out = HostTarget.exec_shell(fast_echo_shell_req()).await;
+        assert!(out.ok, "command should succeed: {}", out.content);
+        assert!(out.content.contains("ok"));
+        assert!(!out.content.contains("timed_out"));
+    }
+
+    #[tokio::test]
+    async fn host_shell_exceeding_timeout_returns_timeout_failure() {
+        let start = std::time::Instant::now();
+        let out = HostTarget.exec_shell(slow_sleep_shell_req(200)).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "timed-out command should return promptly, took {elapsed:?}"
+        );
+        assert!(!out.ok, "timed-out command must not report success");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&out.content).expect("timeout content is JSON");
+        assert_eq!(parsed["timed_out"], serde_json::json!(true));
+        assert_eq!(parsed["timeout_ms"], serde_json::json!(200));
+        let hint = parsed["hint"].as_str().unwrap_or_default();
+        assert!(
+            hint.contains("timeout_ms"),
+            "timeout result should include an actionable hint, got: {hint}"
+        );
     }
 
     #[test]

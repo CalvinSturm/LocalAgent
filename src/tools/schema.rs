@@ -34,7 +34,8 @@ pub fn compact_builtin_schema(tool_name: &str) -> Option<Value> {
             "properties":{
                 "cmd":{"type":"string"},
                 "args":{"type":"array","items":{"type":"string"}},
-                "cwd":{"type":"string"}
+                "cwd":{"type":"string"},
+                "timeout_ms":{"type":"integer","minimum":0}
             }
         })),
         "write_file" => Some(json!({
@@ -184,6 +185,11 @@ pub fn validate_builtin_tool_args(
             if let Some(v) = obj.get("cwd") {
                 if v.as_str().is_none() {
                     return Err("cwd must be a string".to_string());
+                }
+            }
+            if let Some(v) = obj.get("timeout_ms") {
+                if v.as_u64().is_none() {
+                    return Err("timeout_ms must be a non-negative integer".to_string());
                 }
             }
         }

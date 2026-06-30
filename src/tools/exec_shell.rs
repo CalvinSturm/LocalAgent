@@ -39,12 +39,16 @@ pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
         .get("cwd")
         .and_then(|v| v.as_str())
         .map(ToString::to_string);
+    // `timeout_ms` is optional; absent or 0 preserves unbounded behavior. The
+    // `as_u64` parse makes negative values unrepresentable.
+    let timeout_ms = args.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(0);
     let req = ShellReq {
         workdir: rt.workdir.clone(),
         cmd: cmd.to_string(),
         args: arg_list.clone(),
         cwd: cwd.clone(),
         max_tool_output_bytes: rt.max_tool_output_bytes,
+        timeout_ms,
     };
     let mut out = rt.exec_target.exec_shell(req).await;
     if !out.ok && shell_spawn_not_found(&out.content) {
@@ -59,6 +63,7 @@ pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
                     args: repair_args,
                     cwd,
                     max_tool_output_bytes: rt.max_tool_output_bytes,
+                    timeout_ms,
                 })
                 .await;
             out = annotate_shell_repair(repaired, repair_strategy);
@@ -71,6 +76,9 @@ pub(super) fn classify_shell_target_error(
     content: &str,
     exit_code: Option<i32>,
 ) -> ToolErrorDetail {
+    if let Some(detail) = timeout_error_from_content(content) {
+        return detail;
+    }
     let lower = content.to_ascii_lowercase();
     let spawn_failed = lower.contains("shell execution failed:");
     let not_found = lower.contains("program not found")
@@ -107,6 +115,25 @@ pub(super) fn classify_shell_target_error(
         minimal_example: minimal_builtin_example("shell"),
         available_tools: None,
     }
+}
+
+fn timeout_error_from_content(content: &str) -> Option<ToolErrorDetail> {
+    let parsed = serde_json::from_str::<Value>(content).ok()?;
+    if parsed.get("timed_out").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    let message = match parsed.get("timeout_ms").and_then(|v| v.as_u64()) {
+        Some(ms) => format!("Shell command exceeded the {ms} ms timeout and was terminated."),
+        None => "Shell command exceeded its timeout and was terminated.".to_string(),
+    };
+    Some(ToolErrorDetail {
+        code: ToolErrorCode::ShellExecTimeout,
+        message,
+        expected_schema: None,
+        received_args: None,
+        minimal_example: minimal_builtin_example("shell"),
+        available_tools: None,
+    })
 }
 
 fn shell_status_code_from_content(content: &str) -> Option<i32> {
