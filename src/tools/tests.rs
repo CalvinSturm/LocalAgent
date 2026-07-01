@@ -853,6 +853,52 @@ async fn shell_auto_repair_uses_sh_lc_for_embedded_command() {
 }
 
 #[tokio::test]
+async fn shell_without_timeout_still_runs_fast_command_under_default_policy() {
+    // A host shell call that omits timeout_ms now gets the 120s default. A fast
+    // command must still complete normally (regression guard: the default must
+    // not break ordinary usage), proving missing -> default is wired into the
+    // execute_tool path without turning fast commands into timeouts.
+    let tmp = tempdir().expect("tempdir");
+    let rt = ToolRuntime {
+        workdir: tmp.path().to_path_buf(),
+        allow_shell: true,
+        allow_shell_in_workdir_only: false,
+        allow_write: false,
+        max_tool_output_bytes: 200_000,
+        max_read_bytes: 200_000,
+        unsafe_bypass_allow_flags: false,
+        tool_args_strict: ToolArgsStrict::On,
+        exec_target_kind: ExecTargetKind::Host,
+        exec_target: std::sync::Arc::new(HostTarget),
+    };
+    let arguments = if cfg!(windows) {
+        json!({"cmd":"cmd","args":["/C","echo default-policy-ok"]})
+    } else {
+        json!({"cmd":"sh","args":["-c","echo default-policy-ok"]})
+    };
+    let tc = ToolCall {
+        id: "tc_shell_default_timeout".to_string(),
+        name: "shell".to_string(),
+        arguments,
+    };
+    let msg = execute_tool(&rt, &tc).await;
+    let envelope: Value = serde_json::from_str(&msg.content.expect("content")).expect("json");
+    assert_eq!(envelope.get("ok").and_then(|v| v.as_bool()), Some(true));
+    let inner = envelope
+        .get("content")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .expect("inner shell json");
+    let stdout = inner
+        .get("stdout")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(stdout.contains("default-policy-ok"));
+    // Fast command must not be reported as timed out.
+    assert!(inner.get("timed_out").is_none());
+}
+
+#[tokio::test]
 async fn read_file_rejects_path_traversal() {
     let tmp = tempdir().expect("tempdir");
     let rt = ToolRuntime {

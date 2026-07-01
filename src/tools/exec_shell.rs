@@ -6,6 +6,31 @@ use crate::types::SideEffects;
 use super::exec_support::{failed_exec, ToolExecution};
 use super::{minimal_builtin_example, ToolErrorCode, ToolErrorDetail, ToolRuntime};
 
+/// Default wall-clock timeout (ms) applied to a shell command on the host target
+/// when the caller omits `timeout_ms`. This keeps unattended/autonomous runs
+/// from hanging forever on a runaway command. Adjust here to change the policy
+/// globally; callers can always override per-call, and `timeout_ms: 0` opts out
+/// entirely (unbounded).
+pub(super) const DEFAULT_SHELL_TIMEOUT_MS: u64 = 120_000;
+
+/// Resolve the effective shell timeout from the request args and execution
+/// target.
+///
+/// - Explicit `timeout_ms` (including `0` = unbounded opt-out): honored as-is.
+/// - Missing `timeout_ms`: the host target applies [`DEFAULT_SHELL_TIMEOUT_MS`].
+///   The docker target instead resolves to `0` (unbounded) because it cannot
+///   enforce timeouts (`DockerTarget::exec_shell` rejects `timeout_ms > 0`), so a
+///   *missing* timeout must not silently turn into a rejection.
+pub(super) fn resolve_shell_timeout_ms(args: &Value, target: ExecTargetKind) -> u64 {
+    match args.get("timeout_ms").and_then(|v| v.as_u64()) {
+        Some(explicit) => explicit,
+        None => match target {
+            ExecTargetKind::Host => DEFAULT_SHELL_TIMEOUT_MS,
+            ExecTargetKind::Docker => 0,
+        },
+    }
+}
+
 pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
     let shell_allowed =
         rt.allow_shell || (rt.allow_shell_in_workdir_only && shell_cwd_is_workdir_scoped(args));
@@ -39,9 +64,11 @@ pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
         .get("cwd")
         .and_then(|v| v.as_str())
         .map(ToString::to_string);
-    // `timeout_ms` is optional; absent or 0 preserves unbounded behavior. The
-    // `as_u64` parse makes negative values unrepresentable.
-    let timeout_ms = args.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+    // `timeout_ms` is optional. When omitted, the host target applies a safe
+    // default so unattended runs cannot hang forever; an explicit `0` opts out
+    // (unbounded). The `as_u64` parse makes negative values unrepresentable.
+    // Target-aware so a missing timeout never turns into a docker rejection.
+    let timeout_ms = resolve_shell_timeout_ms(args, rt.exec_target_kind);
     let req = ShellReq {
         workdir: rt.workdir.clone(),
         cmd: cmd.to_string(),
@@ -321,4 +348,44 @@ fn shell_cwd_is_workdir_scoped(args: &Value) -> bool {
                 | std::path::Component::Prefix(_)
         )
     })
+}
+
+#[cfg(test)]
+mod timeout_policy_tests {
+    use super::{resolve_shell_timeout_ms, DEFAULT_SHELL_TIMEOUT_MS};
+    use crate::target::ExecTargetKind;
+    use serde_json::json;
+
+    #[test]
+    fn missing_timeout_uses_host_default() {
+        let args = json!({ "cmd": "echo", "args": ["hi"] });
+        assert_eq!(
+            resolve_shell_timeout_ms(&args, ExecTargetKind::Host),
+            DEFAULT_SHELL_TIMEOUT_MS
+        );
+        assert_eq!(DEFAULT_SHELL_TIMEOUT_MS, 120_000);
+    }
+
+    #[test]
+    fn explicit_positive_timeout_overrides_default() {
+        let args = json!({ "cmd": "echo", "timeout_ms": 500 });
+        assert_eq!(resolve_shell_timeout_ms(&args, ExecTargetKind::Host), 500);
+        // Explicit values are honored on docker too (DockerTarget rejects > 0).
+        assert_eq!(resolve_shell_timeout_ms(&args, ExecTargetKind::Docker), 500);
+    }
+
+    #[test]
+    fn explicit_zero_timeout_stays_unbounded() {
+        let args = json!({ "cmd": "echo", "timeout_ms": 0 });
+        assert_eq!(resolve_shell_timeout_ms(&args, ExecTargetKind::Host), 0);
+        assert_eq!(resolve_shell_timeout_ms(&args, ExecTargetKind::Docker), 0);
+    }
+
+    #[test]
+    fn missing_timeout_on_docker_stays_unbounded_not_rejected() {
+        // Critical: a missing timeout must not become a docker timeout
+        // rejection. Docker resolves missing -> 0 (unbounded), unlike host.
+        let args = json!({ "cmd": "echo" });
+        assert_eq!(resolve_shell_timeout_ms(&args, ExecTargetKind::Docker), 0);
+    }
 }
