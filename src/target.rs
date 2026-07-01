@@ -1152,8 +1152,12 @@ fn build_shell_target_result(
 ) -> TargetResult {
     let stdout_raw = String::from_utf8_lossy(&managed.stdout).to_string();
     let stderr_raw = String::from_utf8_lossy(&managed.stderr).to_string();
-    let (stdout, stdout_truncated) = truncate_utf8_to_bytes(&stdout_raw, max_tool_output_bytes);
-    let (stderr, stderr_truncated) = truncate_utf8_to_bytes(&stderr_raw, max_tool_output_bytes);
+    // Middle truncation preserves both the leading context and the trailing
+    // failure/summary that matter most for build/test output.
+    let (stdout, stdout_truncated) =
+        middle_truncate_utf8_to_bytes(&stdout_raw, max_tool_output_bytes);
+    let (stderr, stderr_truncated) =
+        middle_truncate_utf8_to_bytes(&stderr_raw, max_tool_output_bytes);
     let status_code = managed.status.and_then(|s| s.code());
     let ok = !managed.timed_out && managed.status.map(|s| s.success()).unwrap_or(false);
     let mut content = json!({
@@ -1201,6 +1205,56 @@ fn truncate_utf8_to_bytes(input: &str, max_bytes: usize) -> (String, bool) {
         end -= 1;
     }
     (input[..end].to_string(), true)
+}
+
+/// Truncate `input` to at most `max_bytes` bytes while preserving both the head
+/// and the tail of the content, joined by a marker describing the omitted
+/// middle. This keeps the most useful part of build/test output (the leading
+/// context and the trailing failure/summary) instead of discarding the tail.
+///
+/// Guarantees: the result is valid UTF-8 (never splits a codepoint), never
+/// exceeds `max_bytes`, and is returned unchanged when `input` is within budget
+/// or `max_bytes == 0` (parity with head truncation). If the budget is too
+/// small to hold head + marker + tail, it falls back to head truncation.
+fn middle_truncate_utf8_to_bytes(input: &str, max_bytes: usize) -> (String, bool) {
+    if max_bytes == 0 || input.len() <= max_bytes {
+        return (input.to_string(), false);
+    }
+    let marker = |omitted: usize| format!("\n[... truncated {omitted} bytes ...]\n");
+    // Reserve using an upper bound on the omitted count: the true omitted count
+    // is < input.len(), so its marker is never longer than this reservation.
+    let reserve = marker(input.len()).len();
+    if max_bytes <= reserve {
+        // Not enough budget for a meaningful head+tail split; keep the head.
+        return truncate_utf8_to_bytes(input, max_bytes);
+    }
+    let content_budget = max_bytes - reserve;
+    let head_budget = content_budget / 2;
+    let tail_budget = content_budget - head_budget;
+
+    // Head: at most head_budget bytes, backing off to a char boundary.
+    let mut head_end = head_budget.min(input.len());
+    while head_end > 0 && !input.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    // Tail: at most tail_budget bytes from the end, advancing to a char boundary.
+    let mut tail_start = input.len().saturating_sub(tail_budget);
+    while tail_start < input.len() && !input.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    if tail_start < head_end {
+        tail_start = head_end;
+    }
+    let omitted = tail_start - head_end;
+    if omitted == 0 {
+        // Unreachable when input exceeds budget, but stay budget-safe.
+        return truncate_utf8_to_bytes(input, max_bytes);
+    }
+    let mut out = String::with_capacity(head_end + reserve + (input.len() - tail_start));
+    out.push_str(&input[..head_end]);
+    out.push_str(&marker(omitted));
+    out.push_str(&input[tail_start..]);
+    (out, true)
 }
 
 fn shell_escape(s: &str) -> String {
@@ -1422,5 +1476,132 @@ mod tests {
         };
         let err = t.docker_mount_arg(&root).expect_err("should reject root");
         assert!(err.to_string().contains("DOCKER_SANDBOX_CONFIG_INVALID"));
+    }
+
+    #[test]
+    fn middle_truncate_leaves_short_output_unchanged() {
+        let input = "short output";
+        let (out, truncated) = super::middle_truncate_utf8_to_bytes(input, 1000);
+        assert_eq!(out, input);
+        assert!(!truncated);
+        // max_bytes == 0 disables truncation (parity with head truncation).
+        let (out0, t0) = super::middle_truncate_utf8_to_bytes(input, 0);
+        assert_eq!(out0, input);
+        assert!(!t0);
+    }
+
+    #[test]
+    fn middle_truncate_preserves_head_and_tail_within_budget() {
+        let head = "HEAD_START_".repeat(50); // 550 bytes
+        let tail = "_TAIL_END".repeat(50); // 450 bytes
+        let input = format!("{head}{}{tail}", "x".repeat(5000));
+        let max_bytes = 400;
+        let (out, truncated) = super::middle_truncate_utf8_to_bytes(&input, max_bytes);
+        assert!(truncated);
+        assert!(
+            out.len() <= max_bytes,
+            "output {} exceeded budget {max_bytes}",
+            out.len()
+        );
+        assert!(out.starts_with("HEAD_START_"), "head not preserved: {out}");
+        assert!(out.ends_with("_TAIL_END"), "tail not preserved: {out}");
+        assert!(
+            out.contains("[... truncated "),
+            "missing truncation marker: {out}"
+        );
+    }
+
+    #[test]
+    fn middle_truncate_marker_reports_omitted_byte_count() {
+        let input = "a".repeat(2000);
+        let max_bytes = 200;
+        let (out, truncated) = super::middle_truncate_utf8_to_bytes(&input, max_bytes);
+        assert!(truncated);
+        // Extract the reported omitted byte count from the marker.
+        let start = out.find("[... truncated ").expect("marker present") + "[... truncated ".len();
+        let rest = &out[start..];
+        let end = rest.find(" bytes ...]").expect("marker suffix present");
+        let reported: usize = rest[..end].parse().expect("omitted count is a number");
+        // Reported omitted count plus the kept head+tail must reconstruct the
+        // original length exactly.
+        let marker_len = format!("\n[... truncated {reported} bytes ...]\n").len();
+        let kept = out.len() - marker_len;
+        assert_eq!(reported + kept, input.len());
+        assert!(reported > 0);
+    }
+
+    #[test]
+    fn middle_truncate_keeps_utf8_valid_and_within_budget() {
+        // 3-byte codepoints stress char-boundary handling.
+        let input = "€".repeat(4000); // 12000 bytes
+        let max_bytes = 500;
+        let (out, truncated) = super::middle_truncate_utf8_to_bytes(&input, max_bytes);
+        assert!(truncated);
+        assert!(out.len() <= max_bytes, "over budget: {}", out.len());
+        // String is valid UTF-8 by construction; verify no replacement/garbage
+        // and that every non-marker char is the intended codepoint.
+        for ch in out.chars() {
+            assert!(
+                ch == '€' || "\n[...truncatedbytes ]0123456789".contains(ch),
+                "unexpected char in output: {ch:?}"
+            );
+        }
+        assert!(out.starts_with('€'));
+        assert!(out.ends_with('€'));
+    }
+
+    #[test]
+    fn build_shell_result_middle_truncates_stdout() {
+        let head = "START".repeat(40);
+        let tail = "ENDLINE_FAILURE".repeat(40);
+        let raw = format!("{head}{}{tail}", "m".repeat(3000));
+        let managed = super::ManagedOutput {
+            status: None,
+            stdout: raw.clone().into_bytes(),
+            stderr: Vec::new(),
+            timed_out: false,
+        };
+        let max_bytes = 300;
+        let out = super::build_shell_target_result(
+            super::ExecTargetKind::Host,
+            None,
+            managed,
+            0,
+            max_bytes,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&out.content).expect("json");
+        let stdout = parsed["stdout"].as_str().expect("stdout string");
+        assert_eq!(parsed["stdout_truncated"], serde_json::json!(true));
+        assert!(stdout.len() <= max_bytes);
+        assert!(stdout.starts_with("START"));
+        assert!(stdout.ends_with("ENDLINE_FAILURE"));
+        assert!(stdout.contains("[... truncated "));
+    }
+
+    #[test]
+    fn build_shell_result_preserves_small_timeout_partial_output() {
+        // Partial output under budget must pass through unchanged even on the
+        // timeout path.
+        let managed = super::ManagedOutput {
+            status: None,
+            stdout: b"partial line before kill".to_vec(),
+            stderr: b"warn: interrupted".to_vec(),
+            timed_out: true,
+        };
+        let out = super::build_shell_target_result(
+            super::ExecTargetKind::Host,
+            None,
+            managed,
+            200,
+            200_000,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&out.content).expect("json");
+        assert_eq!(parsed["timed_out"], serde_json::json!(true));
+        assert_eq!(
+            parsed["stdout"],
+            serde_json::json!("partial line before kill")
+        );
+        assert_eq!(parsed["stderr"], serde_json::json!("warn: interrupted"));
+        assert_eq!(parsed["stdout_truncated"], serde_json::json!(false));
     }
 }
