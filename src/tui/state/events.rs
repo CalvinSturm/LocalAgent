@@ -3,7 +3,7 @@ use crate::events::{Event, EventKind};
 use super::support::{
     class_to_reason_token, is_mcp_tool, is_protocol_violation_text, reason_token, truncate_chars,
 };
-use super::UiState;
+use super::{PlanRow, UiState};
 
 impl UiState {
     pub(super) fn apply_tool_call_detected_event(&mut self, ev: &Event) {
@@ -698,6 +698,47 @@ impl UiState {
         if matches!(ev.kind, EventKind::CompactionPerformed) {
             self.push_log("compaction performed".to_string());
         }
+    }
+
+    pub(super) fn apply_plan_updated_event(&mut self, ev: &Event) {
+        let items = ev
+            .data
+            .get("items")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        Some(PlanRow {
+                            step: item.get("step")?.as_str()?.to_string(),
+                            status: item.get("status")?.as_str()?.to_string(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.plan_items = items;
+        let total = self.plan_items.len();
+        let in_progress = self
+            .plan_items
+            .iter()
+            .find(|item| item.status == "in_progress")
+            .map(|item| item.step.as_str())
+            .unwrap_or("-");
+        let completed = self
+            .plan_items
+            .iter()
+            .filter(|item| item.status == "completed")
+            .count();
+        if let Some(explanation) = ev.data.get("explanation").and_then(|v| v.as_str()) {
+            if !explanation.trim().is_empty() {
+                self.push_log(format!(
+                    "plan: {completed}/{total} active={in_progress} note={explanation}"
+                ));
+                return;
+            }
+        }
+        self.push_log(format!("plan: {completed}/{total} active={in_progress}"));
     }
 
     /// Render a live shell output chunk into the log/tail area while the command

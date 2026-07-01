@@ -28,6 +28,26 @@ pub fn compact_builtin_schema(tool_name: &str) -> Option<Value> {
                 "ignore_case":{"type":"boolean"}
             }
         })),
+        "update_plan" => Some(json!({
+            "type":"object",
+            "required":["items"],
+            "properties":{
+                "explanation":{"type":"string"},
+                "items":{
+                    "type":"array",
+                    "minItems":1,
+                    "maxItems":20,
+                    "items":{
+                        "type":"object",
+                        "required":["step","status"],
+                        "properties":{
+                            "step":{"type":"string"},
+                            "status":{"type":"string","enum":["pending","in_progress","completed"]}
+                        }
+                    }
+                }
+            }
+        })),
         "shell" => Some(json!({
             "type":"object",
             "required":["cmd"],
@@ -84,6 +104,9 @@ pub fn minimal_builtin_example(tool_name: &str) -> Option<Value> {
         "read_file" => Some(json!({"path":"src/main.rs"})),
         "glob" => Some(json!({"pattern":"src/**/*.rs","path":".","max_results":200})),
         "grep" => Some(json!({"pattern":"TODO","path":".","max_results":200,"ignore_case":false})),
+        "update_plan" => Some(
+            json!({"items":[{"step":"Inspect the code","status":"in_progress"},{"step":"Run tests","status":"pending"}]}),
+        ),
         "shell" => Some(json!({"cmd":"echo","args":["hello"]})),
         "write_file" => Some(json!({"path":"notes.txt","content":"hello"})),
         "apply_patch" => Some(json!({"path":"src/main.rs","patch":"@@ -1 +1 @@\n-a\n+b\n"})),
@@ -102,6 +125,7 @@ pub fn sorted_builtin_tool_names() -> Vec<String> {
         "list_dir".to_string(),
         "glob".to_string(),
         "grep".to_string(),
+        "update_plan".to_string(),
         "read_file".to_string(),
         "edit".to_string(),
         "apply_patch".to_string(),
@@ -171,6 +195,9 @@ pub fn validate_builtin_tool_args(
                     return Err("ignore_case must be a boolean".to_string());
                 }
             }
+        }
+        "update_plan" => {
+            super::exec_plan::parse_update_plan_args(args).map(|_| ())?;
         }
         "shell" => {
             require_non_empty_string(obj, "cmd")?;

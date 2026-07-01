@@ -5,6 +5,7 @@ use crate::types::{SideEffects, ToolDef};
 pub fn tool_side_effects(tool_name: &str) -> SideEffects {
     match tool_name {
         "list_dir" | "read_file" | "glob" | "grep" => SideEffects::FilesystemRead,
+        "update_plan" => SideEffects::None,
         "shell" => SideEffects::ShellExec,
         "write_file" | "apply_patch" | "edit" | "str_replace" => SideEffects::FilesystemWrite,
         _ if tool_name.starts_with("mcp.playwright.") => SideEffects::Browser,
@@ -63,6 +64,31 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
                 "required":["pattern"]
             }),
             side_effects: SideEffects::FilesystemRead,
+        },
+        ToolDef {
+            name: "update_plan".to_string(),
+            description: "Update the current in-run plan. Provide the full current list of steps with status pending, in_progress, or completed; at most one item may be in_progress.".to_string(),
+            parameters: json!({
+                "type":"object",
+                "properties":{
+                    "explanation":{"type":"string"},
+                    "items":{
+                        "type":"array",
+                        "items":{
+                            "type":"object",
+                            "properties":{
+                                "step":{"type":"string"},
+                                "status":{"type":"string","enum":["pending","in_progress","completed"]}
+                            },
+                            "required":["step","status"]
+                        },
+                        "minItems":1,
+                        "maxItems":20
+                    }
+                },
+                "required":["items"]
+            }),
+            side_effects: SideEffects::None,
         },
     ];
     if enable_shell_tool {

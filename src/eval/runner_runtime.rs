@@ -514,6 +514,7 @@ pub(crate) async fn run_single(
         plan_tool_enforcement: crate::agent::PlanToolEnforcementMode::Off,
         mcp_pin_enforcement: crate::agent::McpPinEnforcementMode::Hard,
         plan_step_constraints: Vec::new(),
+        current_plan: Vec::new(),
         tool_call_budget: ToolCallBudget {
             max_wall_time_ms: task_max_wall_time_ms,
             max_total_tool_calls: 0,

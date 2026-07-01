@@ -996,6 +996,58 @@ impl<P: ModelProvider> Agent<P> {
         })
     }
 
+    pub(super) fn apply_update_plan_tool_success(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        tc: &ToolCall,
+    ) {
+        let Ok(update) = crate::tools::parse_update_plan_args(&tc.arguments) else {
+            return;
+        };
+        self.current_plan = update.items.clone();
+        let in_progress = self
+            .current_plan
+            .iter()
+            .find(|item| matches!(item.status, crate::tools::PlanStatus::InProgress))
+            .map(|item| item.step.clone());
+        let pending = self
+            .current_plan
+            .iter()
+            .filter(|item| matches!(item.status, crate::tools::PlanStatus::Pending))
+            .count();
+        let completed = self
+            .current_plan
+            .iter()
+            .filter(|item| matches!(item.status, crate::tools::PlanStatus::Completed))
+            .count();
+        let items = self
+            .current_plan
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "step": item.step,
+                    "status": item.status.as_str()
+                })
+            })
+            .collect::<Vec<_>>();
+        self.emit_event(
+            run_id,
+            step,
+            EventKind::PlanUpdated,
+            serde_json::json!({
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "explanation": update.explanation,
+                "items": items,
+                "item_count": self.current_plan.len(),
+                "pending": pending,
+                "completed": completed,
+                "in_progress": in_progress
+            }),
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_schema_repair_attempt(
         &mut self,
@@ -1593,6 +1645,9 @@ impl<P: ModelProvider> Agent<P> {
         } else {
             None
         };
+        if final_ok && tc.name == "update_plan" {
+            self.apply_update_plan_tool_success(&run_id, step, tc);
+        }
         self.update_taint_for_tool_result(&run_id, step, tc, &content, messages.len(), taint_state);
         self.record_allowed_tool_result(
             &run_id,
