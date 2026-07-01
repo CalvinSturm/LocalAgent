@@ -68,7 +68,7 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
     if enable_shell_tool {
         tools.push(ToolDef {
             name: "shell".to_string(),
-            description: "Run a shell command with optional args, cwd, and timeout_ms. timeout_ms bounds the command's wall-clock runtime in milliseconds; omit or use 0 for no timeout.".to_string(),
+            description: "Run a shell command with optional args, cwd, and timeout_ms. timeout_ms bounds the command's wall-clock runtime in milliseconds. If omitted, a safe default timeout (120000 ms) is applied on the host target; pass 0 to opt out and run unbounded.".to_string(),
             parameters: json!({
                 "type":"object",
                 "properties":{
