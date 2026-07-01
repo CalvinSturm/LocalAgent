@@ -195,6 +195,7 @@ fn build_agent<P: ModelProvider + 'static>(
         plan_tool_enforcement: PlanToolEnforcementMode::Off,
         mcp_pin_enforcement: McpPinEnforcementMode::Hard,
         plan_step_constraints: Vec::<PlanStepConstraint>::new(),
+        current_plan: Vec::new(),
         tool_call_budget: ToolCallBudget::default(),
         mcp_runtime_trace: Vec::new(),
         operator_queue: localagent::operator_queue::PendingMessageQueue::default(),

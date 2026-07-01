@@ -36,6 +36,7 @@ fn write_tools_not_exposed_by_default() {
     let names = tools.into_iter().map(|t| t.name).collect::<Vec<_>>();
     assert!(names.iter().any(|n| n == "glob"));
     assert!(names.iter().any(|n| n == "grep"));
+    assert!(names.iter().any(|n| n == "update_plan"));
     assert!(!names.iter().any(|n| n == "shell"));
     assert!(!names.iter().any(|n| n == "edit"));
     assert!(!names.iter().any(|n| n == "write_file"));
@@ -92,6 +93,7 @@ fn builtin_tool_order_biases_toward_read_edit_verify_validate_flow() {
             "list_dir",
             "glob",
             "grep",
+            "update_plan",
             "read_file",
             "edit",
             "apply_patch",
@@ -110,11 +112,64 @@ fn side_effects_map_builtin_and_mcp() {
     assert_eq!(tool_side_effects("list_dir"), SideEffects::FilesystemRead);
     assert_eq!(tool_side_effects("glob"), SideEffects::FilesystemRead);
     assert_eq!(tool_side_effects("grep"), SideEffects::FilesystemRead);
+    assert_eq!(tool_side_effects("update_plan"), SideEffects::None);
     assert_eq!(
         tool_side_effects("mcp.playwright.browser_snapshot"),
         SideEffects::Browser
     );
     assert_eq!(tool_side_effects("mcp.other.echo"), SideEffects::Network);
+}
+
+#[tokio::test]
+async fn update_plan_returns_compact_side_effect_free_result() {
+    let rt = ToolRuntime {
+        workdir: PathBuf::from("."),
+        allow_shell: false,
+        allow_shell_in_workdir_only: false,
+        allow_write: false,
+        max_tool_output_bytes: 200_000,
+        max_read_bytes: 200_000,
+        unsafe_bypass_allow_flags: false,
+        tool_args_strict: ToolArgsStrict::On,
+        exec_target_kind: ExecTargetKind::Host,
+        exec_target: std::sync::Arc::new(HostTarget),
+    };
+    let tc = ToolCall {
+        id: "plan_1".to_string(),
+        name: "update_plan".to_string(),
+        arguments: json!({
+            "items": [
+                {"step":"Inspect code", "status":"completed"},
+                {"step":"Implement update_plan", "status":"in_progress"},
+                {"step":"Run tests", "status":"pending"}
+            ]
+        }),
+    };
+    let msg = execute_tool(&rt, &tc).await;
+    let parsed: Value = serde_json::from_str(&msg.content.unwrap_or_default()).expect("json");
+    assert_eq!(parsed["ok"], json!(true));
+    assert_eq!(parsed["meta"]["side_effects"], json!("none"));
+    let inner: Value = serde_json::from_str(parsed["content"].as_str().unwrap()).expect("inner");
+    assert_eq!(inner["items"], json!(3));
+    assert_eq!(inner["completed"], json!(1));
+    assert_eq!(inner["pending"], json!(1));
+    assert_eq!(inner["in_progress"], json!("Implement update_plan"));
+}
+
+#[test]
+fn update_plan_rejects_multiple_in_progress_items() {
+    let err = validate_builtin_tool_args(
+        "update_plan",
+        &json!({
+            "items": [
+                {"step":"A", "status":"in_progress"},
+                {"step":"B", "status":"in_progress"}
+            ]
+        }),
+        ToolArgsStrict::On,
+    )
+    .expect_err("invalid plan rejected");
+    assert!(err.contains("at most one"));
 }
 
 #[tokio::test]
@@ -266,6 +321,7 @@ async fn unknown_tool_payload_includes_sorted_available_tools() {
         json!("read_file"),
         json!("shell"),
         json!("str_replace"),
+        json!("update_plan"),
         json!("write_file"),
     ];
     assert_eq!(got, expected);

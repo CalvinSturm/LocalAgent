@@ -213,6 +213,46 @@ fn shell_output_chunk_logs_stream_identity_and_caps() {
 }
 
 #[test]
+fn plan_updated_event_replaces_current_plan_and_logs_summary() {
+    let mut s = UiState::new(10);
+    s.apply_event(&Event::new(
+        "r1".to_string(),
+        1,
+        EventKind::PlanUpdated,
+        serde_json::json!({
+            "tool_call_id":"plan1",
+            "items":[
+                {"step":"Inspect code","status":"completed"},
+                {"step":"Implement update_plan","status":"in_progress"},
+                {"step":"Run tests","status":"pending"}
+            ],
+            "explanation":"implementation underway"
+        }),
+    ));
+
+    assert_eq!(s.plan_items.len(), 3);
+    assert_eq!(s.plan_items[1].step, "Implement update_plan");
+    assert_eq!(s.plan_items[1].status, "in_progress");
+    let last = s.logs.last().cloned().unwrap_or_default();
+    assert!(last.contains("plan: 1/3"));
+    assert!(last.contains("active=Implement update_plan"));
+
+    s.apply_event(&Event::new(
+        "r1".to_string(),
+        1,
+        EventKind::PlanUpdated,
+        serde_json::json!({
+            "tool_call_id":"plan2",
+            "items":[
+                {"step":"Inspect code","status":"completed"}
+            ]
+        }),
+    ));
+    assert_eq!(s.plan_items.len(), 1);
+    assert_eq!(s.plan_items[0].status, "completed");
+}
+
+#[test]
 fn approvals_refresh_and_transition() {
     let tmp = tempdir().expect("tmp");
     let path = tmp.path().join("approvals.json");

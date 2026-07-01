@@ -11,6 +11,7 @@ use crate::types::{Message, SideEffects, ToolCall};
 mod catalog;
 mod envelope;
 mod exec_fs;
+mod exec_plan;
 mod exec_shell;
 mod exec_support;
 mod exec_write;
@@ -22,6 +23,8 @@ pub use envelope::{
     envelope_to_message, invalid_args_tool_message, to_tool_result_envelope,
     to_tool_result_envelope_with_error,
 };
+pub(crate) use exec_plan::parse_update_plan_args;
+pub use exec_plan::{PlanItem, PlanStatus};
 use exec_support::ToolExecution;
 pub use schema::{
     compact_builtin_schema, invalid_args_detail, minimal_builtin_example,
@@ -198,6 +201,7 @@ pub async fn execute_tool_streaming(
         "read_file" => exec_fs::run_read_file(rt, &normalized_args).await,
         "glob" => exec_fs::run_glob(rt, &normalized_args).await,
         "grep" => exec_fs::run_grep(rt, &normalized_args).await,
+        "update_plan" => exec_plan::run_update_plan(rt, &normalized_args).await,
         "shell" => exec_shell::run_shell(rt, &normalized_args, shell_stream).await,
         "write_file" => exec_write::run_write_file(rt, &normalized_args).await,
         "apply_patch" => exec_write::run_apply_patch(rt, &normalized_args).await,

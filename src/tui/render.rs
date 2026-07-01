@@ -4,7 +4,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
-use crate::tui::state::{ApprovalRow, ToolRow, UiState};
+use crate::tui::state::{ApprovalRow, PlanRow, ToolRow, UiState};
 
 pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
     let outer = Layout::default()
@@ -64,13 +64,33 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
             .wrap(Wrap { trim: false }),
         mid[0],
     );
-    let right = if state.show_details {
+    let has_plan = !state.plan_items.is_empty();
+    let right = if state.show_details && has_plan {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(7),
+                Constraint::Length(6),
+                Constraint::Percentage(45),
+                Constraint::Percentage(55),
+            ])
+            .split(mid[1])
+    } else if state.show_details {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(7),
                 Constraint::Percentage(48),
                 Constraint::Percentage(52),
+            ])
+            .split(mid[1])
+    } else if has_plan {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(6),
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
             ])
             .split(mid[1])
     } else {
@@ -122,26 +142,14 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
         );
     }
 
-    draw_tools_table(
-        frame,
-        if state.show_details {
-            right[1]
-        } else {
-            right[0]
-        },
-        state,
-    );
+    let mut next_right_idx = usize::from(state.show_details);
+    if has_plan {
+        draw_plan_table(frame, right[next_right_idx], &state.plan_items);
+        next_right_idx += 1;
+    }
 
-    draw_approvals_table(
-        frame,
-        if state.show_details {
-            right[2]
-        } else {
-            right[1]
-        },
-        state,
-        approvals_selected,
-    );
+    draw_tools_table(frame, right[next_right_idx], state);
+    draw_approvals_table(frame, right[next_right_idx + 1], state, approvals_selected);
 
     let logs = state.logs.join("\n");
     frame.render_widget(
@@ -149,6 +157,31 @@ pub fn draw(frame: &mut Frame<'_>, state: &UiState, approvals_selected: usize) {
             .block(Block::default().title("Logs").borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
         outer[3],
+    );
+}
+
+fn draw_plan_table(frame: &mut Frame<'_>, area: Rect, items: &[PlanRow]) {
+    let completed = items
+        .iter()
+        .filter(|item| item.status == "completed")
+        .count();
+    let rows = items.iter().map(|item| {
+        let mark = match item.status.as_str() {
+            "completed" => "x",
+            "in_progress" => ">",
+            _ => " ",
+        };
+        Row::new(vec![Cell::from(mark), Cell::from(fit_cell(&item.step, 48))])
+    });
+    frame.render_widget(
+        Table::new(rows, [Constraint::Length(1), Constraint::Min(8)])
+            .header(Row::new(vec!["", "Step"]))
+            .block(
+                Block::default()
+                    .title(format!("Plan {completed}/{}", items.len()))
+                    .borders(Borders::ALL),
+            ),
+        area,
     );
 }
 

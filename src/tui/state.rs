@@ -37,6 +37,12 @@ pub struct ApprovalRow {
     pub exec_target: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PlanRow {
+    pub step: String,
+    pub status: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct UiState {
     pub run_id: String,
@@ -58,6 +64,7 @@ pub struct UiState {
     pub net_status: String,
     pub assistant_text: String,
     pub tool_calls: Vec<ToolRow>,
+    pub plan_items: Vec<PlanRow>,
     pub pending_approvals: Vec<ApprovalRow>,
     pub logs: Vec<String>,
     pub exit_reason: Option<String>,
@@ -101,6 +108,7 @@ impl UiState {
             net_status: "OK".to_string(),
             assistant_text: String::new(),
             tool_calls: Vec::new(),
+            plan_items: Vec::new(),
             pending_approvals: Vec::new(),
             logs: Vec::new(),
             exit_reason: None,
@@ -138,6 +146,7 @@ impl UiState {
             EventKind::ToolExecStart => self.apply_tool_exec_start_event(ev),
             EventKind::ToolExecEnd => self.apply_tool_exec_end_event(ev),
             EventKind::ShellOutputChunk => self.apply_shell_output_chunk_event(ev),
+            EventKind::PlanUpdated => self.apply_plan_updated_event(ev),
             EventKind::PostWriteVerifyStart => self.apply_post_write_verify_start_event(ev),
             EventKind::PostWriteVerifyEnd => self.apply_post_write_verify_end_event(ev),
             EventKind::PolicyLoaded => self.apply_policy_loaded_event(ev),

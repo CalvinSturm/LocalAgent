@@ -132,6 +132,7 @@ pub struct Agent<P: ModelProvider> {
     pub plan_tool_enforcement: PlanToolEnforcementMode,
     pub mcp_pin_enforcement: McpPinEnforcementMode,
     pub plan_step_constraints: Vec<PlanStepConstraint>,
+    pub current_plan: Vec<crate::tools::PlanItem>,
     pub tool_call_budget: ToolCallBudget,
     pub mcp_runtime_trace: Vec<McpRuntimeTraceEntry>,
     pub operator_queue: PendingMessageQueue,

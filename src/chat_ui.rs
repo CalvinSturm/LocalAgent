@@ -9,7 +9,7 @@ mod overlay;
 use overlay::{draw_learn_overlay, render_with_caret};
 pub(crate) use overlay::{LearnOverlayRenderModel, LearnOverlaySummaryChoice, LearnOverlayTab};
 
-use crate::tui::state::{ToolRow, UiState};
+use crate::tui::state::{PlanRow, ToolRow, UiState};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_chat_frame(
@@ -133,7 +133,8 @@ pub(crate) fn draw_chat_frame(
         outer[1],
     );
 
-    let has_side = show_tools || show_approvals || show_thinking_panel;
+    let has_plan = !ui_state.plan_items.is_empty();
+    let has_side = has_plan || show_tools || show_approvals || show_thinking_panel;
     let (chat_area, separator_area, side_area) = if has_side {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -214,11 +215,15 @@ pub(crate) fn draw_chat_frame(
     if let Some(side) = side_area {
         #[derive(Clone, Copy)]
         enum SidePane {
+            Plan,
             Tools,
             Approvals,
             Reasoning,
         }
         let mut panes = Vec::new();
+        if has_plan {
+            panes.push(SidePane::Plan);
+        }
         if show_tools {
             panes.push(SidePane::Tools);
         }
@@ -242,6 +247,7 @@ pub(crate) fn draw_chat_frame(
             for (idx, pane) in panes.iter().enumerate() {
                 let area = splits[idx];
                 match pane {
+                    SidePane::Plan => draw_plan_pane(f, area, &ui_state.plan_items),
                     SidePane::Tools => draw_tools_pane(
                         f,
                         area,
@@ -452,6 +458,40 @@ pub(crate) fn draw_chat_frame(
     if let Some(overlay) = learn_overlay {
         draw_learn_overlay(f, overlay, ui_tick);
     }
+}
+
+fn draw_plan_pane(f: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, items: &[PlanRow]) {
+    let completed = items
+        .iter()
+        .filter(|item| item.status == "completed")
+        .count();
+    let title = format!("Plan {completed}/{}", items.len());
+    let body = items
+        .iter()
+        .map(|item| {
+            let mark = match item.status.as_str() {
+                "completed" => "x",
+                "in_progress" => ">",
+                _ => " ",
+            };
+            format!("[{mark}] {}", item.step)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+    f.render_widget(
+        Paragraph::new(title).style(Style::default().fg(Color::DarkGray)),
+        layout[0],
+    );
+    f.render_widget(
+        Paragraph::new(body)
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: false }),
+        layout[1],
+    );
 }
 
 fn draw_tools_pane(
