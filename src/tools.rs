@@ -168,6 +168,18 @@ pub struct ToolErrorDetail {
 }
 
 pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
+    execute_tool_streaming(rt, tc, None).await
+}
+
+/// Like [`execute_tool`], but forwards live shell output chunks to `shell_stream`
+/// while a `shell` command runs. Only the `shell` tool consults the stream; all
+/// other tools behave identically to [`execute_tool`]. The final result envelope
+/// is unaffected by streaming.
+pub async fn execute_tool_streaming(
+    rt: &ToolRuntime,
+    tc: &ToolCall,
+    shell_stream: Option<crate::target::ShellOutputTx>,
+) -> Message {
     let normalized_args = catalog::normalize_builtin_tool_args(&tc.name, &tc.arguments);
     let side_effects = tool_side_effects(&tc.name);
     if let Err(e) = validate_builtin_tool_args(&tc.name, &normalized_args, rt.tool_args_strict) {
@@ -186,7 +198,7 @@ pub async fn execute_tool(rt: &ToolRuntime, tc: &ToolCall) -> Message {
         "read_file" => exec_fs::run_read_file(rt, &normalized_args).await,
         "glob" => exec_fs::run_glob(rt, &normalized_args).await,
         "grep" => exec_fs::run_grep(rt, &normalized_args).await,
-        "shell" => exec_shell::run_shell(rt, &normalized_args).await,
+        "shell" => exec_shell::run_shell(rt, &normalized_args, shell_stream).await,
         "write_file" => exec_write::run_write_file(rt, &normalized_args).await,
         "apply_patch" => exec_write::run_apply_patch(rt, &normalized_args).await,
         "edit" => exec_write::run_edit(rt, &normalized_args).await,

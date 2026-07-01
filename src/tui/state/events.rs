@@ -699,4 +699,35 @@ impl UiState {
             self.push_log("compaction performed".to_string());
         }
     }
+
+    /// Render a live shell output chunk into the log/tail area while the command
+    /// is still running. stderr is distinguished with an `err>` prefix; stdout
+    /// with `out>`. Each incoming line is pushed separately so the ring-buffered
+    /// log bounds growth automatically.
+    pub(super) fn apply_shell_output_chunk_event(&mut self, ev: &Event) {
+        let stream = ev
+            .data
+            .get("stream")
+            .and_then(|v| v.as_str())
+            .unwrap_or("out");
+        let chunk = ev
+            .data
+            .get("chunk")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if chunk.is_empty() {
+            return;
+        }
+        let prefix = match stream {
+            "stderr" => "err>",
+            "meta" => "···",
+            _ => "out>",
+        };
+        for line in chunk.split('\n') {
+            if line.is_empty() {
+                continue;
+            }
+            self.push_log(format!("{prefix} {line}"));
+        }
+    }
 }

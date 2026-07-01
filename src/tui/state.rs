@@ -137,6 +137,7 @@ impl UiState {
             EventKind::ToolDecision => self.apply_tool_decision_event(ev),
             EventKind::ToolExecStart => self.apply_tool_exec_start_event(ev),
             EventKind::ToolExecEnd => self.apply_tool_exec_end_event(ev),
+            EventKind::ShellOutputChunk => self.apply_shell_output_chunk_event(ev),
             EventKind::PostWriteVerifyStart => self.apply_post_write_verify_start_event(ev),
             EventKind::PostWriteVerifyEnd => self.apply_post_write_verify_end_event(ev),
             EventKind::PolicyLoaded => self.apply_policy_loaded_event(ev),
