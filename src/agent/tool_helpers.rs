@@ -101,7 +101,292 @@ pub(super) enum FailedRepeatGuardDecision {
     Finalize(Box<super::agent_types::AgentOutcome>),
 }
 
+/// Total live shell output bytes forwarded to the event stream per command.
+/// Bounds memory and event-log growth; the full output still appears in the
+/// final result envelope (subject to its own truncation policy).
+const SHELL_STREAM_MAX_BYTES: usize = 64 * 1024;
+const SHELL_STREAM_CHANNEL_CAPACITY: usize = 128;
+
+#[derive(Default)]
+struct ShellUtf8Decoder {
+    pending: Vec<u8>,
+}
+
+impl ShellUtf8Decoder {
+    fn push(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(s) => {
+                    out.push_str(s);
+                    self.pending.clear();
+                    break;
+                }
+                Err(err) => {
+                    let valid_up_to = err.valid_up_to();
+                    if valid_up_to > 0 {
+                        out.push_str(
+                            std::str::from_utf8(&self.pending[..valid_up_to])
+                                .expect("valid prefix from utf8 error"),
+                        );
+                        self.pending.drain(..valid_up_to);
+                    }
+                    match err.error_len() {
+                        Some(len) => {
+                            out.push('\u{FFFD}');
+                            let drain = len.min(self.pending.len());
+                            self.pending.drain(..drain);
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn flush_lossy(&mut self) -> String {
+        if self.pending.is_empty() {
+            return String::new();
+        }
+        let out = String::from_utf8_lossy(&self.pending).to_string();
+        self.pending.clear();
+        out
+    }
+}
+
+/// Coalesces incremental shell output chunks into `ShellOutputChunk` events and
+/// enforces a total byte budget so live streaming cannot grow unbounded.
+struct ShellStreamCoalescer {
+    tool_call_id: String,
+    streamed_bytes: usize,
+    budget_notice_emitted: bool,
+    stdout_decoder: ShellUtf8Decoder,
+    stderr_decoder: ShellUtf8Decoder,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShellStreamAction {
+    Emit { stream: &'static str, text: String },
+    BudgetReached,
+}
+
+impl ShellStreamCoalescer {
+    fn new(tool_call_id: String) -> Self {
+        Self {
+            tool_call_id,
+            streamed_bytes: 0,
+            budget_notice_emitted: false,
+            stdout_decoder: ShellUtf8Decoder::default(),
+            stderr_decoder: ShellUtf8Decoder::default(),
+        }
+    }
+
+    fn decoder_mut(&mut self, kind: crate::target::ShellStreamKind) -> &mut ShellUtf8Decoder {
+        match kind {
+            crate::target::ShellStreamKind::Stdout => &mut self.stdout_decoder,
+            crate::target::ShellStreamKind::Stderr => &mut self.stderr_decoder,
+        }
+    }
+
+    fn emit_text(
+        &mut self,
+        kind: crate::target::ShellStreamKind,
+        text: String,
+        actions: &mut Vec<ShellStreamAction>,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        if self.streamed_bytes >= SHELL_STREAM_MAX_BYTES {
+            self.emit_budget_notice(actions);
+            return;
+        }
+        let remaining = SHELL_STREAM_MAX_BYTES - self.streamed_bytes;
+        let (text, truncated) = truncate_str_to_utf8_budget(&text, remaining);
+        if !text.is_empty() {
+            self.streamed_bytes += text.len();
+            actions.push(ShellStreamAction::Emit {
+                stream: kind.as_str(),
+                text,
+            });
+        }
+        if truncated {
+            self.emit_budget_notice(actions);
+        }
+    }
+
+    fn emit_budget_notice(&mut self, actions: &mut Vec<ShellStreamAction>) {
+        if !self.budget_notice_emitted {
+            self.budget_notice_emitted = true;
+            actions.push(ShellStreamAction::BudgetReached);
+        }
+    }
+
+    fn ingest_merged(
+        &mut self,
+        kind: crate::target::ShellStreamKind,
+        bytes: &[u8],
+        actions: &mut Vec<ShellStreamAction>,
+    ) {
+        let text = self.decoder_mut(kind).push(bytes);
+        self.emit_text(kind, text, actions);
+    }
+
+    /// Merge adjacent chunks from the same stream and return display actions to
+    /// emit, respecting UTF-8 boundaries and the live byte budget.
+    fn ingest(&mut self, batch: &[crate::target::ShellOutputChunk]) -> Vec<ShellStreamAction> {
+        let mut actions = Vec::new();
+        let mut current_stream = None;
+        let mut merged = Vec::new();
+        for chunk in batch {
+            if current_stream == Some(chunk.stream) {
+                merged.extend_from_slice(&chunk.bytes);
+            } else {
+                if let Some(kind) = current_stream {
+                    self.ingest_merged(kind, &merged, &mut actions);
+                    merged.clear();
+                }
+                current_stream = Some(chunk.stream);
+                merged.extend_from_slice(&chunk.bytes);
+            }
+        }
+        if let Some(kind) = current_stream {
+            self.ingest_merged(kind, &merged, &mut actions);
+        }
+        actions
+    }
+
+    fn flush_pending(&mut self) -> Vec<ShellStreamAction> {
+        let mut actions = Vec::new();
+        let stdout = self.stdout_decoder.flush_lossy();
+        self.emit_text(crate::target::ShellStreamKind::Stdout, stdout, &mut actions);
+        let stderr = self.stderr_decoder.flush_lossy();
+        self.emit_text(crate::target::ShellStreamKind::Stderr, stderr, &mut actions);
+        actions
+    }
+}
+
+fn truncate_str_to_utf8_budget(input: &str, max_bytes: usize) -> (String, bool) {
+    if input.len() <= max_bytes {
+        return (input.to_string(), false);
+    }
+    let mut end = max_bytes.min(input.len());
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    (input[..end].to_string(), true)
+}
+
 impl<P: ModelProvider> Agent<P> {
+    fn should_stream_shell_output(&self, tc: &ToolCall) -> bool {
+        self.event_sink.is_some()
+            && tc.name == "shell"
+            && matches!(
+                self.tool_rt.exec_target_kind,
+                crate::target::ExecTargetKind::Host
+            )
+    }
+
+    fn emit_shell_stream_action(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        coalescer: &ShellStreamCoalescer,
+        action: ShellStreamAction,
+    ) {
+        match action {
+            ShellStreamAction::Emit { stream, text } => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::ShellOutputChunk,
+                    serde_json::json!({
+                        "tool_call_id": coalescer.tool_call_id,
+                        "stream": stream,
+                        "chunk": text,
+                    }),
+                );
+            }
+            ShellStreamAction::BudgetReached => {
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::ShellOutputChunk,
+                    serde_json::json!({
+                        "tool_call_id": coalescer.tool_call_id,
+                        "stream": "meta",
+                        "chunk": "[live output truncated; see final result]",
+                    }),
+                );
+            }
+        }
+    }
+
+    /// Run a host `shell` tool call while forwarding live output chunks as
+    /// `ShellOutputChunk` events. Returns `Err(())` if the tool exceeds `dur`
+    /// (matching the non-streaming timeout branch); dropping the tool future on
+    /// timeout triggers `kill_on_drop` on the child. The final `ToolRunOutcome`
+    /// is identical to the non-streaming path.
+    async fn run_tool_once_with_live_stream(
+        &mut self,
+        run_id: &str,
+        step: u32,
+        tc: &ToolCall,
+        dur: std::time::Duration,
+    ) -> Result<crate::agent_tool_exec::ToolRunOutcome, ()> {
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<crate::target::ShellOutputChunk>(
+            SHELL_STREAM_CHANNEL_CAPACITY,
+        );
+        // Own the tool inputs so the future does not borrow `self`, leaving
+        // `self` free for synchronous event emission on this same task.
+        let tool_rt = self.tool_rt.clone();
+        let mcp = self.mcp_registry.clone();
+        let tc_owned = tc.clone();
+        let tool_fut = run_tool_once(&tool_rt, &tc_owned, mcp.as_ref(), Some(chunk_tx));
+        tokio::pin!(tool_fut);
+        let deadline = tokio::time::sleep(dur);
+        tokio::pin!(deadline);
+        let mut coalescer = ShellStreamCoalescer::new(tc.id.clone());
+
+        loop {
+            tokio::select! {
+                biased;
+                res = &mut tool_fut => {
+                    // Flush any chunks that arrived before completion.
+                    let mut batch = Vec::new();
+                    while let Ok(c) = chunk_rx.try_recv() {
+                        batch.push(c);
+                    }
+                    for action in coalescer.ingest(&batch) {
+                        self.emit_shell_stream_action(run_id, step, &coalescer, action);
+                    }
+                    for action in coalescer.flush_pending() {
+                        self.emit_shell_stream_action(run_id, step, &coalescer, action);
+                    }
+                    return Ok(res);
+                }
+                maybe = chunk_rx.recv() => {
+                    if let Some(first) = maybe {
+                        // Coalesce all immediately-available chunks into one batch
+                        // to keep the UI responsive under noisy output.
+                        let mut batch = vec![first];
+                        while let Ok(c) = chunk_rx.try_recv() {
+                            batch.push(c);
+                        }
+                        for action in coalescer.ingest(&batch) {
+                            self.emit_shell_stream_action(run_id, step, &coalescer, action);
+                        }
+                    }
+                }
+                _ = &mut deadline => {
+                    return Err(());
+                }
+            }
+        }
+    }
+
     pub(super) async fn run_tool_with_timeout_and_emit_mcp_events(
         &mut self,
         run_id: &str,
@@ -110,14 +395,21 @@ impl<P: ModelProvider> Agent<P> {
         phase: &str,
     ) -> Message {
         let tool_exec_timeout_ms = self.effective_tool_exec_timeout_ms();
-        let outcome = match tokio::time::timeout(
-            std::time::Duration::from_millis(tool_exec_timeout_ms),
-            run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref()),
-        )
-        .await
-        {
+        let dur = std::time::Duration::from_millis(tool_exec_timeout_ms);
+        let run_result = if self.should_stream_shell_output(tc) {
+            self.run_tool_once_with_live_stream(run_id, step, tc, dur)
+                .await
+        } else {
+            tokio::time::timeout(
+                dur,
+                run_tool_once(&self.tool_rt, tc, self.mcp_registry.as_ref(), None),
+            )
+            .await
+            .map_err(|_| ())
+        };
+        let outcome = match run_result {
             Ok(outcome) => outcome,
-            Err(_) => {
+            Err(()) => {
                 let reason = format!(
                     "runtime tool execution timeout: '{}' exceeded {}ms",
                     tc.name, tool_exec_timeout_ms
@@ -1367,5 +1659,78 @@ impl<P: ModelProvider> Agent<P> {
             return AllowedToolResultDecision::RestartAgentStep;
         }
         AllowedToolResultDecision::Continue
+    }
+}
+
+#[cfg(test)]
+mod shell_stream_tests {
+    use super::{ShellStreamAction, ShellStreamCoalescer};
+    use crate::target::{ShellOutputChunk, ShellStreamKind};
+
+    #[test]
+    fn coalescer_preserves_stream_identity() {
+        let mut coalescer = ShellStreamCoalescer::new("tc1".to_string());
+        let actions = coalescer.ingest(&[
+            ShellOutputChunk {
+                stream: ShellStreamKind::Stdout,
+                bytes: b"out".to_vec(),
+            },
+            ShellOutputChunk {
+                stream: ShellStreamKind::Stderr,
+                bytes: b"err".to_vec(),
+            },
+        ]);
+
+        assert_eq!(
+            actions,
+            vec![
+                ShellStreamAction::Emit {
+                    stream: "stdout",
+                    text: "out".to_string(),
+                },
+                ShellStreamAction::Emit {
+                    stream: "stderr",
+                    text: "err".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn coalescer_waits_for_complete_utf8_codepoint() {
+        let mut coalescer = ShellStreamCoalescer::new("tc1".to_string());
+        let euro = "€".as_bytes();
+        let first = coalescer.ingest(&[ShellOutputChunk {
+            stream: ShellStreamKind::Stdout,
+            bytes: euro[..2].to_vec(),
+        }]);
+        assert!(first.is_empty(), "incomplete codepoint should not emit");
+
+        let second = coalescer.ingest(&[ShellOutputChunk {
+            stream: ShellStreamKind::Stdout,
+            bytes: euro[2..].to_vec(),
+        }]);
+        assert_eq!(
+            second,
+            vec![ShellStreamAction::Emit {
+                stream: "stdout",
+                text: "€".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn coalescer_truncates_live_output_on_utf8_boundary() {
+        let mut coalescer = ShellStreamCoalescer::new("tc1".to_string());
+        let actions = coalescer.ingest(&[ShellOutputChunk {
+            stream: ShellStreamKind::Stdout,
+            bytes: "€".repeat(30_000).into_bytes(),
+        }]);
+        let ShellStreamAction::Emit { text, .. } = &actions[0] else {
+            panic!("first action should emit text");
+        };
+        assert!(text.len() <= super::SHELL_STREAM_MAX_BYTES);
+        assert!(text.is_char_boundary(text.len()));
+        assert_eq!(actions.last(), Some(&ShellStreamAction::BudgetReached));
     }
 }

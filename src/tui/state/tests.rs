@@ -169,6 +169,50 @@ fn logs_are_capped() {
 }
 
 #[test]
+fn shell_output_chunk_logs_stream_identity_and_caps() {
+    let mut s = UiState::new(3);
+    s.apply_event(&Event::new(
+        "r1".to_string(),
+        1,
+        EventKind::ShellOutputChunk,
+        serde_json::json!({
+            "tool_call_id":"tc1",
+            "stream":"stdout",
+            "chunk":"out-a\nout-b"
+        }),
+    ));
+    s.apply_event(&Event::new(
+        "r1".to_string(),
+        1,
+        EventKind::ShellOutputChunk,
+        serde_json::json!({
+            "tool_call_id":"tc1",
+            "stream":"stderr",
+            "chunk":"err-a"
+        }),
+    ));
+    s.apply_event(&Event::new(
+        "r1".to_string(),
+        1,
+        EventKind::ShellOutputChunk,
+        serde_json::json!({
+            "tool_call_id":"tc1",
+            "stream":"meta",
+            "chunk":"[live output truncated; see final result]"
+        }),
+    ));
+
+    assert_eq!(
+        s.logs,
+        vec![
+            "out> out-b".to_string(),
+            "err> err-a".to_string(),
+            "··· [live output truncated; see final result]".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn approvals_refresh_and_transition() {
     let tmp = tempdir().expect("tmp");
     let path = tmp.path().join("approvals.json");

@@ -53,6 +53,7 @@ pub(crate) async fn run_tool_once(
     tool_rt: &ToolRuntime,
     tc: &ToolCall,
     mcp_registry: Option<&std::sync::Arc<McpRegistry>>,
+    shell_stream: Option<crate::target::ShellOutputTx>,
 ) -> ToolRunOutcome {
     if tc.name.starts_with("mcp.") {
         match mcp_registry {
@@ -110,8 +111,14 @@ pub(crate) async fn run_tool_once(
             },
         }
     } else {
+        // Route through the streaming variant only when a stream is attached
+        // (host shell calls); every other call takes the exact original path.
+        let message = match shell_stream {
+            Some(_) => crate::tools::execute_tool_streaming(tool_rt, tc, shell_stream).await,
+            None => execute_tool(tool_rt, tc).await,
+        };
         ToolRunOutcome {
-            message: execute_tool(tool_rt, tc).await,
+            message,
             mcp_meta: None,
         }
     }

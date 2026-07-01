@@ -61,6 +61,36 @@ impl TargetResult {
     }
 }
 
+/// Which standard stream a live output chunk came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellStreamKind {
+    Stdout,
+    Stderr,
+}
+
+impl ShellStreamKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShellStreamKind::Stdout => "stdout",
+            ShellStreamKind::Stderr => "stderr",
+        }
+    }
+}
+
+/// An incremental slice of shell output produced while the command is still
+/// running. Emitted for live progress display only; the final result envelope
+/// is unaffected and remains the source of truth.
+#[derive(Debug, Clone)]
+pub struct ShellOutputChunk {
+    pub stream: ShellStreamKind,
+    pub bytes: Vec<u8>,
+}
+
+/// Sender used to forward live shell output chunks to a consumer (e.g. the TUI
+/// tail). Cloneable and bounded; producers use best-effort non-blocking sends
+/// so noisy output cannot backpressure or grow memory without bound.
+pub type ShellOutputTx = tokio::sync::mpsc::Sender<ShellOutputChunk>;
+
 #[derive(Debug, Clone)]
 pub struct ShellReq {
     pub workdir: PathBuf,
@@ -73,6 +103,11 @@ pub struct ShellReq {
     /// unrepresentable. Timeout enforcement currently applies to the host
     /// execution target only; the docker target ignores this field (follow-up).
     pub timeout_ms: u64,
+    /// Optional sink for live output chunks while the command runs. `None`
+    /// disables streaming (unchanged behavior). Honored by the host target only;
+    /// the docker target ignores it (follow-up), and the final result envelope
+    /// is identical either way.
+    pub stream: Option<ShellOutputTx>,
 }
 
 #[derive(Debug, Clone)]
@@ -149,7 +184,7 @@ impl ExecTarget for HostTarget {
                 None => req.workdir.clone(),
             };
         command.current_dir(cwd);
-        match spawn_and_wait_managed(command, req.timeout_ms, None).await {
+        match spawn_and_wait_managed(command, req.timeout_ms, None, req.stream.clone()).await {
             Ok(managed) => build_shell_target_result(
                 ExecTargetKind::Host,
                 None,
@@ -1040,6 +1075,7 @@ async fn spawn_and_wait_managed(
     mut command: Command,
     timeout_ms: u64,
     stdin_bytes: Option<&[u8]>,
+    stream: Option<ShellOutputTx>,
 ) -> std::io::Result<ManagedOutput> {
     use std::sync::{Arc, Mutex};
     use tokio::io::AsyncReadExt;
@@ -1067,7 +1103,16 @@ async fn spawn_and_wait_managed(
     // buffers (rather than `read_to_end` returning the bytes) let the timeout
     // path recover whatever was captured so far even when the drain task is
     // still blocked on a pipe held open by a surviving grandchild process.
-    fn drain<R>(pipe: Option<R>) -> (Arc<Mutex<Vec<u8>>>, tokio::task::JoinHandle<()>)
+    //
+    // When `stream` is provided, each read is also forwarded as a live
+    // `ShellOutputChunk` (a best-effort, non-blocking send) so a consumer can
+    // display progress while the command runs. The forwarded bytes never affect
+    // the accumulated buffers or the final result envelope.
+    fn drain<R>(
+        pipe: Option<R>,
+        stream: Option<ShellOutputTx>,
+        kind: ShellStreamKind,
+    ) -> (Arc<Mutex<Vec<u8>>>, tokio::task::JoinHandle<()>)
     where
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
     {
@@ -1083,6 +1128,14 @@ async fn spawn_and_wait_managed(
                             if let Ok(mut guard) = sink.lock() {
                                 guard.extend_from_slice(&chunk[..n]);
                             }
+                            if let Some(tx) = &stream {
+                                // Ignore send errors: a dropped receiver just
+                                // means nobody is watching the live stream.
+                                let _ = tx.try_send(ShellOutputChunk {
+                                    stream: kind,
+                                    bytes: chunk[..n].to_vec(),
+                                });
+                            }
                         }
                     }
                 }
@@ -1091,8 +1144,9 @@ async fn spawn_and_wait_managed(
         (buf, handle)
     }
 
-    let (stdout_buf, stdout_task) = drain(child.stdout.take());
-    let (stderr_buf, stderr_task) = drain(child.stderr.take());
+    let (stdout_buf, stdout_task) =
+        drain(child.stdout.take(), stream.clone(), ShellStreamKind::Stdout);
+    let (stderr_buf, stderr_task) = drain(child.stderr.take(), stream, ShellStreamKind::Stderr);
     let stdout_abort = stdout_task.abort_handle();
     let stderr_abort = stderr_task.abort_handle();
 
@@ -1265,7 +1319,10 @@ fn shell_escape(s: &str) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{resolve_path_scoped, DockerTarget, ExecTargetKind, HostTarget, ReadReq, ShellReq};
+    use super::{
+        resolve_path_scoped, DockerTarget, ExecTargetKind, HostTarget, ReadReq, ShellReq,
+        ShellStreamKind,
+    };
     use crate::target::ExecTarget;
     use clap::ValueEnum;
 
@@ -1309,6 +1366,7 @@ mod tests {
                 cwd: Some("../".to_string()),
                 max_tool_output_bytes: 200_000,
                 timeout_ms: 0,
+                stream: None,
             })
             .await;
         assert!(!out.ok);
@@ -1324,6 +1382,7 @@ mod tests {
                 cwd: None,
                 max_tool_output_bytes: 200_000,
                 timeout_ms: 0,
+                stream: None,
             }
         } else {
             ShellReq {
@@ -1333,6 +1392,7 @@ mod tests {
                 cwd: None,
                 max_tool_output_bytes: 200_000,
                 timeout_ms: 0,
+                stream: None,
             }
         }
     }
@@ -1346,6 +1406,7 @@ mod tests {
                 cwd: None,
                 max_tool_output_bytes: 200_000,
                 timeout_ms,
+                stream: None,
             }
         } else {
             ShellReq {
@@ -1355,6 +1416,37 @@ mod tests {
                 cwd: None,
                 max_tool_output_bytes: 200_000,
                 timeout_ms,
+                stream: None,
+            }
+        }
+    }
+
+    fn stream_shell_req() -> ShellReq {
+        if cfg!(windows) {
+            ShellReq {
+                workdir: PathBuf::from("."),
+                cmd: "cmd".to_string(),
+                args: vec![
+                    "/C".to_string(),
+                    "echo stream-out & echo stream-err 1>&2".to_string(),
+                ],
+                cwd: None,
+                max_tool_output_bytes: 200_000,
+                timeout_ms: 5_000,
+                stream: None,
+            }
+        } else {
+            ShellReq {
+                workdir: PathBuf::from("."),
+                cmd: "sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "printf stream-out; printf stream-err >&2".to_string(),
+                ],
+                cwd: None,
+                max_tool_output_bytes: 200_000,
+                timeout_ms: 5_000,
+                stream: None,
             }
         }
     }
@@ -1397,6 +1489,58 @@ mod tests {
         assert!(
             hint.contains("timeout_ms"),
             "timeout result should include an actionable hint, got: {hint}"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_shell_streaming_preserves_final_result_envelope_fields() {
+        let plain = HostTarget.exec_shell(stream_shell_req()).await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let mut streamed_req = stream_shell_req();
+        streamed_req.stream = Some(tx);
+        let streamed = HostTarget.exec_shell(streamed_req).await;
+
+        assert!(plain.ok, "plain command should succeed: {}", plain.content);
+        assert!(
+            streamed.ok,
+            "streamed command should succeed: {}",
+            streamed.content
+        );
+        let plain_json: serde_json::Value =
+            serde_json::from_str(&plain.content).expect("plain shell result JSON");
+        let streamed_json: serde_json::Value =
+            serde_json::from_str(&streamed.content).expect("streamed shell result JSON");
+        for key in [
+            "status",
+            "stdout",
+            "stderr",
+            "stdout_truncated",
+            "stderr_truncated",
+            "max_tool_output_bytes",
+        ] {
+            assert_eq!(streamed_json[key], plain_json[key], "field {key}");
+        }
+        assert_eq!(streamed.stdout_truncated, plain.stdout_truncated);
+        assert_eq!(streamed.stderr_truncated, plain.stderr_truncated);
+        assert_eq!(streamed.exit_code, plain.exit_code);
+
+        let mut live_stdout = Vec::new();
+        let mut live_stderr = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            match chunk.stream {
+                ShellStreamKind::Stdout => live_stdout.extend_from_slice(&chunk.bytes),
+                ShellStreamKind::Stderr => live_stderr.extend_from_slice(&chunk.bytes),
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&live_stdout).contains("stream-out"),
+            "stdout chunks: {:?}",
+            String::from_utf8_lossy(&live_stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&live_stderr).contains("stream-err"),
+            "stderr chunks: {:?}",
+            String::from_utf8_lossy(&live_stderr)
         );
     }
 
@@ -1451,6 +1595,7 @@ mod tests {
                 cwd: None,
                 max_tool_output_bytes: 200_000,
                 timeout_ms: 500,
+                stream: None,
             })
             .await;
         assert!(!out.ok, "timeout on docker target must be rejected");

@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::target::{ExecTargetKind, ShellReq, TargetResult};
+use crate::target::{ExecTargetKind, ShellOutputTx, ShellReq, TargetResult};
 use crate::types::SideEffects;
 
 use super::exec_support::{failed_exec, ToolExecution};
@@ -31,7 +31,16 @@ pub(super) fn resolve_shell_timeout_ms(args: &Value, target: ExecTargetKind) -> 
     }
 }
 
-pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
+pub(super) async fn run_shell(
+    rt: &ToolRuntime,
+    args: &Value,
+    stream: Option<ShellOutputTx>,
+) -> ToolExecution {
+    // Live streaming is host-only; the docker target ignores ShellReq.stream.
+    let stream = match rt.exec_target_kind {
+        ExecTargetKind::Host => stream,
+        ExecTargetKind::Docker => None,
+    };
     let shell_allowed =
         rt.allow_shell || (rt.allow_shell_in_workdir_only && shell_cwd_is_workdir_scoped(args));
     if !shell_allowed && !rt.unsafe_bypass_allow_flags {
@@ -76,6 +85,7 @@ pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
         cwd: cwd.clone(),
         max_tool_output_bytes: rt.max_tool_output_bytes,
         timeout_ms,
+        stream: stream.clone(),
     };
     let mut out = rt.exec_target.exec_shell(req).await;
     if !out.ok && shell_spawn_not_found(&out.content) {
@@ -91,6 +101,7 @@ pub(super) async fn run_shell(rt: &ToolRuntime, args: &Value) -> ToolExecution {
                     cwd,
                     max_tool_output_bytes: rt.max_tool_output_bytes,
                     timeout_ms,
+                    stream,
                 })
                 .await;
             out = annotate_shell_repair(repaired, repair_strategy);

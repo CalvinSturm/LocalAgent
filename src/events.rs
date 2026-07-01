@@ -18,6 +18,7 @@ pub enum EventKind {
     ToolExecTarget,
     ToolExecStart,
     ToolExecEnd,
+    ShellOutputChunk,
     PostWriteVerifyStart,
     PostWriteVerifyEnd,
     ToolRetry,
