@@ -131,6 +131,7 @@ pub struct Agent<P: ModelProvider> {
     pub omit_tools_field_when_empty: bool,
     pub plan_tool_enforcement: PlanToolEnforcementMode,
     pub mcp_pin_enforcement: McpPinEnforcementMode,
+    pub raw_tool_result_dir: Option<std::path::PathBuf>,
     pub plan_step_constraints: Vec<PlanStepConstraint>,
     pub current_plan: Vec<crate::tools::PlanItem>,
     pub tool_call_budget: ToolCallBudget,

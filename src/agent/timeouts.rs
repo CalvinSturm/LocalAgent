@@ -48,6 +48,7 @@ impl<P: ModelProvider> Agent<P> {
             false,
             ToolResultMeta {
                 side_effects: tool_side_effects(&tc.name),
+                duration_ms: Some(timeout_ms),
                 bytes: None,
                 exit_code: None,
                 stderr_truncated: None,

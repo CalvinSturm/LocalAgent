@@ -513,6 +513,7 @@ pub(crate) async fn run_single(
         omit_tools_field_when_empty: false,
         plan_tool_enforcement: crate::agent::PlanToolEnforcementMode::Off,
         mcp_pin_enforcement: crate::agent::McpPinEnforcementMode::Hard,
+        raw_tool_result_dir: None,
         plan_step_constraints: Vec::new(),
         current_plan: Vec::new(),
         tool_call_budget: ToolCallBudget {

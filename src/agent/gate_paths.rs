@@ -424,6 +424,7 @@ impl<P: ModelProvider> Agent<P> {
                         false,
                         crate::tools::ToolResultMeta {
                             side_effects: tool_side_effects(&tc.name),
+                            duration_ms: None,
                             bytes: None,
                             exit_code: None,
                             stderr_truncated: None,

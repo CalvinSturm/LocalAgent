@@ -256,6 +256,7 @@ fn make_agent_with_mcp<P: ModelProvider + 'static>(
         omit_tools_field_when_empty: false,
         plan_tool_enforcement: PlanToolEnforcementMode::Off,
         mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        raw_tool_result_dir: None,
         plan_step_constraints: Vec::<PlanStepConstraint>::new(),
         current_plan: Vec::new(),
         tool_call_budget: ToolCallBudget::default(),

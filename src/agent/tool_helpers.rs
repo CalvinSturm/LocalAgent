@@ -1649,6 +1649,29 @@ impl<P: ModelProvider> Agent<P> {
             self.apply_update_plan_tool_success(&run_id, step, tc);
         }
         self.update_taint_for_tool_result(&run_id, step, tc, &content, messages.len(), taint_state);
+        let (model_tool_msg, artifact_warnings) =
+            crate::tools::to_model_observation_message_with_warnings(
+                &tool_msg,
+                tc,
+                &self.tool_rt.workdir,
+                self.raw_tool_result_dir.as_deref(),
+            );
+        for warning in artifact_warnings {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::Error,
+                serde_json::json!({
+                    "source": "tool_result_artifact",
+                    "non_fatal": true,
+                    "code": warning.code,
+                    "warning": warning.message,
+                    "path": warning.path,
+                    "tool_call_id": tc.id,
+                    "name": tc.name
+                }),
+            );
+        }
         self.record_allowed_tool_result(
             &run_id,
             step,
@@ -1682,7 +1705,7 @@ impl<P: ModelProvider> Agent<P> {
             failed_repeat_counts,
             invalid_patch_format_attempts,
             successful_write_tool_ok_this_step,
-            tool_msg,
+            model_tool_msg,
             messages,
             observed_tool_decisions,
         );

@@ -273,6 +273,7 @@ impl McpRegistry {
                     false,
                     ToolResultMeta {
                         side_effects: tool_side_effects(&tc.name),
+                        duration_ms: None,
                         bytes: None,
                         exit_code: None,
                         stderr_truncated: None,
@@ -326,6 +327,7 @@ impl McpRegistry {
                         false,
                         ToolResultMeta {
                             side_effects: tool_side_effects(&tc.name),
+                            duration_ms: Some(meta.elapsed_ms),
                             bytes: None,
                             exit_code: None,
                             stderr_truncated: None,
@@ -357,6 +359,7 @@ impl McpRegistry {
             was_truncated,
             ToolResultMeta {
                 side_effects: tool_side_effects(&tc.name),
+                duration_ms: Some(meta.elapsed_ms),
                 bytes: Some(result_str.len() as u64),
                 exit_code: None,
                 stderr_truncated: None,
