@@ -41,6 +41,7 @@ pub mod task_contract;
 mod timeouts;
 pub mod tool_facts;
 mod tool_helpers;
+pub(crate) mod validators;
 pub use agent_types::{
     AgentExitReason, AgentOutcome, AgentTaintRecord, McpPinEnforcementMode, McpRuntimeTraceEntry,
     PlanStepConstraint, PlanToolEnforcementMode, PolicyLoadedInfo, ToolCallBudget,
@@ -295,6 +296,7 @@ impl<P: ModelProvider> Agent<P> {
                 required_command: self
                     .required_validation_command(user_prompt)
                     .map(ToOwned::to_owned),
+                inferred_validator: None,
                 satisfied: false,
                 repair_mode: false,
                 exact_final_answer_required: self.exact_final_answer_required(user_prompt),
@@ -343,6 +345,17 @@ impl<P: ModelProvider> Agent<P> {
         tool_calls: &mut Vec<ToolCall>,
     ) -> bool {
         if tool_calls.len() == 1 && tool_calls[0].name == "shell" {
+            if normalized_shell_command(&tool_calls[0].arguments).as_deref()
+                != Some(required_command)
+            {
+                tool_calls[0] = ToolCall {
+                    id: format!("tc_validation_shell_{}", Uuid::new_v4().simple()),
+                    name: "shell".to_string(),
+                    arguments: json!({ "command": required_command }),
+                };
+                assistant.content = Some(String::new());
+                return true;
+            }
             if !assistant
                 .content
                 .as_deref()
@@ -447,7 +460,12 @@ impl<P: ModelProvider> Agent<P> {
         if runtime_checkpoint.phase != crate::agent_runtime::state::RunPhase::Validating {
             return Ok(PhaseLoopControl::Proceed);
         }
-        if !self.validation_shell_available() {
+        if !self.validation_shell_available()
+            && runtime_checkpoint
+                .validation_state
+                .inferred_validator
+                .is_none()
+        {
             runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Executing;
             runtime_checkpoint
                 .retry_state
@@ -477,13 +495,21 @@ impl<P: ModelProvider> Agent<P> {
                 );
             }
         }
+        let validation_phase_message = runtime_checkpoint
+            .validation_state
+            .required_command
+            .as_deref()
+            .map(|command| {
+                crate::agent::completion_policy::required_validation_phase_message(command)
+            })
+            .unwrap_or_else(|| self.required_validation_phase_message(user_prompt));
         let decision = decide_required_validation_phase_response(
             user_prompt,
             self.validation_shell_available(),
             runtime_checkpoint,
             &resp.assistant,
             &resp.tool_calls,
-            self.required_validation_phase_message(user_prompt),
+            validation_phase_message,
         );
         match apply_required_validation_guard_decision(decision, &resp.assistant, messages) {
             GuardEffect::Proceed => Ok(PhaseLoopControl::Proceed),
@@ -2831,15 +2857,47 @@ impl<P: ModelProvider> Agent<P> {
             Err(outcome) => return Err(outcome),
         }
 
-        if let Some(effect) =
-            completion_blocked_effect_from_post_tool_refresh(refresh_phase_state_from_tool_facts(
-                user_prompt,
-                runtime_checkpoint,
-                observed_tool_calls,
-                observed_tool_executions,
-                successful_write_tool_ok_this_step,
-            ))
+        let refresh = refresh_phase_state_from_tool_facts(
+            user_prompt,
+            runtime_checkpoint,
+            observed_tool_calls,
+            observed_tool_executions,
+            successful_write_tool_ok_this_step,
+        );
+        if let crate::agent::phase_transitions::PostToolPhaseRefreshEffect::StopAfterRepairBudgetExhausted {
+            reason,
+        } = &refresh
         {
+            self.emit_event(
+                run_id,
+                step,
+                EventKind::Error,
+                serde_json::json!({
+                    "error": reason,
+                    "source": "runtime_required_validation_guard",
+                    "failure_class": "E_RUNTIME_VALIDATION_REPAIR_EXHAUSTED",
+                    "repair_budget_max": 1
+                }),
+            );
+            return Err(self.finalize_planner_error_with_end(
+                step,
+                run_id.to_string(),
+                started_at.to_string(),
+                reason.clone(),
+                messages.clone(),
+                observed_tool_calls.to_vec(),
+                observed_tool_decisions.to_vec(),
+                context_size_chars(messages),
+                last_compaction_report.clone(),
+                hook_invocations.clone(),
+                *provider_retry_count,
+                *provider_error_count,
+                *saw_token_usage,
+                total_token_usage,
+                taint_state,
+            ));
+        }
+        if let Some(effect) = completion_blocked_effect_from_post_tool_refresh(refresh) {
             self.emit_phase_transition(run_id, step, &effect.transition);
             self.emit_event(
                 run_id,
@@ -2878,6 +2936,52 @@ impl<P: ModelProvider> Agent<P> {
         successful_write_tool_ok_this_step: bool,
         request_context_chars: usize,
     ) -> Result<PhaseStepDispatch, AgentOutcome> {
+        if let Some(validator) = runtime_checkpoint
+            .validation_state
+            .inferred_validator
+            .clone()
+        {
+            if runtime_checkpoint.validation_state.satisfied
+                && !runtime_checkpoint
+                    .validation_state
+                    .exact_final_answer_required
+                && observed_tool_executions
+                    .last()
+                    .is_some_and(|execution| execution.name == "shell" && execution.ok)
+            {
+                let outcome = crate::agent::validators::ValidatorOutcome::Passed;
+                self.emit_event(
+                    run_id,
+                    step,
+                    EventKind::CompletionSatisfied,
+                    serde_json::json!({
+                        "reason": "inferred_validator_passed",
+                        "validator_kind": validator.kind,
+                        "validator_label": validator.label,
+                        "command": validator.command,
+                        "outcome": outcome
+                    }),
+                );
+                return Err(self.finalize_ok_with_end(
+                    step,
+                    run_id.to_string(),
+                    started_at.to_string(),
+                    format!("Validation passed: `{}`.", validator.command),
+                    messages.clone(),
+                    observed_tool_calls.to_vec(),
+                    observed_tool_decisions.to_vec(),
+                    context_size_chars(messages),
+                    last_compaction_report.clone(),
+                    hook_invocations.to_vec(),
+                    *provider_retry_count,
+                    *provider_error_count,
+                    *saw_token_usage,
+                    total_token_usage,
+                    taint_state,
+                ));
+            }
+        }
+
         if let Some(control) = self
             .handle_verified_write_follow_on_phase(
                 user_prompt,

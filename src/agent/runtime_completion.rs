@@ -824,5 +824,5 @@ pub(super) enum VerifiedWriteResult {
     Done(Box<super::agent_types::AgentOutcome>),
     GuardRetry(String),
     StartFinalAnswerPhase(String),
-    StartRequiredValidationPhase(String),
+    StartRequiredValidationPhase(crate::agent::completion_policy::RequiredValidationFollowOn),
 }

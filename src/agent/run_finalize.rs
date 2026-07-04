@@ -139,8 +139,54 @@ impl<P: ModelProvider> Agent<P> {
             .to_string();
         let has_post_tool_assistant_closeout =
             self.has_user_facing_assistant_closeout_after_last_tool(&messages);
+        let prompt_required_validation =
+            self.required_validation_command(user_prompt)
+                .map(
+                    |command| crate::agent::completion_policy::RequiredValidationFollowOn {
+                        developer_message:
+                            crate::agent::completion_policy::required_validation_phase_message(
+                                command,
+                            ),
+                        command: command.to_string(),
+                        inferred_validator: None,
+                    },
+                );
+        let inferred_validator = crate::agent::validators::infer_validator_command_from_executions(
+            observed_tool_executions,
+        );
+        if prompt_required_validation.is_none()
+            && inferred_validator.is_some()
+            && !self.validation_shell_available()
+        {
+            self.emit_event(
+                &run_id,
+                step,
+                EventKind::Error,
+                serde_json::json!({
+                    "source": "runtime_inferred_validator",
+                    "non_fatal": true,
+                    "reason": "inferred_validator_shell_unavailable",
+                    "message": "inferred validator was not run because shell execution is unavailable or disabled"
+                }),
+            );
+        }
+        let inferred_required_validation = || {
+            if !self.validation_shell_available() {
+                return None;
+            }
+            inferred_validator.map(|validator| {
+                crate::agent::completion_policy::RequiredValidationFollowOn {
+                    developer_message:
+                        crate::agent::completion_policy::required_validation_phase_message(
+                            &validator.command,
+                        ),
+                    command: validator.command.clone(),
+                    inferred_validator: Some(validator),
+                }
+            })
+        };
         match crate::agent::completion_policy::decide_verified_write_completion(
-            self.required_validation_command(user_prompt),
+            prompt_required_validation.or_else(inferred_required_validation),
             self.exact_final_answer_required(user_prompt),
             &verified_paths,
             has_post_tool_assistant_closeout,
@@ -158,7 +204,11 @@ impl<P: ModelProvider> Agent<P> {
                 );
                 return VerifiedWriteResult::StartFinalAnswerPhase(message);
             }
-            crate::agent::completion_policy::VerifiedWriteCompletionDecision::StartRequiredValidationPhase(message) => {
+            crate::agent::completion_policy::VerifiedWriteCompletionDecision::StartRequiredValidationPhase {
+                developer_message,
+                command,
+                inferred_validator,
+            } => {
                 self.emit_event(
                     &run_id,
                     step,
@@ -168,7 +218,13 @@ impl<P: ModelProvider> Agent<P> {
                         "source": "runtime_post_write_follow_on"
                     }),
                 );
-                return VerifiedWriteResult::StartRequiredValidationPhase(message);
+                return VerifiedWriteResult::StartRequiredValidationPhase(
+                    crate::agent::completion_policy::RequiredValidationFollowOn {
+                        developer_message,
+                        command,
+                        inferred_validator,
+                    },
+                );
             }
             crate::agent::completion_policy::VerifiedWriteCompletionDecision::FinalizeNow => {}
         }

@@ -42,6 +42,19 @@ pub(crate) fn decide_required_validation_phase_response(
         return RequiredValidationPhaseDecision::Proceed;
     }
     if !validation_shell_available {
+        if runtime_checkpoint
+            .validation_state
+            .inferred_validator
+            .is_some()
+        {
+            runtime_checkpoint
+                .retry_state
+                .blocked_required_validation_phase_count = 0;
+            return RequiredValidationPhaseDecision::PlannerError {
+                reason: "inferred validator could not run because the shell tool is unavailable or disabled by policy".to_string(),
+                blocked_count: 0,
+            };
+        }
         runtime_checkpoint.phase = RunPhase::Executing;
         runtime_checkpoint
             .retry_state

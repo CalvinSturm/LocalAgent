@@ -1,7 +1,17 @@
 pub(crate) enum VerifiedWriteCompletionDecision {
     FinalizeNow,
     StartFinalAnswerPhase(String),
-    StartRequiredValidationPhase(String),
+    StartRequiredValidationPhase {
+        developer_message: String,
+        command: String,
+        inferred_validator: Option<crate::agent::validators::ValidatorCommand>,
+    },
+}
+
+pub(crate) struct RequiredValidationFollowOn {
+    pub(crate) developer_message: String,
+    pub(crate) command: String,
+    pub(crate) inferred_validator: Option<crate::agent::validators::ValidatorCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +65,7 @@ pub(crate) struct RuntimePhaseTransitionDecision {
     pub(crate) completion_reason: &'static str,
 }
 
-fn required_validation_phase_message(required_command: &str) -> String {
+pub(crate) fn required_validation_phase_message(required_command: &str) -> String {
     format!(
         "Validation required now. Return exactly one shell tool call and no prose. Run `{required_command}`. Example arguments: {{\"command\":\"{required_command}\"}}. After it succeeds, reply with the final answer only."
     )
@@ -302,18 +312,18 @@ pub(crate) fn decide_validation_phase_transition(
 }
 
 pub(crate) fn decide_verified_write_completion(
-    required_validation_command: Option<&str>,
+    required_validation: Option<RequiredValidationFollowOn>,
     exact_final_answer_required: bool,
     _verified_paths: &[String],
     has_post_tool_assistant_closeout: bool,
     _post_write_follow_on_turn_count: u32,
 ) -> VerifiedWriteCompletionDecision {
-    if required_validation_command.is_some() && !has_post_tool_assistant_closeout {
-        return VerifiedWriteCompletionDecision::StartRequiredValidationPhase(
-            required_validation_phase_message(
-                required_validation_command.unwrap_or("the required validation command"),
-            ),
-        );
+    if let Some(required_validation) = required_validation {
+        return VerifiedWriteCompletionDecision::StartRequiredValidationPhase {
+            developer_message: required_validation.developer_message,
+            command: required_validation.command,
+            inferred_validator: required_validation.inferred_validator,
+        };
     }
     if !has_post_tool_assistant_closeout {
         return VerifiedWriteCompletionDecision::StartFinalAnswerPhase(
@@ -338,17 +348,32 @@ mod tests {
         post_validation_final_answer_transition_decision,
         required_validation_boundary_transition_decision, resume_phase_from_checkpoint_state,
         validation_resume_execution_transition_decision, RequiredValidationCompletionDecision,
-        RuntimeCheckpointResumeKind, ValidationFacts, ValidationPhaseTransitionDecision,
-        VerifiedWriteCompletionDecision,
+        RequiredValidationFollowOn, RuntimeCheckpointResumeKind, ValidationFacts,
+        ValidationPhaseTransitionDecision, VerifiedWriteCompletionDecision,
     };
     use crate::agent::ToolFactV1;
 
     #[test]
     fn verified_write_policy_starts_validation_when_prompt_requires_it() {
-        let decision = decide_verified_write_completion(Some("cargo test"), false, &[], false, 0);
+        let decision = decide_verified_write_completion(
+            Some(RequiredValidationFollowOn {
+                developer_message: "run cargo test".to_string(),
+                command: "cargo test".to_string(),
+                inferred_validator: None,
+            }),
+            false,
+            &[],
+            false,
+            0,
+        );
         match decision {
-            VerifiedWriteCompletionDecision::StartRequiredValidationPhase(message) => {
-                assert!(message.contains("cargo test"));
+            VerifiedWriteCompletionDecision::StartRequiredValidationPhase {
+                developer_message,
+                command,
+                ..
+            } => {
+                assert!(developer_message.contains("cargo test"));
+                assert_eq!(command, "cargo test");
             }
             _ => panic!("expected validation phase"),
         }
@@ -589,6 +614,7 @@ mod tests {
                 tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
                 validation_state: crate::agent_runtime::state::ValidationState {
                     required_command: Some("cargo test".to_string()),
+                    inferred_validator: None,
                     satisfied: false,
                     repair_mode: false,
                     exact_final_answer_required: false,
@@ -643,6 +669,7 @@ mod tests {
                 tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
                 validation_state: crate::agent_runtime::state::ValidationState {
                     required_command: Some("cargo test".to_string()),
+                    inferred_validator: None,
                     satisfied: true,
                     repair_mode: false,
                     exact_final_answer_required: true,
