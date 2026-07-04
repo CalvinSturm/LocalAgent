@@ -77,6 +77,25 @@ Notes:
 - `--allow-shell` enables shell tool use broadly, subject to the trust gate.
 - `--allow-shell-in-workdir` is narrower: it allows shell only when cwd is omitted or remains under the current workdir.
 
+### LSP Tools
+
+- `--lsp-provider <rust|typescript>`
+- `--lsp-command <PATH>`
+
+When `--lsp-provider` is set, LocalAgent exposes read-only built-in tools:
+
+- `lsp.diagnostics`
+- `lsp.document_symbols`
+- `lsp.goto_definition`
+- `lsp.find_references`
+- `lsp.hover`
+
+These tools are workdir-scoped, use the configured language server command, and are classified as filesystem-read tools for gate/audit purposes.
+
+* `Evidence: src/cli_args.rs#LspProviderKind`
+* `Evidence: src/tools/catalog.rs#builtin_tools_enabled_with_lsp`
+* `Evidence: src/tools/exec_lsp.rs`
+
 ### Execution Target
 
 - `--exec-target <host|docker>` (default: `host`)

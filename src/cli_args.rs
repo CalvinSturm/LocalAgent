@@ -1350,6 +1350,8 @@ pub(crate) enum RunOutputMode {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum LspProviderKind {
+    Rust,
+
     Typescript,
 }
 

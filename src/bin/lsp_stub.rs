@@ -118,6 +118,21 @@ fn main() -> Result<()> {
                     }),
                 )?;
             }
+            Some("textDocument/hover") => {
+                write_lsp_message(
+                    &mut writer,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": message.get("id").cloned().unwrap_or(Value::Null),
+                        "result": {
+                            "contents": {
+                                "kind": "markdown",
+                                "value": "const value: number"
+                            }
+                        }
+                    }),
+                )?;
+            }
             Some("shutdown") => {
                 write_lsp_message(
                     &mut writer,

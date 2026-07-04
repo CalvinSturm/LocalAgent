@@ -4,11 +4,11 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use super::{
-    builtin_tools_enabled, execute_tool, load_tool_result_artifact_manifest,
-    resolve_tool_result_artifact_ref, to_model_observation_message, to_tool_result_envelope,
-    to_tool_result_envelope_with_error, tool_side_effects, validate_builtin_tool_args,
-    validate_schema_args, ToolArgsStrict, ToolErrorCode, ToolErrorDetail, ToolResultContentRef,
-    ToolResultMeta, ToolRuntime,
+    builtin_tools_enabled, builtin_tools_enabled_with_lsp, execute_tool,
+    load_tool_result_artifact_manifest, resolve_tool_result_artifact_ref,
+    to_model_observation_message, to_tool_result_envelope, to_tool_result_envelope_with_error,
+    tool_side_effects, validate_builtin_tool_args, validate_schema_args, ToolArgsStrict,
+    ToolErrorCode, ToolErrorDetail, ToolResultContentRef, ToolResultMeta, ToolRuntime,
 };
 use crate::target::{ExecTargetKind, HostTarget};
 use crate::types::{SideEffects, ToolCall};
@@ -44,6 +44,22 @@ fn write_tools_not_exposed_by_default() {
     assert!(!names.iter().any(|n| n == "edit"));
     assert!(!names.iter().any(|n| n == "write_file"));
     assert!(!names.iter().any(|n| n == "apply_patch"));
+    assert!(!names.iter().any(|n| n == "lsp.diagnostics"));
+}
+
+#[test]
+fn lsp_tools_exposed_only_when_enabled() {
+    let tools = builtin_tools_enabled_with_lsp(false, false, true);
+    let names = tools.into_iter().map(|t| t.name).collect::<Vec<_>>();
+    for expected in [
+        "lsp.diagnostics",
+        "lsp.document_symbols",
+        "lsp.goto_definition",
+        "lsp.find_references",
+        "lsp.hover",
+    ] {
+        assert!(names.iter().any(|n| n == expected));
+    }
 }
 
 #[test]
@@ -96,6 +112,11 @@ fn builtin_tool_order_biases_toward_read_edit_verify_validate_flow() {
             "list_dir",
             "glob",
             "grep",
+            "lsp.diagnostics",
+            "lsp.document_symbols",
+            "lsp.find_references",
+            "lsp.goto_definition",
+            "lsp.hover",
             "update_plan",
             "read_file",
             "edit",
@@ -115,6 +136,10 @@ fn side_effects_map_builtin_and_mcp() {
     assert_eq!(tool_side_effects("list_dir"), SideEffects::FilesystemRead);
     assert_eq!(tool_side_effects("glob"), SideEffects::FilesystemRead);
     assert_eq!(tool_side_effects("grep"), SideEffects::FilesystemRead);
+    assert_eq!(
+        tool_side_effects("lsp.goto_definition"),
+        SideEffects::FilesystemRead
+    );
     assert_eq!(tool_side_effects("update_plan"), SideEffects::None);
     assert_eq!(
         tool_side_effects("mcp.playwright.browser_snapshot"),
@@ -134,6 +159,7 @@ async fn update_plan_returns_compact_side_effect_free_result() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -427,6 +453,7 @@ async fn write_file_denied_when_allow_write_false() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -453,6 +480,7 @@ async fn invalid_args_do_not_write_file() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -486,6 +514,7 @@ async fn invalid_args_payload_is_structured_and_deterministic() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -533,6 +562,7 @@ async fn unknown_tool_payload_includes_sorted_available_tools() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -562,6 +592,11 @@ async fn unknown_tool_payload_includes_sorted_available_tools() {
         json!("glob"),
         json!("grep"),
         json!("list_dir"),
+        json!("lsp.diagnostics"),
+        json!("lsp.document_symbols"),
+        json!("lsp.find_references"),
+        json!("lsp.goto_definition"),
+        json!("lsp.hover"),
         json!("read_file"),
         json!("shell"),
         json!("str_replace"),
@@ -586,6 +621,7 @@ async fn glob_returns_sorted_matches_and_truncates() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -626,6 +662,7 @@ async fn grep_returns_byte_columns_multi_match_and_skips_non_utf8() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -687,6 +724,7 @@ async fn glob_rejects_out_of_scope_path() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -726,6 +764,7 @@ async fn grep_symlink_out_of_scope_adds_warning_metadata() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -766,6 +805,7 @@ async fn write_file_blocks_existing_file_without_overwrite_flag() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -796,6 +836,7 @@ async fn write_file_allows_existing_file_with_overwrite_flag() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -874,6 +915,7 @@ async fn apply_patch_updates_file() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -901,6 +943,7 @@ async fn edit_updates_file_with_opencode_style_aliases() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -932,6 +975,7 @@ async fn read_file_envelope_sets_truncation() {
         max_read_bytes: 5,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -966,6 +1010,7 @@ async fn shell_in_workdir_flag_rejects_escaping_cwd() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -1002,6 +1047,7 @@ async fn shell_disabled_uses_shell_gate_deny_code() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -1034,6 +1080,7 @@ async fn shell_spawn_not_found_sets_not_found_error_code() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -1068,6 +1115,7 @@ async fn shell_auto_repair_wraps_windows_builtin() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -1121,6 +1169,7 @@ async fn shell_auto_repair_uses_sh_lc_for_embedded_command() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -1168,6 +1217,7 @@ async fn shell_without_timeout_still_runs_fast_command_under_default_policy() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -1210,6 +1260,7 @@ async fn read_file_rejects_path_traversal() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -1245,6 +1296,7 @@ async fn write_file_rejects_absolute_path() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };
@@ -1274,6 +1326,7 @@ async fn str_replace_not_found_suggests_apply_patch_recovery() {
         max_read_bytes: 200_000,
         unsafe_bypass_allow_flags: false,
         tool_args_strict: ToolArgsStrict::On,
+        lsp: None,
         exec_target_kind: ExecTargetKind::Host,
         exec_target: std::sync::Arc::new(HostTarget),
     };

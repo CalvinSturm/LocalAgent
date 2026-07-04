@@ -11,6 +11,7 @@ use crate::types::{Message, SideEffects, ToolCall};
 mod catalog;
 mod envelope;
 mod exec_fs;
+mod exec_lsp;
 mod exec_plan;
 mod exec_shell;
 mod exec_support;
@@ -19,7 +20,7 @@ mod observation;
 mod schema;
 
 pub(crate) use catalog::normalize_builtin_tool_args;
-pub use catalog::{builtin_tools_enabled, tool_side_effects};
+pub use catalog::{builtin_tools_enabled, builtin_tools_enabled_with_lsp, tool_side_effects};
 pub use envelope::{
     envelope_to_message, invalid_args_tool_message, to_tool_result_envelope,
     to_tool_result_envelope_with_error,
@@ -53,6 +54,18 @@ impl ToolArgsStrict {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspToolProvider {
+    Rust,
+    Typescript,
+}
+
+#[derive(Debug, Clone)]
+pub struct LspToolRuntime {
+    pub provider: LspToolProvider,
+    pub command: Option<PathBuf>,
+}
+
 #[derive(Clone)]
 pub struct ToolRuntime {
     pub workdir: PathBuf,
@@ -63,6 +76,7 @@ pub struct ToolRuntime {
     pub max_read_bytes: usize,
     pub unsafe_bypass_allow_flags: bool,
     pub tool_args_strict: ToolArgsStrict,
+    pub lsp: Option<LspToolRuntime>,
     pub exec_target_kind: ExecTargetKind,
     pub exec_target: Arc<dyn ExecTarget>,
 }
@@ -144,6 +158,8 @@ pub enum ToolErrorCode {
     ShellExecNonZeroExit,
     ShellExecTimeout,
     ShellExecTimeoutUnsupported,
+    LspUnavailable,
+    LspRequestFailed,
 }
 
 impl ToolErrorCode {
@@ -164,6 +180,8 @@ impl ToolErrorCode {
             Self::ShellExecNonZeroExit => "shell_exec_non_zero_exit",
             Self::ShellExecTimeout => "shell_exec_timeout",
             Self::ShellExecTimeoutUnsupported => "shell_exec_timeout_unsupported",
+            Self::LspUnavailable => "lsp_unavailable",
+            Self::LspRequestFailed => "lsp_request_failed",
         }
     }
 }
@@ -216,6 +234,11 @@ pub async fn execute_tool_streaming(
         "read_file" => exec_fs::run_read_file(rt, &normalized_args).await,
         "glob" => exec_fs::run_glob(rt, &normalized_args).await,
         "grep" => exec_fs::run_grep(rt, &normalized_args).await,
+        "lsp.diagnostics"
+        | "lsp.document_symbols"
+        | "lsp.goto_definition"
+        | "lsp.find_references"
+        | "lsp.hover" => exec_lsp::run_lsp_tool(rt, &tc.name, &normalized_args).await,
         "update_plan" => exec_plan::run_update_plan(rt, &normalized_args).await,
         "shell" => exec_shell::run_shell(rt, &normalized_args, shell_stream).await,
         "write_file" => exec_write::run_write_file(rt, &normalized_args).await,

@@ -5,7 +5,7 @@ use crate::mcp::registry::McpRegistry;
 use crate::providers::ModelProvider;
 use crate::qualification;
 use crate::store;
-use crate::tools::builtin_tools_enabled;
+use crate::tools::builtin_tools_enabled_with_lsp;
 use crate::trust::policy::Policy;
 use crate::types;
 use crate::RunArgs;
@@ -52,9 +52,10 @@ pub(crate) async fn prepare_tools_and_qualification<P: ModelProvider>(
         mcp_registry,
         policy_for_exposure,
     } = input;
-    let mut all_tools = builtin_tools_enabled(
+    let mut all_tools = builtin_tools_enabled_with_lsp(
         args.enable_write_tools,
         args.allow_shell || args.allow_shell_in_workdir,
+        args.lsp_provider.is_some(),
     );
     let mut mcp_tool_snapshot: Vec<store::McpToolSnapshotEntry> = Vec::new();
     if let Some(reg) = mcp_registry {
