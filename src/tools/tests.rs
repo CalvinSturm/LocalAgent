@@ -4,8 +4,11 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use super::{
-    builtin_tools_enabled, execute_tool, tool_side_effects, validate_builtin_tool_args,
-    validate_schema_args, ToolArgsStrict, ToolRuntime,
+    builtin_tools_enabled, execute_tool, load_tool_result_artifact_manifest,
+    resolve_tool_result_artifact_ref, to_model_observation_message, to_tool_result_envelope,
+    to_tool_result_envelope_with_error, tool_side_effects, validate_builtin_tool_args,
+    validate_schema_args, ToolArgsStrict, ToolErrorCode, ToolErrorDetail, ToolResultContentRef,
+    ToolResultMeta, ToolRuntime,
 };
 use crate::target::{ExecTargetKind, HostTarget};
 use crate::types::{SideEffects, ToolCall};
@@ -154,6 +157,247 @@ async fn update_plan_returns_compact_side_effect_free_result() {
     assert_eq!(inner["completed"], json!(1));
     assert_eq!(inner["pending"], json!(1));
     assert_eq!(inner["in_progress"], json!("Implement update_plan"));
+}
+
+#[test]
+fn model_observation_for_shell_failure_preserves_tail_without_raw_dump() {
+    let tc = ToolCall {
+        id: "tc_shell_obs".to_string(),
+        name: "shell".to_string(),
+        arguments: json!({"cmd":"cargo","args":["test"],"cwd":"crates/demo"}),
+    };
+    let stdout = format!(
+        "compile start\n{}\nnot ok 7 - parser trims whitespace\nExpected 7 but got NaN\n",
+        "middle noise\n".repeat(800)
+    );
+    let stderr = format!(
+        "{}error: test failed, to rerun pass --lib\n",
+        "stderr noise\n".repeat(500)
+    );
+    let raw_inner = json!({
+        "status": 1,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": false,
+        "stderr_truncated": false
+    })
+    .to_string();
+    let raw_msg = super::envelope_to_message(to_tool_result_envelope_with_error(
+        &tc,
+        "builtin",
+        false,
+        raw_inner,
+        false,
+        Some(ToolErrorDetail {
+            code: ToolErrorCode::ShellExecNonZeroExit,
+            message: "Shell command exited with non-zero status: 1.".to_string(),
+            expected_schema: None,
+            received_args: None,
+            minimal_example: None,
+            available_tools: None,
+        }),
+        ToolResultMeta {
+            side_effects: SideEffects::ShellExec,
+            duration_ms: Some(123),
+            bytes: Some(12_000),
+            exit_code: Some(1),
+            stderr_truncated: Some(false),
+            stdout_truncated: Some(false),
+            source: "builtin".to_string(),
+            execution_target: "host".to_string(),
+            warnings: None,
+            warnings_max: None,
+            warnings_truncated: None,
+            docker: None,
+        },
+    ));
+
+    let artifact_dir = tempdir().expect("artifact dir");
+    let raw_content = raw_msg.content.as_deref().expect("raw content").to_string();
+    let compact = to_model_observation_message(
+        &raw_msg,
+        &tc,
+        Path::new("C:/repo"),
+        Some(artifact_dir.path()),
+    );
+    let envelope: Value = serde_json::from_str(&compact.content.unwrap()).expect("envelope");
+    let observation = envelope.get("observation").expect("observation");
+    assert_eq!(
+        observation.get("schema_version").and_then(Value::as_str),
+        Some("openagent.observation.v1")
+    );
+    assert_eq!(
+        observation.get("exit_code").and_then(Value::as_i64),
+        Some(1)
+    );
+    assert_eq!(
+        observation.get("duration_ms").and_then(Value::as_u64),
+        Some(123)
+    );
+    assert!(observation
+        .get("stdout_tail")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("Expected 7 but got NaN"));
+    let raw_result_ref = observation.get("raw_result_ref").expect("raw_result_ref");
+    assert_eq!(
+        raw_result_ref.get("kind").and_then(Value::as_str),
+        Some("run_artifact_path")
+    );
+    let raw_result_path = raw_result_ref
+        .get("path")
+        .and_then(Value::as_str)
+        .expect("raw result path");
+    assert_eq!(
+        std::fs::read_to_string(raw_result_path).expect("raw artifact"),
+        raw_content
+    );
+    let manifest =
+        load_tool_result_artifact_manifest(artifact_dir.path()).expect("artifact manifest");
+    assert_eq!(
+        manifest.schema_version,
+        "openagent.tool_result_artifacts_manifest.v1"
+    );
+    let raw_entry = manifest
+        .artifacts
+        .iter()
+        .find(|entry| entry.label == "raw_result")
+        .expect("raw manifest entry");
+    assert_eq!(raw_entry.sequence, 1);
+    assert_eq!(raw_entry.tool_name, "shell");
+    assert_eq!(raw_entry.tool_call_id, "tc_shell_obs");
+    assert_eq!(raw_entry.content_kind, "application/json");
+    assert_eq!(raw_entry.size_bytes, raw_content.len() as u64);
+    assert_eq!(raw_entry.artifact_ref.path, raw_result_path);
+    assert_eq!(raw_entry.artifact_ref.bytes, raw_content.len() as u64);
+    assert_eq!(raw_entry.sha16.len(), 16);
+    assert_eq!(raw_entry.sha256.len(), 64);
+    assert!(observation.get("stdout_ref").is_some());
+    let stderr_ref = observation.get("stderr_ref").expect("stderr_ref");
+    let stderr_path = stderr_ref
+        .get("path")
+        .and_then(Value::as_str)
+        .expect("stderr path");
+    assert!(std::fs::read_to_string(stderr_path)
+        .expect("stderr artifact")
+        .contains("error: test failed"));
+    assert_eq!(
+        observation.get("truncated").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        observation.get("truncation_policy").and_then(Value::as_str),
+        Some("head_1200_tail_4000")
+    );
+    assert!(!envelope
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("middle noise\nmiddle noise\nmiddle noise"));
+    assert_eq!(
+        observation.get("failure_class").and_then(Value::as_str),
+        Some("E_NONZERO_EXIT")
+    );
+    assert!(observation
+        .get("suggested_next_action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("rerun the command"));
+}
+
+#[test]
+fn tool_result_artifact_resolver_accepts_manifested_ref_and_rejects_bad_refs() {
+    let tc = ToolCall {
+        id: "tc_resolver".to_string(),
+        name: "read_file".to_string(),
+        arguments: json!({"path":"src/main.rs"}),
+    };
+    let raw_msg = super::envelope_to_message(to_tool_result_envelope(
+        &tc,
+        "builtin",
+        true,
+        json!({"path":"src/main.rs","content":"hello"}).to_string(),
+        false,
+        ToolResultMeta {
+            side_effects: SideEffects::FilesystemRead,
+            duration_ms: Some(3),
+            bytes: Some(5),
+            exit_code: None,
+            stderr_truncated: None,
+            stdout_truncated: None,
+            source: "builtin".to_string(),
+            execution_target: "host".to_string(),
+            warnings: None,
+            warnings_max: None,
+            warnings_truncated: None,
+            docker: None,
+        },
+    ));
+    let artifact_dir = tempdir().expect("artifact dir");
+    let compact =
+        to_model_observation_message(&raw_msg, &tc, Path::new("."), Some(artifact_dir.path()));
+    let envelope: Value = serde_json::from_str(&compact.content.unwrap()).expect("envelope");
+    let raw_ref: ToolResultContentRef =
+        serde_json::from_value(envelope["observation"]["raw_result_ref"].clone()).expect("raw ref");
+
+    let resolved =
+        resolve_tool_result_artifact_ref(artifact_dir.path(), &raw_ref).expect("resolve ref");
+    assert_eq!(
+        std::fs::read_to_string(resolved).expect("artifact"),
+        raw_msg.content.unwrap()
+    );
+
+    let mut unknown_ref = raw_ref.clone();
+    unknown_ref.path = artifact_dir
+        .path()
+        .join("missing-artifact.json")
+        .to_string_lossy()
+        .to_string();
+    assert!(resolve_tool_result_artifact_ref(artifact_dir.path(), &unknown_ref).is_err());
+
+    let mut malicious_ref = raw_ref;
+    malicious_ref.path = "../outside.json".to_string();
+    assert!(resolve_tool_result_artifact_ref(artifact_dir.path(), &malicious_ref).is_err());
+}
+
+#[test]
+fn model_observation_for_write_reports_changed_file() {
+    let tc = ToolCall {
+        id: "tc_edit_obs".to_string(),
+        name: "edit".to_string(),
+        arguments: json!({"path":"src/main.rs","old_string":"old","new_string":"new"}),
+    };
+    let raw_msg = super::envelope_to_message(to_tool_result_envelope(
+        &tc,
+        "builtin",
+        true,
+        json!({"path":"src/main.rs","changed":true,"bytes_written":42}).to_string(),
+        false,
+        ToolResultMeta {
+            side_effects: SideEffects::FilesystemWrite,
+            duration_ms: Some(7),
+            bytes: Some(42),
+            exit_code: None,
+            stderr_truncated: None,
+            stdout_truncated: None,
+            source: "builtin".to_string(),
+            execution_target: "host".to_string(),
+            warnings: None,
+            warnings_max: None,
+            warnings_truncated: None,
+            docker: None,
+        },
+    ));
+
+    let compact = to_model_observation_message(&raw_msg, &tc, Path::new("."), None);
+    let envelope: Value = serde_json::from_str(&compact.content.unwrap()).expect("envelope");
+    let changed = envelope
+        .get("observation")
+        .and_then(|o| o.get("changed_files"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(changed, vec![json!("src/main.rs")]);
 }
 
 #[test]

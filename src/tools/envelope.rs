@@ -66,6 +66,7 @@ pub fn invalid_args_tool_message(
         Some(invalid_args_detail(&tc.name, &tc.arguments, err)),
         ToolResultMeta {
             side_effects: tool_side_effects(&tc.name),
+            duration_ms: None,
             bytes: None,
             exit_code: None,
             stderr_truncated: None,

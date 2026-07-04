@@ -268,6 +268,7 @@ async fn run_exact_replace(rt: &ToolRuntime, args: &Value, tool_name: &str) -> T
         error: None,
         meta: ToolResultMeta {
             side_effects: SideEffects::FilesystemWrite,
+            duration_ms: None,
             bytes: Some(replaced.len() as u64),
             exit_code: None,
             stderr_truncated: None,

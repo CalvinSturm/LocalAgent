@@ -34,19 +34,40 @@ pub(crate) async fn handle_replay_command(
     paths: &store::StatePaths,
 ) -> anyhow::Result<()> {
     match &args.command {
+        Some(ReplaySubcommand::Artifacts { run_id, json }) => {
+            let record = load_replay_run_record(paths, run_id)?;
+            let list = store::list_replay_artifacts(&paths.state_dir, &record)?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                print!("{}", store::render_replay_artifact_list(&list));
+            }
+            Ok(())
+        }
+        Some(ReplaySubcommand::Artifact {
+            run_id,
+            artifact_ref,
+            path_only,
+            json,
+        }) => {
+            let record = load_replay_run_record(paths, run_id)?;
+            let inspection =
+                store::inspect_replay_artifact(&paths.state_dir, &record, artifact_ref)?;
+            if *path_only {
+                println!("{}", inspection.summary.resolved_path);
+            } else if *json {
+                println!("{}", serde_json::to_string_pretty(&inspection)?);
+            } else {
+                print!("{}", store::render_replay_artifact_inspection(&inspection));
+            }
+            Ok(())
+        }
         Some(ReplaySubcommand::Verify {
             run_id,
             strict,
             json,
         }) => {
-            let record = store::load_run_record(&paths.state_dir, run_id).map_err(|e| {
-                anyhow!(
-                    "failed to load run '{}': {}. runs dir: {}",
-                    run_id,
-                    e,
-                    paths.runs_dir.display()
-                )
-            })?;
+            let record = load_replay_run_record(paths, run_id)?;
 
             let report = verify_run_record(&record, *strict)?;
 
@@ -93,6 +114,20 @@ pub(crate) async fn handle_replay_command(
             }
         }
     }
+}
+
+fn load_replay_run_record(
+    paths: &store::StatePaths,
+    run_id: &str,
+) -> anyhow::Result<store::RunRecord> {
+    store::load_run_record(&paths.state_dir, run_id).map_err(|e| {
+        anyhow!(
+            "failed to load run '{}': {}. runs dir: {}",
+            run_id,
+            e,
+            paths.runs_dir.display()
+        )
+    })
 }
 
 async fn resume_from_runtime_checkpoint(

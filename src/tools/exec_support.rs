@@ -52,6 +52,7 @@ pub(super) fn target_to_exec(side_effects: SideEffects, out: TargetResult) -> To
         error: shell_error,
         meta: ToolResultMeta {
             side_effects,
+            duration_ms: None,
             bytes: out.bytes,
             exit_code: out.exit_code,
             stderr_truncated: out.stderr_truncated,
@@ -72,6 +73,7 @@ pub(super) fn target_to_exec(side_effects: SideEffects, out: TargetResult) -> To
 pub(super) fn base_meta(rt: &ToolRuntime, side_effects: SideEffects) -> ToolResultMeta {
     ToolResultMeta {
         side_effects,
+        duration_ms: None,
         bytes: None,
         exit_code: None,
         stderr_truncated: None,

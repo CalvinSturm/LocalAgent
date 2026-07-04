@@ -15,6 +15,7 @@ mod exec_plan;
 mod exec_shell;
 mod exec_support;
 mod exec_write;
+mod observation;
 mod schema;
 
 pub(crate) use catalog::normalize_builtin_tool_args;
@@ -26,6 +27,15 @@ pub use envelope::{
 pub(crate) use exec_plan::parse_update_plan_args;
 pub use exec_plan::{PlanItem, PlanStatus};
 use exec_support::ToolExecution;
+#[cfg(test)]
+pub(crate) use observation::to_model_observation_message;
+pub(crate) use observation::to_model_observation_message_with_warnings;
+#[allow(unused_imports)]
+pub use observation::{
+    load_tool_result_artifact_manifest, resolve_tool_result_artifact_ref,
+    ToolResultArtifactManifestEntryV1, ToolResultArtifactManifestV1,
+    ToolResultArtifactResolveError,
+};
 pub use schema::{
     compact_builtin_schema, invalid_args_detail, minimal_builtin_example,
     sorted_builtin_tool_names, validate_builtin_tool_args, validate_schema_args,
@@ -61,6 +71,8 @@ pub struct ToolRuntime {
 pub struct ToolResultMeta {
     pub side_effects: SideEffects,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -88,7 +100,7 @@ pub struct ToolWarningDetail {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolResultContentRef {
     pub kind: String,
     pub path: String,
@@ -183,10 +195,11 @@ pub async fn execute_tool_streaming(
     tc: &ToolCall,
     shell_stream: Option<crate::target::ShellOutputTx>,
 ) -> Message {
+    let started = std::time::Instant::now();
     let normalized_args = catalog::normalize_builtin_tool_args(&tc.name, &tc.arguments);
     let side_effects = tool_side_effects(&tc.name);
     if let Err(e) = validate_builtin_tool_args(&tc.name, &normalized_args, rt.tool_args_strict) {
-        return invalid_args_tool_message(
+        let mut message = invalid_args_tool_message(
             tc,
             "builtin",
             &e,
@@ -195,8 +208,10 @@ pub async fn execute_tool_streaming(
                 ExecTargetKind::Docker => "docker".to_string(),
             },
         );
+        observation::set_tool_result_duration(&mut message, started.elapsed().as_millis() as u64);
+        return message;
     }
-    let exec = match tc.name.as_str() {
+    let mut exec = match tc.name.as_str() {
         "list_dir" => exec_fs::run_list_dir(rt, &normalized_args).await,
         "read_file" => exec_fs::run_read_file(rt, &normalized_args).await,
         "glob" => exec_fs::run_glob(rt, &normalized_args).await,
@@ -225,6 +240,7 @@ pub async fn execute_tool_streaming(
             }),
             meta: ToolResultMeta {
                 side_effects,
+                duration_ms: None,
                 bytes: None,
                 exit_code: None,
                 stderr_truncated: None,
@@ -241,6 +257,7 @@ pub async fn execute_tool_streaming(
             },
         },
     };
+    exec.meta.duration_ms = Some(started.elapsed().as_millis() as u64);
     envelope_to_message(to_tool_result_envelope_with_error(
         tc,
         "builtin",

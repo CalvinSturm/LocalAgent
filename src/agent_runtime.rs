@@ -336,6 +336,7 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
         omit_tools_field_when_empty: false,
         plan_tool_enforcement: effective_plan_tool_enforcement,
         mcp_pin_enforcement: args.mcp_pin_enforcement,
+        raw_tool_result_dir: Some(paths.runs_dir.join(format!("{run_id}.tool-results"))),
         plan_step_constraints,
         current_plan: Vec::new(),
         tool_call_budget: ToolCallBudget {

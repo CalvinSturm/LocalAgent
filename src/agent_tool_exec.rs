@@ -71,6 +71,7 @@ pub(crate) async fn run_tool_once(
                         false,
                         ToolResultMeta {
                             side_effects: tool_side_effects(&tc.name),
+                            duration_ms: None,
                             bytes: None,
                             exit_code: None,
                             stderr_truncated: None,
@@ -95,6 +96,7 @@ pub(crate) async fn run_tool_once(
                     false,
                     ToolResultMeta {
                         side_effects: tool_side_effects(&tc.name),
+                        duration_ms: None,
                         bytes: None,
                         exit_code: None,
                         stderr_truncated: None,
