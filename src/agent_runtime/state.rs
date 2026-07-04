@@ -50,6 +50,8 @@ pub struct RetryState {
     pub blocked_validation_failure_repair_count: u32,
     #[serde(default)]
     pub blocked_post_validation_final_answer_count: u32,
+    #[serde(default)]
+    pub validation_repair_turn_count: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +70,8 @@ pub struct ToolProtocolState {
 pub struct ValidationState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) inferred_validator: Option<crate::agent::validators::ValidatorCommand>,
     #[serde(default)]
     pub satisfied: bool,
     #[serde(default)]

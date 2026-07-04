@@ -298,6 +298,7 @@ pub(super) fn runtime_state_checkpoint_for_outcome(
         tool_protocol_state: crate::agent_runtime::state::ToolProtocolState::default(),
         validation_state: ValidationState {
             required_command: required_command.clone(),
+            inferred_validator: None,
             satisfied: crate::agent::required_validation_command_satisfied_from_facts(
                 required_command.as_deref(),
                 &tool_fact_envelopes
@@ -1006,6 +1007,7 @@ mod tests {
             tool_protocol_state: ToolProtocolState::default(),
             validation_state: ValidationState {
                 required_command: Some("cargo test".to_string()),
+                inferred_validator: None,
                 satisfied: true,
                 repair_mode: false,
                 exact_final_answer_required: false,
@@ -1032,6 +1034,7 @@ mod tests {
             tool_protocol_state: ToolProtocolState::default(),
             validation_state: ValidationState {
                 required_command: Some("cargo test".to_string()),
+                inferred_validator: None,
                 satisfied: false,
                 repair_mode: false,
                 exact_final_answer_required: false,

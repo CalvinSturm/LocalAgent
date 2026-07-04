@@ -17,6 +17,9 @@ pub(crate) enum PostToolPhaseRefreshEffect {
         transition: RuntimePhaseTransitionDecision,
         reason: String,
     },
+    StopAfterRepairBudgetExhausted {
+        reason: String,
+    },
 }
 
 pub(crate) struct VerifiedWriteFollowOnUpdate {
@@ -136,6 +139,18 @@ pub(crate) fn refresh_phase_state_from_tool_facts(
     match decide_validation_phase_transition(&validation_facts, successful_write_tool_ok_this_step)
     {
         ValidationPhaseTransitionDecision::EnterRepair => {
+            let budget = crate::agent::validators::RepairBudget::one_repair(
+                runtime_checkpoint.retry_state.validation_repair_turn_count,
+            );
+            if !budget.can_authorize_repair() {
+                return PostToolPhaseRefreshEffect::StopAfterRepairBudgetExhausted {
+                    reason: "validation failed after the single allowed repair turn".to_string(),
+                };
+            }
+            runtime_checkpoint.retry_state.validation_repair_turn_count = runtime_checkpoint
+                .retry_state
+                .validation_repair_turn_count
+                .saturating_add(1);
             runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Executing;
             runtime_checkpoint.validation_state.repair_mode = true;
             runtime_checkpoint.validation_state.collecting_final_answer = false;
@@ -171,7 +186,7 @@ pub(crate) fn refresh_phase_state_from_tool_facts(
 }
 
 pub(crate) fn apply_verified_write_follow_on(
-    user_prompt: &str,
+    _user_prompt: &str,
     runtime_checkpoint: &mut crate::agent_runtime::state::RunCheckpointV1,
     result: &VerifiedWriteResult,
 ) -> Option<VerifiedWriteFollowOnUpdate> {
@@ -199,24 +214,18 @@ pub(crate) fn apply_verified_write_follow_on(
                 developer_message: message.clone(),
             })
         }
-        VerifiedWriteResult::StartRequiredValidationPhase(message) => {
+        VerifiedWriteResult::StartRequiredValidationPhase(follow_on) => {
             runtime_checkpoint.retry_state.post_write_guard_retry_count = 0;
             runtime_checkpoint
                 .retry_state
                 .blocked_runtime_completion_count = 0;
             runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Validating;
-            if runtime_checkpoint
-                .validation_state
-                .required_command
-                .is_none()
-            {
-                runtime_checkpoint.validation_state.required_command =
-                    crate::agent_impl_guard::prompt_required_validation_command(user_prompt)
-                        .map(str::to_string);
-            }
+            runtime_checkpoint.validation_state.required_command = Some(follow_on.command.clone());
+            runtime_checkpoint.validation_state.inferred_validator =
+                follow_on.inferred_validator.clone();
             Some(VerifiedWriteFollowOnUpdate {
                 control: PhaseLoopControl::ContinueAgentStep,
-                developer_message: message.clone(),
+                developer_message: follow_on.developer_message.clone(),
             })
         }
         VerifiedWriteResult::Done(_) => None,

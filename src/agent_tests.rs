@@ -1244,6 +1244,185 @@ impl crate::events::EventSink for EventCaptureSink {
     }
 }
 
+struct DenyShellGate;
+
+impl crate::gate::ToolGate for DenyShellGate {
+    fn decide(
+        &mut self,
+        _ctx: &GateContext,
+        call: &crate::types::ToolCall,
+    ) -> crate::gate::GateDecision {
+        if call.name == "shell" {
+            return crate::gate::GateDecision::Deny {
+                reason: "validator shell denied by test policy".to_string(),
+                approval_key: None,
+                source: Some("test_policy".to_string()),
+                taint_enforced: false,
+                escalated: false,
+                escalation_reason: None,
+            };
+        }
+        crate::gate::GateDecision::Allow {
+            approval_id: None,
+            approval_key: None,
+            reason: None,
+            source: None,
+            taint_enforced: false,
+            escalated: false,
+            escalation_reason: None,
+        }
+    }
+
+    fn record(&mut self, _event: crate::gate::GateEvent) {}
+}
+
+fn rust_validation_tool_defs(include_shell: bool) -> Vec<crate::types::ToolDef> {
+    let mut tools = vec![
+        crate::types::ToolDef {
+            name: "read_file".to_string(),
+            description: "d".to_string(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "properties":{"path":{"type":"string"}},
+                "required":["path"]
+            }),
+            side_effects: crate::types::SideEffects::FilesystemRead,
+        },
+        crate::types::ToolDef {
+            name: "apply_patch".to_string(),
+            description: "d".to_string(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "properties":{"path":{"type":"string"},"patch":{"type":"string"}},
+                "required":["path","patch"]
+            }),
+            side_effects: crate::types::SideEffects::FilesystemWrite,
+        },
+        crate::types::ToolDef {
+            name: "edit".to_string(),
+            description: "d".to_string(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "old_string":{"type":"string"},
+                    "new_string":{"type":"string"}
+                },
+                "required":["path","old_string","new_string"]
+            }),
+            side_effects: crate::types::SideEffects::FilesystemWrite,
+        },
+    ];
+    if include_shell {
+        tools.push(crate::types::ToolDef {
+            name: "shell".to_string(),
+            description: "d".to_string(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "properties":{"command":{"type":"string"}},
+                "required":["command"]
+            }),
+            side_effects: crate::types::SideEffects::ShellExec,
+        });
+    }
+    tools
+}
+
+fn coding_agent<P: ModelProvider + Send + Sync + 'static>(
+    provider: P,
+    workdir: std::path::PathBuf,
+    exec_target: Arc<dyn ExecTarget>,
+    allow_shell: bool,
+    include_shell_tool: bool,
+    events: Arc<Mutex<Vec<crate::events::Event>>>,
+    max_steps: usize,
+) -> Agent<P> {
+    Agent {
+        provider,
+        model: "m".to_string(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        tools: rust_validation_tool_defs(include_shell_tool),
+        max_steps,
+        tool_rt: ToolRuntime {
+            workdir: workdir.clone(),
+            allow_shell,
+            allow_shell_in_workdir_only: false,
+            allow_write: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            unsafe_bypass_allow_flags: false,
+            tool_args_strict: ToolArgsStrict::On,
+            lsp: None,
+            exec_target_kind: ExecTargetKind::Host,
+            exec_target,
+        },
+        gate: Box::new(NoGate::new()),
+        gate_ctx: GateContext {
+            workdir,
+            allow_shell,
+            allow_write: true,
+            approval_mode: ApprovalMode::Interrupt,
+            auto_approve_scope: AutoApproveScope::Run,
+            unsafe_mode: false,
+            unsafe_bypass_allow_flags: false,
+            run_id: None,
+            enable_write_tools: true,
+            max_tool_output_bytes: 200_000,
+            max_read_bytes: 200_000,
+            provider: ProviderKind::Ollama,
+            model: "m".to_string(),
+            exec_target: ExecTargetKind::Host,
+            approval_key_version: crate::gate::ApprovalKeyVersion::V1,
+            tool_schema_hashes: std::collections::BTreeMap::new(),
+            hooks_config_hash_hex: None,
+            planner_hash_hex: None,
+            taint_enabled: false,
+            taint_mode: crate::taint::TaintMode::Propagate,
+            taint_overall: crate::taint::TaintLevel::Clean,
+            taint_sources: Vec::new(),
+        },
+        validation_requirement: None,
+        final_answer_mode: None,
+        mcp_registry: None,
+        stream: false,
+        event_sink: Some(Box::new(EventCaptureSink { events })),
+        compaction_settings: CompactionSettings {
+            max_context_chars: 0,
+            mode: CompactionMode::Off,
+            keep_last: 20,
+            tool_result_persist: ToolResultPersist::Digest,
+        },
+        hooks: HookManager::build(HookRuntimeConfig {
+            mode: HooksMode::Off,
+            config_path: std::env::temp_dir().join("unused_hooks.yaml"),
+            strict: false,
+            timeout_ms: 1000,
+            max_stdout_bytes: 200_000,
+        })
+        .expect("hooks"),
+        policy_loaded: None,
+        policy_for_taint: None,
+        taint_toggle: crate::taint::TaintToggle::Off,
+        taint_mode: crate::taint::TaintMode::Propagate,
+        taint_digest_bytes: 4096,
+        run_id_override: None,
+        omit_tools_field_when_empty: false,
+        plan_tool_enforcement: PlanToolEnforcementMode::Off,
+        mcp_pin_enforcement: McpPinEnforcementMode::Hard,
+        raw_tool_result_dir: None,
+        plan_step_constraints: Vec::new(),
+        current_plan: Vec::new(),
+        tool_call_budget: ToolCallBudget::default(),
+        mcp_runtime_trace: Vec::new(),
+        operator_queue: PendingMessageQueue::default(),
+        operator_queue_limits: QueueLimits::default(),
+        operator_queue_rx: None,
+    }
+}
+
 struct ToolCallProvider {
     calls: Arc<AtomicUsize>,
 }
@@ -1487,6 +1666,10 @@ struct ReadPatchThenExactThenPostValidationToolThenExactProvider {
 struct ReadPatchThenExactThenBadShellRetryThenFixThenShellThenExactProvider {
     calls: Arc<AtomicUsize>,
     exact_answer: &'static str,
+}
+
+struct ReadPatchThenDoneThenEditThenDoneProvider {
+    calls: Arc<AtomicUsize>,
 }
 
 struct ReadThenRepeatedBadApplyPatchThenEditThenReadThenDoneProvider {
@@ -2204,6 +2387,78 @@ impl ModelProvider for ReadPatchThenShellThenExactProvider {
                 assistant: Message {
                     role: Role::Assistant,
                     content: Some(self.exact_answer.to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelProvider for ReadPatchThenDoneThenEditThenDoneProvider {
+    async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        match n {
+            0 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_read".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path":"main.rs"}),
+                }],
+                usage: None,
+            }),
+            1 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_patch".to_string(),
+                    name: "apply_patch".to_string(),
+                    arguments: serde_json::json!({
+                        "path":"main.rs",
+                        "patch":"@@ -1,3 +1,3 @@\n fn answer() -> i32 {\n-    return 1;\n+    return 2;\n }\n"
+                    }),
+                }],
+                usage: None,
+            }),
+            3 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_repair".to_string(),
+                    name: "edit".to_string(),
+                    arguments: serde_json::json!({
+                        "path":"main.rs",
+                        "old_string":"return 2;",
+                        "new_string":"return 3;"
+                    }),
+                }],
+                usage: None,
+            }),
+            _ => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("done".to_string()),
                     tool_call_id: None,
                     tool_name: None,
                     tool_calls: None,
@@ -2957,6 +3212,11 @@ struct FailThenSucceedShellExecTarget {
     shell_calls: Arc<AtomicUsize>,
 }
 
+#[derive(Clone, Default)]
+struct AlwaysFailShellExecTarget {
+    host: HostTarget,
+}
+
 #[async_trait]
 impl ExecTarget for ShellSuccessExecTarget {
     fn kind(&self) -> ExecTargetKind {
@@ -3034,6 +3294,47 @@ impl ExecTarget for FailThenSucceedShellExecTarget {
                 execution_target: ExecTargetKind::Host,
                 docker: None,
             }
+        }
+    }
+
+    async fn read_file(&self, req: ReadReq) -> TargetResult {
+        self.host.read_file(req).await
+    }
+
+    async fn list_dir(&self, req: ListReq) -> TargetResult {
+        self.host.list_dir(req).await
+    }
+
+    async fn write_file(&self, req: WriteReq) -> TargetResult {
+        self.host.write_file(req).await
+    }
+
+    async fn apply_patch(&self, req: PatchReq) -> TargetResult {
+        self.host.apply_patch(req).await
+    }
+}
+
+#[async_trait]
+impl ExecTarget for AlwaysFailShellExecTarget {
+    fn kind(&self) -> ExecTargetKind {
+        ExecTargetKind::Host
+    }
+
+    fn describe(&self) -> TargetDescribe {
+        self.host.describe()
+    }
+
+    async fn exec_shell(&self, _req: ShellReq) -> TargetResult {
+        TargetResult {
+            ok: false,
+            content: "tests failed\nerror: inferred validator failed".to_string(),
+            truncated: false,
+            bytes: None,
+            exit_code: Some(1),
+            stderr_truncated: None,
+            stdout_truncated: None,
+            execution_target: ExecTargetKind::Host,
+            docker: None,
         }
     }
 
@@ -5242,6 +5543,298 @@ async fn runtime_post_write_missing_closeout_gets_one_bounded_final_answer_turn(
         follow_on_blocked,
         "expected post-write final-answer boundary event"
     );
+}
+
+#[tokio::test]
+async fn inferred_rust_validator_runs_after_rust_write_and_success_stops() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let mut agent = coding_agent(
+        ReadPatchThenDoneProvider {
+            calls: calls.clone(),
+        },
+        tmp.path().to_path_buf(),
+        Arc::new(ShellSuccessExecTarget::default()),
+        true,
+        true,
+        events.clone(),
+        6,
+    );
+    let out = agent
+        .run(
+            "Edit main.rs to return 2.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    assert_eq!(
+        out.final_output,
+        "Validation passed: `cargo fmt --check && cargo test && cargo clippy -- -D warnings`."
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "validation success should stop without a final-answer model turn"
+    );
+    let evs = events.lock().expect("lock");
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::StepBlocked)
+            && e.data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "post_write_validation_only_phase")
+    }));
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::ToolDecision)
+            && e.data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "shell")
+            && e.data
+                .get("decision")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "allow")
+    }));
+}
+
+#[tokio::test]
+async fn inferred_rust_validator_reports_shell_unavailable_without_bypass() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let mut agent = coding_agent(
+        ReadPatchThenDoneProvider {
+            calls: calls.clone(),
+        },
+        tmp.path().to_path_buf(),
+        Arc::new(HostTarget),
+        false,
+        false,
+        events.clone(),
+        6,
+    );
+    let out = agent
+        .run(
+            "Edit main.rs to return 2.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    assert!(out.error.is_none(), "{out:?}");
+    let evs = events.lock().expect("lock");
+    assert!(!evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::ToolExecStart)
+            && e.data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "shell")
+    }));
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::Error)
+            && e.data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "inferred_validator_shell_unavailable")
+            && e.data
+                .get("non_fatal")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+    }));
+}
+
+#[tokio::test]
+async fn inferred_rust_validator_permission_denial_uses_gate_path() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let mut agent = coding_agent(
+        ReadPatchThenDoneProvider {
+            calls: calls.clone(),
+        },
+        tmp.path().to_path_buf(),
+        Arc::new(ShellSuccessExecTarget::default()),
+        true,
+        true,
+        events.clone(),
+        6,
+    );
+    agent.gate = Box::new(DenyShellGate);
+    let out = agent
+        .run(
+            "Edit main.rs to return 2.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    assert!(
+        matches!(out.exit_reason, AgentExitReason::Denied),
+        "{out:?}"
+    );
+    assert!(out
+        .final_output
+        .contains("validator shell denied by test policy"));
+    let evs = events.lock().expect("lock");
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::ToolDecision)
+            && e.data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "shell")
+            && e.data
+                .get("decision")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "deny")
+            && e.data
+                .get("source")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "test_policy")
+    }));
+}
+
+#[tokio::test]
+async fn inferred_rust_validator_failure_allows_one_repair_then_passes() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let mut agent = coding_agent(
+        ReadPatchThenDoneThenEditThenDoneProvider {
+            calls: calls.clone(),
+        },
+        tmp.path().to_path_buf(),
+        Arc::new(FailThenSucceedShellExecTarget::default()),
+        true,
+        true,
+        events.clone(),
+        8,
+    );
+    let out = agent
+        .run(
+            "Edit main.rs to return 2.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    let main = tokio::fs::read_to_string(tmp.path().join("main.rs"))
+        .await
+        .expect("read main");
+    assert!(main.contains("return 3;"), "{main}");
+    let evs = events.lock().expect("lock");
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::CompletionBlocked)
+            && e.data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.contains("validation failed"))
+    }));
+}
+
+#[tokio::test]
+async fn inferred_rust_validator_second_failure_stops_with_evidence() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let mut agent = coding_agent(
+        ReadPatchThenDoneThenEditThenDoneProvider {
+            calls: calls.clone(),
+        },
+        tmp.path().to_path_buf(),
+        Arc::new(AlwaysFailShellExecTarget::default()),
+        true,
+        true,
+        events.clone(),
+        8,
+    );
+    let out = agent
+        .run(
+            "Edit main.rs to return 2.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    assert!(matches!(out.exit_reason, AgentExitReason::PlannerError));
+    assert!(out
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("single allowed repair turn"));
+    assert!(out.messages.iter().any(|m| {
+        matches!(m.role, Role::Tool)
+            && m.content
+                .as_deref()
+                .is_some_and(|content| content.contains("openagent.observation.v1"))
+    }));
+    let evs = events.lock().expect("lock");
+    assert!(evs.iter().any(|e| {
+        matches!(e.kind, crate::events::EventKind::Error)
+            && e.data
+                .get("failure_class")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "E_RUNTIME_VALIDATION_REPAIR_EXHAUSTED")
+    }));
 }
 
 #[tokio::test]

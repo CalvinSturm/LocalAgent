@@ -111,6 +111,7 @@ pub(crate) fn completion_blocked_effect_from_post_tool_refresh(
         PostToolPhaseRefreshEffect::EmitCompletionBlocked { transition, reason } => {
             Some(CompletionBlockedEffect { transition, reason })
         }
+        PostToolPhaseRefreshEffect::StopAfterRepairBudgetExhausted { .. } => None,
     }
 }
 
