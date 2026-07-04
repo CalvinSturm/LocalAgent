@@ -1,6 +1,6 @@
 [package]
 name = "localagent"
-version = "0.5.0"
+version = "0.6.0-alpha.2"
 edition = "2021"
 default-run = "localagent"
 repository = "https://github.com/CalvinSturm/LocalAgent"
