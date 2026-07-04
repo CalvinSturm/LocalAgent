@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 
@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use super::{
-    sanitize_user_visible_output, Agent, AgentExitReason, McpPinEnforcementMode,
+    sanitize_user_visible_output, Agent, AgentExitReason, AgentOutcome, McpPinEnforcementMode,
     PlanStepConstraint, PlanToolEnforcementMode, ToolCallBudget,
 };
 use crate::compaction::{CompactionMode, CompactionSettings, ToolResultPersist};
@@ -1672,6 +1672,11 @@ struct ReadPatchThenDoneThenEditThenDoneProvider {
     calls: Arc<AtomicUsize>,
 }
 
+struct ReadPatchThenRepairOnValidatorEvidenceProvider {
+    calls: Arc<AtomicUsize>,
+    repaired: Arc<AtomicBool>,
+}
+
 struct ReadThenRepeatedBadApplyPatchThenEditThenReadThenDoneProvider {
     calls: Arc<AtomicUsize>,
 }
@@ -2471,6 +2476,86 @@ impl ModelProvider for ReadPatchThenDoneThenEditThenDoneProvider {
 }
 
 #[async_trait]
+impl ModelProvider for ReadPatchThenRepairOnValidatorEvidenceProvider {
+    async fn generate(&self, req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        match n {
+            0 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_read".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path":"main.rs"}),
+                }],
+                usage: None,
+            }),
+            1 => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some(String::new()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: vec![crate::types::ToolCall {
+                    id: "tc_patch".to_string(),
+                    name: "apply_patch".to_string(),
+                    arguments: serde_json::json!({
+                        "path":"main.rs",
+                        "patch":"@@ -1,3 +1,3 @@\n fn answer() -> i32 {\n-    return 1;\n+    return 2;\n }\n"
+                    }),
+                }],
+                usage: None,
+            }),
+            _ if req.messages.iter().any(|message| {
+                message
+                    .content
+                    .as_deref()
+                    .is_some_and(|content| content.contains("validator_failed:"))
+            }) && !self.repaired.swap(true, Ordering::SeqCst) =>
+            {
+                Ok(GenerateResponse {
+                    assistant: Message {
+                        role: Role::Assistant,
+                        content: Some(String::new()),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    },
+                    tool_calls: vec![crate::types::ToolCall {
+                        id: "tc_repair".to_string(),
+                        name: "edit".to_string(),
+                        arguments: serde_json::json!({
+                            "path":"main.rs",
+                            "old_string":"return 2;",
+                            "new_string":"return 3;"
+                        }),
+                    }],
+                    usage: None,
+                })
+            }
+            _ => Ok(GenerateResponse {
+                assistant: Message {
+                    role: Role::Assistant,
+                    content: Some("done".to_string()),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            }),
+        }
+    }
+}
+
+#[async_trait]
 impl ModelProvider for ReadThenRepeatedBadStrReplaceThenPatchThenReadThenDoneProvider {
     async fn generate(&self, _req: GenerateRequest) -> anyhow::Result<GenerateResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -3217,6 +3302,14 @@ struct AlwaysFailShellExecTarget {
     host: HostTarget,
 }
 
+#[derive(Clone)]
+struct FailCommandOnceShellExecTarget {
+    host: HostTarget,
+    fail_command: &'static str,
+    failed_once: Arc<AtomicBool>,
+    commands: Arc<Mutex<Vec<String>>>,
+}
+
 #[async_trait]
 impl ExecTarget for ShellSuccessExecTarget {
     fn kind(&self) -> ExecTargetKind {
@@ -3331,6 +3424,66 @@ impl ExecTarget for AlwaysFailShellExecTarget {
             truncated: false,
             bytes: None,
             exit_code: Some(1),
+            stderr_truncated: None,
+            stdout_truncated: None,
+            execution_target: ExecTargetKind::Host,
+            docker: None,
+        }
+    }
+
+    async fn read_file(&self, req: ReadReq) -> TargetResult {
+        self.host.read_file(req).await
+    }
+
+    async fn list_dir(&self, req: ListReq) -> TargetResult {
+        self.host.list_dir(req).await
+    }
+
+    async fn write_file(&self, req: WriteReq) -> TargetResult {
+        self.host.write_file(req).await
+    }
+
+    async fn apply_patch(&self, req: PatchReq) -> TargetResult {
+        self.host.apply_patch(req).await
+    }
+}
+
+#[async_trait]
+impl ExecTarget for FailCommandOnceShellExecTarget {
+    fn kind(&self) -> ExecTargetKind {
+        ExecTargetKind::Host
+    }
+
+    fn describe(&self) -> TargetDescribe {
+        self.host.describe()
+    }
+
+    async fn exec_shell(&self, req: ShellReq) -> TargetResult {
+        let command = if req.args.is_empty() {
+            req.cmd.clone()
+        } else {
+            format!("{} {}", req.cmd, req.args.join(" "))
+        };
+        self.commands.lock().expect("lock").push(command.clone());
+        if command == self.fail_command && !self.failed_once.swap(true, Ordering::SeqCst) {
+            return TargetResult {
+                ok: false,
+                content: format!("{command} failed\nlarge raw output omitted in compact evidence"),
+                truncated: false,
+                bytes: None,
+                exit_code: Some(1),
+                stderr_truncated: None,
+                stdout_truncated: None,
+                execution_target: ExecTargetKind::Host,
+                docker: None,
+            };
+        }
+        TargetResult {
+            ok: true,
+            content: format!("{command} passed"),
+            truncated: false,
+            bytes: None,
+            exit_code: Some(0),
             stderr_truncated: None,
             stdout_truncated: None,
             execution_target: ExecTargetKind::Host,
@@ -5556,16 +5709,22 @@ async fn inferred_rust_validator_runs_after_rust_write_and_success_stops() {
     .expect("seed");
     let calls = Arc::new(AtomicUsize::new(0));
     let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let shell_commands = Arc::new(Mutex::new(Vec::<String>::new()));
     let mut agent = coding_agent(
         ReadPatchThenDoneProvider {
             calls: calls.clone(),
         },
         tmp.path().to_path_buf(),
-        Arc::new(ShellSuccessExecTarget::default()),
+        Arc::new(FailCommandOnceShellExecTarget {
+            host: HostTarget,
+            fail_command: "__never__",
+            failed_once: Arc::new(AtomicBool::new(false)),
+            commands: shell_commands.clone(),
+        }),
         true,
         true,
         events.clone(),
-        6,
+        8,
     );
     let out = agent
         .run(
@@ -5580,15 +5739,20 @@ async fn inferred_rust_validator_runs_after_rust_write_and_success_stops() {
             }],
         )
         .await;
-    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
     assert_eq!(
-        out.final_output,
-        "Validation passed: `cargo fmt --check && cargo test && cargo clippy -- -D warnings`."
+        shell_commands.lock().expect("lock").as_slice(),
+        &[
+            "cargo fmt --check".to_string(),
+            "cargo test".to_string(),
+            "cargo clippy -- -D warnings".to_string(),
+        ]
     );
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    assert_eq!(out.final_output, "Validation passed: Rust validators.");
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        3,
-        "validation success should stop without a final-answer model turn"
+        5,
+        "validation success should run three validator turns and stop without a final-answer model turn"
     );
     let evs = events.lock().expect("lock");
     assert!(evs.iter().any(|e| {
@@ -5609,6 +5773,152 @@ async fn inferred_rust_validator_runs_after_rust_write_and_success_stops() {
                 .and_then(|v| v.as_str())
                 .is_some_and(|s| s == "allow")
     }));
+    let completion = evs
+        .iter()
+        .find(|e| {
+            matches!(e.kind, crate::events::EventKind::CompletionSatisfied)
+                && e.data
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s == "inferred_validator_passed")
+        })
+        .expect("completion event");
+    let steps = completion
+        .data
+        .get("validator_run")
+        .and_then(|v| v.get("steps"))
+        .and_then(|v| v.as_array())
+        .expect("validator steps");
+    assert_eq!(steps.len(), 3);
+    assert!(steps.iter().all(|step| {
+        step.get("status")
+            .and_then(|v| v.as_str())
+            .is_some_and(|status| status == "pass")
+    }));
+}
+
+async fn run_validator_repair_with_failed_command(
+    failed_command: &'static str,
+) -> (
+    AgentOutcome,
+    Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<Vec<crate::events::Event>>>,
+) {
+    let tmp = tempfile::tempdir().expect("tmp");
+    tokio::fs::write(
+        tmp.path().join("main.rs"),
+        "fn answer() -> i32 {\n    return 1;\n}\n",
+    )
+    .await
+    .expect("seed");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(Mutex::new(Vec::<crate::events::Event>::new()));
+    let shell_commands = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut agent = coding_agent(
+        ReadPatchThenRepairOnValidatorEvidenceProvider {
+            calls,
+            repaired: Arc::new(AtomicBool::new(false)),
+        },
+        tmp.path().to_path_buf(),
+        Arc::new(FailCommandOnceShellExecTarget {
+            host: HostTarget,
+            fail_command: failed_command,
+            failed_once: Arc::new(AtomicBool::new(false)),
+            commands: shell_commands.clone(),
+        }),
+        true,
+        true,
+        events.clone(),
+        12,
+    );
+    let out = agent
+        .run(
+            "Edit main.rs to return 2.",
+            vec![],
+            vec![Message {
+                role: Role::System,
+                content: Some(crate::agent::INTERNAL_ENFORCE_IMPLEMENTATION_GUARD_FLAG.to_string()),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            }],
+        )
+        .await;
+    (out, shell_commands, events)
+}
+
+fn developer_messages(out: &AgentOutcome) -> String {
+    out.messages
+        .iter()
+        .filter(|message| matches!(message.role, Role::Developer))
+        .filter_map(|message| message.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn inferred_rust_validator_fmt_failure_records_skipped_steps() {
+    let (out, shell_commands, _events) =
+        run_validator_repair_with_failed_command("cargo fmt --check").await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    let developer = developer_messages(&out);
+    assert!(developer.contains("validator_failed: cargo fmt --check"));
+    assert!(developer.contains("- cargo test"));
+    assert!(developer.contains("- cargo clippy -- -D warnings"));
+    assert!(developer.contains("repair_budget_remaining: 1"));
+    assert!(!developer.contains("large raw output omitted"));
+    assert_eq!(
+        shell_commands.lock().expect("lock").as_slice(),
+        &[
+            "cargo fmt --check".to_string(),
+            "cargo fmt --check".to_string(),
+            "cargo test".to_string(),
+            "cargo clippy -- -D warnings".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn inferred_rust_validator_test_failure_records_prior_pass_and_skipped_clippy() {
+    let (out, shell_commands, _events) =
+        run_validator_repair_with_failed_command("cargo test").await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    let developer = developer_messages(&out);
+    assert!(developer.contains("validator_failed: cargo test"));
+    assert!(developer.contains("- cargo clippy -- -D warnings"));
+    assert!(developer.contains("repair_budget_remaining: 1"));
+    assert_eq!(
+        shell_commands.lock().expect("lock").as_slice(),
+        &[
+            "cargo fmt --check".to_string(),
+            "cargo test".to_string(),
+            "cargo fmt --check".to_string(),
+            "cargo test".to_string(),
+            "cargo clippy -- -D warnings".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn inferred_rust_validator_clippy_failure_records_final_step_failure() {
+    let (out, shell_commands, _events) =
+        run_validator_repair_with_failed_command("cargo clippy -- -D warnings").await;
+    assert!(matches!(out.exit_reason, AgentExitReason::Ok), "{out:?}");
+    let developer = developer_messages(&out);
+    assert!(developer.contains("validator_failed: cargo clippy -- -D warnings"));
+    assert!(!developer.contains("skipped:"));
+    assert!(developer.contains("repair_budget_remaining: 1"));
+    assert_eq!(
+        shell_commands.lock().expect("lock").as_slice(),
+        &[
+            "cargo fmt --check".to_string(),
+            "cargo test".to_string(),
+            "cargo clippy -- -D warnings".to_string(),
+            "cargo fmt --check".to_string(),
+            "cargo test".to_string(),
+            "cargo clippy -- -D warnings".to_string(),
+        ]
+    );
 }
 
 #[tokio::test]

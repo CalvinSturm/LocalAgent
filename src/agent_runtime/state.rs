@@ -72,6 +72,8 @@ pub struct ValidationState {
     pub required_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) inferred_validator: Option<crate::agent::validators::ValidatorCommand>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) inferred_validator_outcomes: Vec<crate::agent::validators::ValidatorStepOutcome>,
     #[serde(default)]
     pub satisfied: bool,
     #[serde(default)]

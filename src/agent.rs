@@ -297,6 +297,7 @@ impl<P: ModelProvider> Agent<P> {
                     .required_validation_command(user_prompt)
                     .map(ToOwned::to_owned),
                 inferred_validator: None,
+                inferred_validator_outcomes: Vec::new(),
                 satisfied: false,
                 repair_mode: false,
                 exact_final_answer_required: self.exact_final_answer_required(user_prompt),
@@ -2908,6 +2909,15 @@ impl<P: ModelProvider> Agent<P> {
                     "next_phase": crate::agent::interrupts::run_phase_name(&effect.transition.to_phase)
                 }),
             );
+            if let Some(developer_message) = effect.developer_message {
+                messages.push(Message {
+                    role: Role::Developer,
+                    content: Some(developer_message),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                });
+            }
         }
 
         Ok(Ok(successful_write_tool_ok_this_step))
@@ -2941,13 +2951,60 @@ impl<P: ModelProvider> Agent<P> {
             .inferred_validator
             .clone()
         {
-            if runtime_checkpoint.validation_state.satisfied
+            let last_shell_ok = observed_tool_executions
+                .last()
+                .is_some_and(|execution| execution.name == "shell" && execution.ok);
+            if last_shell_ok {
+                if let Some(next_step) = crate::agent::validators::next_pending_step(
+                    &validator,
+                    &runtime_checkpoint
+                        .validation_state
+                        .inferred_validator_outcomes,
+                ) {
+                    runtime_checkpoint.phase = crate::agent_runtime::state::RunPhase::Validating;
+                    runtime_checkpoint.validation_state.required_command =
+                        Some(next_step.command.clone());
+                    runtime_checkpoint.validation_state.satisfied = false;
+                    messages.push(Message {
+                        role: Role::Developer,
+                        content: Some(
+                            crate::agent::completion_policy::required_validation_phase_message(
+                                &next_step.command,
+                            ),
+                        ),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    });
+                    self.emit_event(
+                        run_id,
+                        step,
+                        EventKind::StepBlocked,
+                        serde_json::json!({
+                            "reason": "inferred_validator_next_step",
+                            "validator_kind": validator.kind,
+                            "validator_label": validator.label,
+                            "command": next_step.command,
+                            "outcome": validator.run_outcome(
+                                &runtime_checkpoint
+                                    .validation_state
+                                    .inferred_validator_outcomes
+                            )
+                        }),
+                    );
+                    return Ok(PhaseStepDispatch::ContinueAgentStep);
+                }
+            }
+            if crate::agent::validators::all_steps_passed(
+                &validator,
+                &runtime_checkpoint
+                    .validation_state
+                    .inferred_validator_outcomes,
+            ) && runtime_checkpoint.validation_state.satisfied
                 && !runtime_checkpoint
                     .validation_state
                     .exact_final_answer_required
-                && observed_tool_executions
-                    .last()
-                    .is_some_and(|execution| execution.name == "shell" && execution.ok)
+                && last_shell_ok
             {
                 let outcome = crate::agent::validators::ValidatorOutcome::Passed;
                 self.emit_event(
@@ -2959,14 +3016,19 @@ impl<P: ModelProvider> Agent<P> {
                         "validator_kind": validator.kind,
                         "validator_label": validator.label,
                         "command": validator.command,
-                        "outcome": outcome
+                        "outcome": outcome,
+                        "validator_run": validator.run_outcome(
+                            &runtime_checkpoint
+                                .validation_state
+                                .inferred_validator_outcomes
+                        )
                     }),
                 );
                 return Err(self.finalize_ok_with_end(
                     step,
                     run_id.to_string(),
                     started_at.to_string(),
-                    format!("Validation passed: `{}`.", validator.command),
+                    "Validation passed: Rust validators.".to_string(),
                     messages.clone(),
                     observed_tool_calls.to_vec(),
                     observed_tool_decisions.to_vec(),

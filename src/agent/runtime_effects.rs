@@ -30,6 +30,7 @@ pub(crate) enum GuardEffect {
 pub(crate) struct CompletionBlockedEffect {
     pub(crate) transition: RuntimePhaseTransitionDecision,
     pub(crate) reason: String,
+    pub(crate) developer_message: Option<String>,
 }
 
 pub(crate) fn apply_required_validation_guard_decision(
@@ -108,9 +109,15 @@ pub(crate) fn completion_blocked_effect_from_post_tool_refresh(
 ) -> Option<CompletionBlockedEffect> {
     match effect {
         PostToolPhaseRefreshEffect::None => None,
-        PostToolPhaseRefreshEffect::EmitCompletionBlocked { transition, reason } => {
-            Some(CompletionBlockedEffect { transition, reason })
-        }
+        PostToolPhaseRefreshEffect::EmitCompletionBlocked {
+            transition,
+            reason,
+            developer_message,
+        } => Some(CompletionBlockedEffect {
+            transition,
+            reason,
+            developer_message,
+        }),
         PostToolPhaseRefreshEffect::StopAfterRepairBudgetExhausted { .. } => None,
     }
 }

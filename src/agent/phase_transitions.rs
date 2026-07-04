@@ -16,6 +16,7 @@ pub(crate) enum PostToolPhaseRefreshEffect {
     EmitCompletionBlocked {
         transition: RuntimePhaseTransitionDecision,
         reason: String,
+        developer_message: Option<String>,
     },
     StopAfterRepairBudgetExhausted {
         reason: String,
@@ -132,6 +133,36 @@ pub(crate) fn refresh_phase_state_from_tool_facts(
             .exact_final_answer_required,
         &tool_facts,
     );
+    let mut validation_facts = validation_facts;
+    if let Some(validator) = runtime_checkpoint
+        .validation_state
+        .inferred_validator
+        .as_ref()
+    {
+        if let Some(required_command) = required_command {
+            if validation_facts.satisfied || validation_facts.repair_needed {
+                crate::agent::validators::record_step_outcome_for_command(
+                    validator,
+                    &mut runtime_checkpoint
+                        .validation_state
+                        .inferred_validator_outcomes,
+                    required_command,
+                    validation_facts.satisfied,
+                );
+            }
+        }
+        if validation_facts.satisfied
+            && crate::agent::validators::next_pending_step(
+                validator,
+                &runtime_checkpoint
+                    .validation_state
+                    .inferred_validator_outcomes,
+            )
+            .is_some()
+        {
+            validation_facts.satisfied = false;
+        }
+    }
     runtime_checkpoint.validation_state.satisfied = validation_facts.satisfied;
     runtime_checkpoint.last_tool_fact_envelopes =
         tool_fact_envelopes_from_tool_facts(&tool_facts, &runtime_checkpoint.phase);
@@ -142,9 +173,31 @@ pub(crate) fn refresh_phase_state_from_tool_facts(
             let budget = crate::agent::validators::RepairBudget::one_repair(
                 runtime_checkpoint.retry_state.validation_repair_turn_count,
             );
+            let remaining_before_repair = budget.max.saturating_sub(budget.used);
+            let compact_evidence = runtime_checkpoint
+                .validation_state
+                .inferred_validator
+                .as_ref()
+                .map(|validator| {
+                    crate::agent::validators::compact_outcome_evidence(
+                        validator,
+                        &runtime_checkpoint
+                            .validation_state
+                            .inferred_validator_outcomes,
+                        remaining_before_repair,
+                    )
+                });
             if !budget.can_authorize_repair() {
                 return PostToolPhaseRefreshEffect::StopAfterRepairBudgetExhausted {
-                    reason: "validation failed after the single allowed repair turn".to_string(),
+                    reason: compact_evidence
+                        .map(|evidence| {
+                            format!(
+                                "validation failed after the single allowed repair turn\n{evidence}"
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            "validation failed after the single allowed repair turn".to_string()
+                        }),
                 };
             }
             runtime_checkpoint.retry_state.validation_repair_turn_count = runtime_checkpoint
@@ -157,6 +210,7 @@ pub(crate) fn refresh_phase_state_from_tool_facts(
             PostToolPhaseRefreshEffect::EmitCompletionBlocked {
                 transition: validation_resume_execution_transition_decision(),
                 reason: "validation failed and runtime requires a code-fix repair step".to_string(),
+                developer_message: compact_evidence,
             }
         }
         ValidationPhaseTransitionDecision::EnterPostValidationFinalAnswerOnly => {
@@ -172,6 +226,7 @@ pub(crate) fn refresh_phase_state_from_tool_facts(
                 reason: post_validation_final_answer_transition_decision()
                     .completion_reason
                     .to_string(),
+                developer_message: None,
             }
         }
         ValidationPhaseTransitionDecision::ClearRepair => {
@@ -223,6 +278,10 @@ pub(crate) fn apply_verified_write_follow_on(
             runtime_checkpoint.validation_state.required_command = Some(follow_on.command.clone());
             runtime_checkpoint.validation_state.inferred_validator =
                 follow_on.inferred_validator.clone();
+            runtime_checkpoint
+                .validation_state
+                .inferred_validator_outcomes
+                .clear();
             Some(VerifiedWriteFollowOnUpdate {
                 control: PhaseLoopControl::ContinueAgentStep,
                 developer_message: follow_on.developer_message.clone(),
