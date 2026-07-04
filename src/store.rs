@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::trust::policy::McpAllowSummary;
 
+mod artifact_inspection;
 mod hash;
 mod io;
 mod render;
@@ -11,6 +12,12 @@ pub use crate::agent_runtime::state::{
     ApprovalState, CompletionDecisionRecordV1, ExecutionTier, InterruptHistoryEntryV1,
     InterruptKindV1, PhaseSummaryEntryV1, RetryState, RunCheckpointV1 as RuntimeStateCheckpointV1,
     RunPhase, ValidationState,
+};
+#[allow(unused_imports)]
+pub use artifact_inspection::{
+    inspect_replay_artifact, list_replay_artifacts, render_replay_artifact_inspection,
+    render_replay_artifact_list, ReplayArtifactInspection, ReplayArtifactInspectionError,
+    ReplayArtifactList, ReplayArtifactRefSummary,
 };
 pub use hash::{
     cli_trust_mode, config_hash_hex, hash_tool_schema, mcp_tool_snapshot_hash_hex,

@@ -699,6 +699,25 @@ pub(crate) struct DenyArgs {
 #[derive(Debug, Subcommand)]
 
 pub(crate) enum ReplaySubcommand {
+    Artifacts {
+        run_id: String,
+
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
+    Artifact {
+        run_id: String,
+
+        artifact_ref: String,
+
+        #[arg(long, default_value_t = false)]
+        path_only: bool,
+
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+
     Verify {
         run_id: String,
 
