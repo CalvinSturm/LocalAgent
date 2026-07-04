@@ -174,15 +174,18 @@ impl<P: ModelProvider> Agent<P> {
             if !self.validation_shell_available() {
                 return None;
             }
-            inferred_validator.map(|validator| {
-                crate::agent::completion_policy::RequiredValidationFollowOn {
-                    developer_message:
-                        crate::agent::completion_policy::required_validation_phase_message(
-                            &validator.command,
-                        ),
-                    command: validator.command.clone(),
-                    inferred_validator: Some(validator),
-                }
+            inferred_validator.and_then(|validator| {
+                let first_step = validator.first_step()?;
+                Some(
+                    crate::agent::completion_policy::RequiredValidationFollowOn {
+                        developer_message:
+                            crate::agent::completion_policy::required_validation_phase_message(
+                                &first_step.command,
+                            ),
+                        command: first_step.command,
+                        inferred_validator: Some(validator),
+                    },
+                )
             })
         };
         match crate::agent::completion_policy::decide_verified_write_completion(

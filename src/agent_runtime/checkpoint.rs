@@ -299,6 +299,7 @@ pub(super) fn runtime_state_checkpoint_for_outcome(
         validation_state: ValidationState {
             required_command: required_command.clone(),
             inferred_validator: None,
+            inferred_validator_outcomes: Vec::new(),
             satisfied: crate::agent::required_validation_command_satisfied_from_facts(
                 required_command.as_deref(),
                 &tool_fact_envelopes
@@ -1008,6 +1009,7 @@ mod tests {
             validation_state: ValidationState {
                 required_command: Some("cargo test".to_string()),
                 inferred_validator: None,
+                inferred_validator_outcomes: Vec::new(),
                 satisfied: true,
                 repair_mode: false,
                 exact_final_answer_required: false,
@@ -1035,6 +1037,7 @@ mod tests {
             validation_state: ValidationState {
                 required_command: Some("cargo test".to_string()),
                 inferred_validator: None,
+                inferred_validator_outcomes: Vec::new(),
                 satisfied: false,
                 repair_mode: false,
                 exact_final_answer_required: false,

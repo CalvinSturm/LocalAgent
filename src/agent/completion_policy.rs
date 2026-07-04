@@ -615,6 +615,7 @@ mod tests {
                 validation_state: crate::agent_runtime::state::ValidationState {
                     required_command: Some("cargo test".to_string()),
                     inferred_validator: None,
+                    inferred_validator_outcomes: Vec::new(),
                     satisfied: false,
                     repair_mode: false,
                     exact_final_answer_required: false,
@@ -670,6 +671,7 @@ mod tests {
                 validation_state: crate::agent_runtime::state::ValidationState {
                     required_command: Some("cargo test".to_string()),
                     inferred_validator: None,
+                    inferred_validator_outcomes: Vec::new(),
                     satisfied: true,
                     repair_mode: false,
                     exact_final_answer_required: true,
