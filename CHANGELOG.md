@@ -9,6 +9,23 @@ Older releases may appear in `docs/release-notes/` before they are backfilled he
 
 - None yet.
 
+## v0.6.0-alpha.2
+
+### Changed
+
+- Split inferred Rust validation into ordered validator outcomes:
+  - `cargo fmt --check`
+  - `cargo test`
+  - `cargo clippy -- -D warnings`
+- Validator steps now record pass, fail, or skipped outcomes.
+- Rust validation stops after the first failed validator and marks later validators as skipped.
+- Preserved the existing one-repair budget, shell/gate/audit path, and bounded continuation behavior.
+
+### Release process
+
+- Updated crate metadata to `0.6.0-alpha.2`.
+- Release readiness now supports validating that a release tag matches `Cargo.toml` package metadata.
+
 ## v0.5.0 - 2026-03-14
 
 `v0.5.0` is a major runtime and architecture hardening release. It refactors large parts of the agent/runtime/tooling codebase into smaller focused modules, strengthens runtime-owned completion and validation behavior for coding tasks, and expands LocalAgent's coding/eval workflow with broader benchmark coverage, local-model investigation assets, and new tooling integrations.
