@@ -11,6 +11,7 @@ pub(crate) fn resolve_default_lsp_context(
 ) -> Result<Option<ResolvedLspContext>> {
     match args.lsp_provider {
         None => Ok(None),
+        Some(LspProviderKind::Rust) => Ok(None),
         Some(LspProviderKind::Typescript) => {
             let provider = TypescriptLspContextProvider::new(args.lsp_command.clone());
             match resolve_lsp_context(&args.workdir, &provider, limits) {

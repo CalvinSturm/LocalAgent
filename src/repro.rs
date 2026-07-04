@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::store::{config_hash_hex, sha256_hex, stable_path_string, RunRecord};
-use crate::tools::builtin_tools_enabled;
+use crate::tools::builtin_tools_enabled_with_lsp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum ReproMode {
@@ -327,7 +327,7 @@ pub fn verify_run_record(record: &RunRecord, strict: bool) -> anyhow::Result<Rep
 
     checks.push(verify_hooks_config_hash(record)?);
 
-    let builtin = builtin_tools_enabled(true, true);
+    let builtin = builtin_tools_enabled_with_lsp(true, true, true);
     let mut actual_schema_map = crate::store::tool_schema_hash_hex_map(&builtin);
     let mut mcp_live_snapshot_note = None;
     let mut mcp_live_hash = String::from("unavailable");

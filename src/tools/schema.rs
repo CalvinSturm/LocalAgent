@@ -28,6 +28,51 @@ pub fn compact_builtin_schema(tool_name: &str) -> Option<Value> {
                 "ignore_case":{"type":"boolean"}
             }
         })),
+        "lsp.diagnostics" => Some(json!({
+            "type":"object",
+            "properties":{
+                "path":{"type":"string"},
+                "max_results":{"type":"integer","minimum":1,"maximum":1000}
+            }
+        })),
+        "lsp.document_symbols" => Some(json!({
+            "type":"object",
+            "required":["path"],
+            "properties":{
+                "path":{"type":"string"},
+                "max_results":{"type":"integer","minimum":1,"maximum":1000}
+            }
+        })),
+        "lsp.goto_definition" => Some(json!({
+            "type":"object",
+            "required":["path","line","column"],
+            "properties":{
+                "path":{"type":"string"},
+                "line":{"type":"integer","minimum":1},
+                "column":{"type":"integer","minimum":1},
+                "max_results":{"type":"integer","minimum":1,"maximum":1000}
+            }
+        })),
+        "lsp.find_references" => Some(json!({
+            "type":"object",
+            "required":["path","line","column"],
+            "properties":{
+                "path":{"type":"string"},
+                "line":{"type":"integer","minimum":1},
+                "column":{"type":"integer","minimum":1},
+                "include_declaration":{"type":"boolean"},
+                "max_results":{"type":"integer","minimum":1,"maximum":1000}
+            }
+        })),
+        "lsp.hover" => Some(json!({
+            "type":"object",
+            "required":["path","line","column"],
+            "properties":{
+                "path":{"type":"string"},
+                "line":{"type":"integer","minimum":1},
+                "column":{"type":"integer","minimum":1}
+            }
+        })),
         "update_plan" => Some(json!({
             "type":"object",
             "required":["items"],
@@ -104,6 +149,15 @@ pub fn minimal_builtin_example(tool_name: &str) -> Option<Value> {
         "read_file" => Some(json!({"path":"src/main.rs"})),
         "glob" => Some(json!({"pattern":"src/**/*.rs","path":".","max_results":200})),
         "grep" => Some(json!({"pattern":"TODO","path":".","max_results":200,"ignore_case":false})),
+        "lsp.diagnostics" => Some(json!({"path":"src/main.rs","max_results":100})),
+        "lsp.document_symbols" => Some(json!({"path":"src/main.rs","max_results":100})),
+        "lsp.goto_definition" => {
+            Some(json!({"path":"src/main.rs","line":1,"column":1,"max_results":20}))
+        }
+        "lsp.find_references" => Some(
+            json!({"path":"src/main.rs","line":1,"column":1,"include_declaration":true,"max_results":100}),
+        ),
+        "lsp.hover" => Some(json!({"path":"src/main.rs","line":1,"column":1})),
         "update_plan" => Some(
             json!({"items":[{"step":"Inspect the code","status":"in_progress"},{"step":"Run tests","status":"pending"}]}),
         ),
@@ -125,6 +179,11 @@ pub fn sorted_builtin_tool_names() -> Vec<String> {
         "list_dir".to_string(),
         "glob".to_string(),
         "grep".to_string(),
+        "lsp.diagnostics".to_string(),
+        "lsp.document_symbols".to_string(),
+        "lsp.find_references".to_string(),
+        "lsp.goto_definition".to_string(),
+        "lsp.hover".to_string(),
         "update_plan".to_string(),
         "read_file".to_string(),
         "edit".to_string(),
@@ -195,6 +254,40 @@ pub fn validate_builtin_tool_args(
                     return Err("ignore_case must be a boolean".to_string());
                 }
             }
+        }
+        "lsp.diagnostics" => {
+            if let Some(v) = obj.get("path") {
+                if v.as_str().is_none() {
+                    return Err("path must be a string".to_string());
+                }
+            }
+            validate_optional_max_results(obj)?;
+        }
+        "lsp.document_symbols" => {
+            require_non_empty_string(obj, "path")?;
+            validate_optional_max_results(obj)?;
+        }
+        "lsp.goto_definition" => {
+            require_non_empty_string(obj, "path")?;
+            require_positive_u64(obj, "line")?;
+            require_positive_u64(obj, "column")?;
+            validate_optional_max_results(obj)?;
+        }
+        "lsp.find_references" => {
+            require_non_empty_string(obj, "path")?;
+            require_positive_u64(obj, "line")?;
+            require_positive_u64(obj, "column")?;
+            if let Some(v) = obj.get("include_declaration") {
+                if v.as_bool().is_none() {
+                    return Err("include_declaration must be a boolean".to_string());
+                }
+            }
+            validate_optional_max_results(obj)?;
+        }
+        "lsp.hover" => {
+            require_non_empty_string(obj, "path")?;
+            require_positive_u64(obj, "line")?;
+            require_positive_u64(obj, "column")?;
         }
         "update_plan" => {
             super::exec_plan::parse_update_plan_args(args).map(|_| ())?;
@@ -340,6 +433,29 @@ fn require_non_empty_string(obj: &serde_json::Map<String, Value>, key: &str) -> 
         .ok_or_else(|| format!("{key} must be a string"))?;
     if s.is_empty() {
         return Err(format!("{key} must be a non-empty string"));
+    }
+    Ok(())
+}
+
+fn require_positive_u64(obj: &serde_json::Map<String, Value>, key: &str) -> Result<(), String> {
+    let n = obj
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| format!("{key} must be a positive integer"))?;
+    if n == 0 {
+        return Err(format!("{key} must be a positive integer"));
+    }
+    Ok(())
+}
+
+fn validate_optional_max_results(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
+    if let Some(v) = obj.get("max_results") {
+        let n = v
+            .as_u64()
+            .ok_or_else(|| "max_results must be an integer".to_string())?;
+        if !(1..=1000).contains(&n) {
+            return Err("max_results must be between 1 and 1000".to_string());
+        }
     }
     Ok(())
 }

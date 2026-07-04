@@ -4,7 +4,15 @@ use crate::types::{SideEffects, ToolDef};
 
 pub fn tool_side_effects(tool_name: &str) -> SideEffects {
     match tool_name {
-        "list_dir" | "read_file" | "glob" | "grep" => SideEffects::FilesystemRead,
+        "list_dir"
+        | "read_file"
+        | "glob"
+        | "grep"
+        | "lsp.diagnostics"
+        | "lsp.document_symbols"
+        | "lsp.goto_definition"
+        | "lsp.find_references"
+        | "lsp.hover" => SideEffects::FilesystemRead,
         "update_plan" => SideEffects::None,
         "shell" => SideEffects::ShellExec,
         "write_file" | "apply_patch" | "edit" | "str_replace" => SideEffects::FilesystemWrite,
@@ -15,6 +23,14 @@ pub fn tool_side_effects(tool_name: &str) -> SideEffects {
 }
 
 pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) -> Vec<ToolDef> {
+    builtin_tools_enabled_with_lsp(enable_write_tools, enable_shell_tool, false)
+}
+
+pub fn builtin_tools_enabled_with_lsp(
+    enable_write_tools: bool,
+    enable_shell_tool: bool,
+    enable_lsp_tools: bool,
+) -> Vec<ToolDef> {
     let mut tools = vec![
         ToolDef {
             name: "list_dir".to_string(),
@@ -91,6 +107,78 @@ pub fn builtin_tools_enabled(enable_write_tools: bool, enable_shell_tool: bool) 
             side_effects: SideEffects::None,
         },
     ];
+    if enable_lsp_tools {
+        tools.push(ToolDef {
+            name: "lsp.diagnostics".to_string(),
+            description: "Read current language-server diagnostics for the workspace or a workdir-relative source file. Read-only.".to_string(),
+            parameters: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "max_results":{"type":"integer","minimum":1,"maximum":1000}
+                }
+            }),
+            side_effects: SideEffects::FilesystemRead,
+        });
+        tools.push(ToolDef {
+            name: "lsp.document_symbols".to_string(),
+            description: "Read document symbols for a workdir-relative Rust or TypeScript-family source file. Read-only.".to_string(),
+            parameters: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "max_results":{"type":"integer","minimum":1,"maximum":1000}
+                },
+                "required":["path"]
+            }),
+            side_effects: SideEffects::FilesystemRead,
+        });
+        tools.push(ToolDef {
+            name: "lsp.goto_definition".to_string(),
+            description: "Read definition locations for a symbol position in a workdir-relative source file. Lines and columns are 1-based. Read-only.".to_string(),
+            parameters: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "line":{"type":"integer","minimum":1},
+                    "column":{"type":"integer","minimum":1},
+                    "max_results":{"type":"integer","minimum":1,"maximum":1000}
+                },
+                "required":["path","line","column"]
+            }),
+            side_effects: SideEffects::FilesystemRead,
+        });
+        tools.push(ToolDef {
+            name: "lsp.find_references".to_string(),
+            description: "Read reference locations for a symbol position in a workdir-relative source file. Lines and columns are 1-based. Read-only.".to_string(),
+            parameters: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "line":{"type":"integer","minimum":1},
+                    "column":{"type":"integer","minimum":1},
+                    "include_declaration":{"type":"boolean"},
+                    "max_results":{"type":"integer","minimum":1,"maximum":1000}
+                },
+                "required":["path","line","column"]
+            }),
+            side_effects: SideEffects::FilesystemRead,
+        });
+        tools.push(ToolDef {
+            name: "lsp.hover".to_string(),
+            description: "Read hover text for a symbol position in a workdir-relative source file. Lines and columns are 1-based. Read-only.".to_string(),
+            parameters: json!({
+                "type":"object",
+                "properties":{
+                    "path":{"type":"string"},
+                    "line":{"type":"integer","minimum":1},
+                    "column":{"type":"integer","minimum":1}
+                },
+                "required":["path","line","column"]
+            }),
+            side_effects: SideEffects::FilesystemRead,
+        });
+    }
     if enable_shell_tool {
         tools.push(ToolDef {
             name: "shell".to_string(),

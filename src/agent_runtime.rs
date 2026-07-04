@@ -310,6 +310,19 @@ pub(crate) async fn run_agent_with_ui<P: ModelProvider>(
             },
             unsafe_bypass_allow_flags: args.unsafe_bypass_allow_flags,
             tool_args_strict: resolved_settings.tool_args_strict,
+            lsp: args
+                .lsp_provider
+                .map(|provider| crate::tools::LspToolRuntime {
+                    provider: match provider {
+                        crate::cli_args::LspProviderKind::Rust => {
+                            crate::tools::LspToolProvider::Rust
+                        }
+                        crate::cli_args::LspProviderKind::Typescript => {
+                            crate::tools::LspToolProvider::Typescript
+                        }
+                    },
+                    command: args.lsp_command.clone(),
+                }),
             exec_target_kind: resolved_target_kind,
             exec_target,
         },

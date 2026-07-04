@@ -200,6 +200,7 @@ fn make_agent_with_mcp<P: ModelProvider + 'static>(
             max_read_bytes: 200_000,
             unsafe_bypass_allow_flags: false,
             tool_args_strict: ToolArgsStrict::On,
+            lsp: None,
             exec_target_kind: ExecTargetKind::Host,
             exec_target: Arc::new(HostTarget),
         },

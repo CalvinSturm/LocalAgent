@@ -467,6 +467,7 @@ pub(crate) async fn run_single(
             max_read_bytes: if config.no_limits { 0 } else { 200_000 },
             unsafe_bypass_allow_flags: config.unsafe_bypass_allow_flags,
             tool_args_strict: config.tool_args_strict,
+            lsp: None,
             exec_target_kind: ExecTargetKind::Host,
             exec_target: std::sync::Arc::new(HostTarget),
         },
