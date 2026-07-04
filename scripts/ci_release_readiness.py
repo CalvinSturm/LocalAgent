@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import argparse
 from pathlib import Path
 
 
@@ -19,6 +20,7 @@ SCHEMA_CHANGE_RE = re.compile(
     re.MULTILINE,
 )
 SCHEMA_NOTE_RE = re.compile(r"(?im)^\s{0,3}(##|###)\s+Schema Notes\b")
+RELEASE_TAG_RE = re.compile(r"^v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$")
 
 
 def fail(msg: str) -> None:
@@ -33,12 +35,58 @@ def read_text(path: Path) -> str:
         fail(f"missing required file: {path.relative_to(ROOT)}")
 
 
+def parse_cargo_package_version(content: str) -> str | None:
+    in_package = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        section = re.match(r"^\[([^\]]+)\]\s*$", stripped)
+        if section:
+            in_package = section.group(1).strip() == "package"
+            continue
+        if in_package:
+            m = re.match(r'^version\s*=\s*"([^"]+)"\s*$', stripped)
+            if m:
+                return m.group(1)
+    return None
+
+
 def cargo_version() -> str:
-    content = read_text(CARGO_TOML)
-    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"\s*$', content)
+    version = parse_cargo_package_version(read_text(CARGO_TOML))
+    if not version:
+        fail("could not parse package.version from Cargo.toml")
+    return version
+
+
+def version_from_release_tag(release_tag: str) -> str:
+    m = RELEASE_TAG_RE.match(release_tag.strip())
     if not m:
-        fail("could not parse package version from Cargo.toml")
+        raise ValueError(
+            "release tag must look like `v1.2.3` or `v1.2.3-alpha.1`"
+        )
     return m.group(1)
+
+
+def release_tag_mismatch_message(release_tag: str, package_version: str) -> str | None:
+    tag_version = version_from_release_tag(release_tag)
+    if tag_version == package_version:
+        return None
+    return (
+        "release tag version does not match Cargo.toml package.version: "
+        f"`{release_tag}` -> `{tag_version}`, Cargo.toml -> `{package_version}`"
+    )
+
+
+def check_release_tag_matches_cargo(release_tag: str | None, package_version: str) -> None:
+    if not release_tag:
+        return
+    try:
+        mismatch = release_tag_mismatch_message(release_tag, package_version)
+    except ValueError as e:
+        fail(str(e))
+    if mismatch:
+        fail(mismatch)
 
 
 def check_version_linkage(version: str) -> None:
@@ -136,8 +184,22 @@ def check_schema_note(version: str) -> None:
     )
 
 
-def main() -> None:
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Validate release readiness invariants.")
+    parser.add_argument(
+        "--release-tag",
+        help=(
+            "Optional official release tag, for example `v0.6.0-alpha.2`. "
+            "When supplied, its version must match Cargo.toml package.version."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
     version = cargo_version()
+    check_release_tag_matches_cargo(args.release_tag, version)
     check_version_linkage(version)
     if schema_changed():
         check_schema_note(version)
